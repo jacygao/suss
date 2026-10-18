@@ -9,7 +9,7 @@ file holds what is specific to suss, and they read it from here.
 **Load the `skills:writing-specs` skill before writing or editing anything under
 `docs/specs/`.** Every time, without being asked.
 
-`docs/specs/suss-spec.md` is the specification. Its § 8, The project, fixes the
+`docs/specs/suss-spec.md` is the specification. Its § 7, The project, fixes the
 language and the `src/` layout.
 
 ## Checks
