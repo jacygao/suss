@@ -1,42 +1,42 @@
-# Suss Specification: Measuring Whether a Tool Improves a Coding Agent's Code
+# Suss Specification: Measuring and Comparing Coding Harnesses
 
 **Version:** 0.1 (draft)
 
 ## 1. Purpose
 
-**Suss measures whether a tool makes a coding agent's work better.** It runs the
-same benchmark tasks under several arms. Each arm is one coding agent and model,
-with or without a tool applied to it. Suss reports how each arm scored and
-whether the differences between them are larger than the noise.
+**Suss measures and compares how well coding harnesses do specific kinds of
+coding work.** A harness is anything that takes a task's instruction and changes
+a repository. Each kind of work is a lane: a set of benchmark tasks and the way
+they are graded. Suss runs the same tasks under several arms, grades every
+result the same way, and reports how each arm's score differs from its
+baseline's.
 
-A tool under measurement is called a treatment. Squiz, which reviews the agent's
-change with a second agent, is one treatment. A plugin that changes how the
-agent works is another. Suss knows nothing about any treatment beyond the
-contract in § 4: each one supplies a small adapter, in its own repository, and
-suss runs it.
+Comparing plain Claude Code with two harnesses that review its change, on the Go
+lane, prints output like this:
 
-A run with three arms looks like this:
+```
+$ suss compare pro-go claude-code self-review peer-review
 
-| Arm | Coding agent | Treatment |
-|---|---|---|
-| `baseline` | Claude Code, Opus | none |
-| `self-review` | Claude Code, Opus | the same model reviews its own change, three rounds at most |
-| `squiz` | Claude Code, Opus | squiz with `pi` on another model, three rounds at most |
+arm          trials  resolved  failed  timed out
+claude-code     256       38%      0%         1%
+self-review     256       41%      1%         1%
+peer-review     256       44%      1%         2%
+
+vs. baseline                resolved
+self-review − claude-code   +3% [−2%, +8%]
+peer-review − claude-code   +6% [+1%, +11%]
+```
 
 ## 2. Dependencies
 
 | Dependency | Version | Needed for |
 |---|---|---|
-| Harbor | 0.22.0 | Runs each task in a sandbox, runs the agent, and grades the result with the task's own verifier. |
-| Modal | the account Harbor's `modal` environment uses | The sandboxes. |
-| SWE Atlas | a checkout of `scaleapi/swe-atlas` | The tasks (§ 5). |
+| Harbor | 0.22.0 | Runs each task in a sandbox, runs suss in it, and grades the result with the task's own verifier. |
+| Modal | 1.5.1 or later, and the account Harbor's `modal` environment uses | The sandboxes, when `environment` is `modal` (§ 6). Earlier versions cannot take a network policy per phase. |
+| Docker | any | The sandboxes, when `environment` is `docker`. |
+| SWE-bench Pro | a checkout of `scaleapi/SWE-bench_Pro-os` | The tasks, under `v2/tasks/`, and the regrading agent, under `v2/tooling/` (§ 5). |
 | Python | 3.12 | Suss itself, which Harbor loads as a custom agent. |
 | `uv` | any | Installs suss and Harbor. |
-
-Each arm needs API keys for its coding agent and for every model its treatment
-calls. The SWE Atlas verifier needs a key for its judge model. Suss reads all of
-them from a `.env` file at the root of the run directory, as SWE Atlas's own
-scripts do.
 
 ## 3. A trial
 
@@ -44,269 +44,249 @@ scripts do.
 
 | Term | Meaning |
 |---|---|
-| **Task** | One benchmark task: a repository in a sandbox image, an instruction, and a verifier. |
-| **Arm** | A coding agent, a model, a reasoning effort, and at most one treatment. |
-| **Treatment** | The tool under measurement, reached through its adapter (§ 4). |
-| **Trial** | One attempt at one task by one arm. Harbor runs K trials of each task for each arm. |
-| **Turn** | One run of the coding agent inside a trial. The first turn is given the task's instruction. Each later turn is given a review's findings. |
-| **Round** | One review of the change, followed by one turn that acts on its findings. |
+| **Task** | One benchmark task: a repository in a sandbox image, an instruction, and hidden tests. |
+| **Lane** | A set of tasks that suss runs and reports as one (§ 5). |
+| **Harness** | What is being measured, reached through its adapter. |
+| **Adapter** | The directory that lets suss run a harness: a manifest, `suss-harness.toml`, and the commands it names (§ 4). |
+| **Arm** | A harness and the parameters it runs with, such as a model and a reasoning effort. |
+| **Baseline** | The arm another arm is measured against, usually the harness's coding agent on its own. |
+| **Trial** | Harbor's unit of work: one attempt at one task by one arm, in a fresh sandbox. |
 | **Base** | The commit the workspace's `HEAD` names when the trial starts. |
 
 ### What a trial does
 
-Suss is a Harbor custom agent, `suss.agent:SussAgent`. Harbor starts it once per
-trial, inside the sandbox, and grades the workspace after it returns.
+Suss is a Harbor custom agent, `suss.agent:SussAgent`. Harbor runs it once per
+trial, in two phases. The setup phase has network access. The agent phase
+reaches only the hosts the harness lists (§ 5).
 
-1. **Find the workspace and record the base.** Suss finds the repository root as
-   the SWE Atlas verifier does: `/workspace` if it is a git repository, and
-   otherwise the first of the verifier's own list of candidate paths that holds a
-   `.git` directory. It records `git rev-parse HEAD` as the base.
-2. **Install the treatment**, if the arm has one (§ 4, Installing).
-3. **Run the first turn.** The coding agent is given the task's instruction,
-   unchanged.
-4. **Run rounds**, if the treatment is a reviewer (§ 4, Reviewing). Each round
-   takes a snapshot commit (§ 3, The snapshot commit), runs the review, and stops
-   the loop if it returned no findings. Otherwise it runs a turn that hands the
-   findings to the coding agent in the same session. The loop also stops after the
-   arm's round cap.
-5. **Check the workspace** (§ 3, The workspace check).
-6. **Write the trial record** (§ 6) and return.
+In the setup phase, suss:
 
-Harbor then runs the task's verifier on the workspace as it stands.
+1. **finds the workspace and records the base.** The workspace is `/app`, or
+   `/testbed` where `/app` does not exist. The base is `git rev-parse HEAD`.
+2. **uploads the harness's adapter** to `/opt/suss/adapter/`.
+3. **installs the harness**, if the adapter's manifest names an `install` command
+   (§ 4).
 
-A turn after the first continues the coding agent's session. For Claude Code,
-that is Harbor's own Claude Code invocation with `--continue`. The prompt for
-such a turn is:
+In the agent phase, suss:
 
-```
-A reviewer read your change and reported the findings below. Fix the ones that
-apply. For any you leave, say why. The task's instructions still hold.
+4. **runs the harness** on the task's instruction, unchanged (§ 4);
+5. **captures the patch** (§ 3, Capturing the patch);
+6. **writes the trial record** (§ 3, The trial record) and returns.
 
-1. high — pkg/writers/buffer/buffer.go:88
-   Put returns a grown buffer to the pool instead of a fresh one
-   <the finding's body>
+Harbor then runs the task's verifier in the same sandbox. Suss ignores that
+result. The trial's result is its regrade (§ 3, Regrading).
 
-2. medium — pkg/gitparse/gitparse.go:412
-   ...
-```
-
-### The snapshot commit
-
-A reviewer reads the change as `git diff <base>...<head>`. The coding agent never
-commits, so suss makes a commit for each round from the workspace as it stands,
-without moving `HEAD`, the branch, or the index:
+### Capturing the patch
 
 ```bash
-export GIT_INDEX_FILE="$(mktemp)"
 git add -A
-tree="$(git write-tree)"
-head="$(git commit-tree "$tree" -p "$base" -m "suss round $n")"
-git update-ref "refs/suss/round-$n" "$head"
-unset GIT_INDEX_FILE
+git diff --cached --binary <base> > /logs/agent/model.patch
 ```
 
-- The commit's only parent is the base, so every round's diff is the whole change
-  so far.
-- `git add -A` with a fresh index picks up the same files the SWE Atlas verifier
-  grades, which also runs `git add -A`, and leaves out what `.gitignore` excludes.
-- The ref keeps the commit from garbage collection. It is not a file in the tree,
-  so it is not part of the graded patch.
+The diff runs from the base, so it holds the whole change, whether the harness
+committed it or not.
 
-### The workspace check
+### Regrading
 
-After the last turn, suss checks that:
+After each agent job, suss runs a second Harbor job over the same tasks, with
+SWE-bench Pro's own `patch_replay:PatchReplayAgent` as the agent. For each
+trial, it starts a fresh sandbox from the task's image, applies the trial's
+`model.patch`, and runs the verifier there. That verifier's reward is the
+trial's result.
 
-- `HEAD` still names the base;
-- `refs/suss/` holds only the refs suss made.
+A harness cannot change its result by changing the sandbox it worked in, because
+the grading happens in another.
 
-A failed check marks the trial `invalid` in its record (§ 6). Suss does not
-change the workspace to repair it, because the verifier grades the workspace as
-the agent left it.
+`PatchReplayAgent` finds a patch by task name, so an agent job holds one trial
+of each task, and suss runs K agent jobs for K trials (§ 6).
 
-## 4. The treatment contract
+### The trial record
 
-A treatment is a directory, which its own repository ships. Suss uploads it into
-the sandbox at `/opt/suss/treatment/` before the trial starts. It holds a
-manifest, `suss-treatment.toml`:
+Suss adds `suss.json` to the trial's agent logs, at `/logs/agent/suss.json` in the
+sandbox:
+
+```json
+{
+  "arm": "peer-review",
+  "harness": { "name": "peer-review", "version": "0.1.0" },
+  "params": { "model": "claude-opus-4-6", "effort": "high", "rounds": 3 },
+  "grader": { "dataset": "swe-bench-pro-v2", "commit": "4e7a1c90…" },
+  "base": "5568b2e0a686cc4d838bddc095b831379143e61b",
+  "status": "ok",
+  "run_seconds": 1290,
+  "patch_bytes": 4182
+}
+```
+
+- `grader` is the dataset and the commit of the checkout `suss run` used.
+- `status` is `ok`, `harness-failed` or `timed-out`.
+
+## 4. The harness contract
+
+Suss runs a harness through its adapter, a directory the harness's own repository
+ships. The adapter holds a manifest, `suss-harness.toml`:
 
 ```toml
-[treatment]
-name = "squiz"
+[harness]
+name = "peer-review"
 version = "0.1.0"
 
-# Run once, before the first turn. Optional.
+# Run once, in the setup phase. Optional.
 install = "install.sh"
 
-# Run once a round. Present for a reviewer, absent otherwise.
-review = "review.sh"
+# Run once, in the agent phase, on the task's instruction.
+run = "run.sh"
 
-# Hostnames the treatment calls during the trial, added to the sandbox's allowlist.
-allowed_hosts = ["api.deepseek.com"]
+# Hostnames the harness calls in the agent phase, which suss allows.
+allowed_hosts = ["api.anthropic.com", "api.deepseek.com"]
 
-# Environment variables the treatment reads, passed through from the run's .env.
-env = ["DEEPSEEK_API_KEY"]
+# Environment variables the harness reads, passed through from the run's .env.
+env = ["ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY"]
 ```
 
-A treatment is one of two kinds, or both:
-
-- **An installer** changes how the coding agent works, through its `install`
-  command, and then takes no part in the trial.
-- **A reviewer** reads the change after each turn, through its `review` command,
-  and reports findings for the next turn.
+Suss runs both commands as the agent's user, with the workspace as the current
+directory and only the variables in `env` taken from the `.env` file at the root
+of the run directory. `--params` is a JSON file holding the arm's `params` table
+from `suss.toml` (§ 6).
 
 ### Installing
 
-Suss runs `install` once, as the agent's user, with the workspace as its current
-directory and `SUSS_WORKSPACE` naming it. A non-zero exit ends the trial and
-marks it `treatment-failed`.
-
-An installer may write the coding agent's own configuration, such as a Claude
-Code plugin or settings under the agent's home directory. It writes nothing
-inside the workspace.
-
-### Reviewing
-
-Suss runs `review` once a round, as the agent's user, with:
-
 ```
-review --workspace <path> --base <sha> --head <sha> --round <n> \
-       --history <file> --out <file>
+install --workspace <path> --params <file>
 ```
 
-- `--head` is the round's snapshot commit.
-- `--history` is a JSON file holding every earlier round: its findings, and the
-  coding agent's last message from the turn that acted on them. It is `[]` in the
-  first round.
-- `--out` is where the review writes its findings.
+The installer sets the harness up while the sandbox still has network access:
+it installs the coding agent, its plugins and any packages `run` needs. It
+writes nothing inside the workspace.
 
-The findings file is:
+A non-zero exit marks the trial `harness-failed`, and suss skips `run`. The
+patch is then empty, and the trial resolves nothing.
 
-```json
-{
-  "findings": [
-    {
-      "severity": "high",
-      "path": "pkg/writers/buffer/buffer.go",
-      "line": 88,
-      "title": "Put returns a grown buffer to the pool instead of a fresh one",
-      "body": "..."
-    }
-  ],
-  "usage": { "input_tokens": 182340, "output_tokens": 9120, "cost_usd": 0.41 }
-}
+### Running
+
+```
+run --workspace <path> --instruction <file> --params <file> [--max-cost-usd <n>]
 ```
 
-- `severity` is `high`, `medium` or `low`. Suss lists findings in that order in
-  the turn's prompt and does not otherwise act on it.
-- `path` and `line` may be `null` for a finding about the change as a whole.
-- `usage` is optional. Where it is present, suss adds it to the trial's cost.
+The harness does the task however it does it, and leaves its change in the
+workspace, committed or not (§ 3, Capturing the patch). Anything it writes inside
+the workspace is part of the patch.
 
-An empty `findings` list ends the loop. A non-zero exit, or an `--out` file that
-does not parse, ends the loop and marks the trial `treatment-failed`. The
-verifier still grades the workspace as the last turn left it.
+`--max-cost-usd` is the arm's `max_cost_usd`, given when `suss.toml` sets one
+(§ 6). The harness stops before its models' spend passes it, across every model
+it calls. Suss stops `run` after the arm's `max_seconds`, marks the trial
+`timed-out`, and captures the patch as the harness left it.
 
-A reviewer reads the workspace and the git objects, and writes nothing inside the
-workspace. Its scratch files go under `$TMPDIR`.
+A non-zero exit marks the trial `harness-failed`. Either way, suss captures the
+patch, and the regrade grades it.
 
-### Self-review
+### Built-in harnesses
 
-Self-review is a reviewer that suss ships, in `treatments/self-review/`. It runs
-the arm's own coding agent and model in a fresh session, in the snapshot commit's
-tree, and asks it to review `git diff <base>...<head>` and write the findings
-file. It is the control for any reviewer measured against it.
+Suss includes an adapter for the baseline other arms are measured against, in
+`harnesses/`.
 
-## 5. Datasets
+| Harness | Params | What it does |
+|---|---|---|
+| `claude-code` | `version`, `model`, `effort` | `install` installs Claude Code at `version` with its native installer. `run` runs it headless, with the instruction as its prompt, every tool allowed except `WebSearch` and `WebFetch`, and `--max-cost-usd` as its `--max-budget-usd`. |
 
-Suss runs SWE Atlas's Refactoring lane (`data/rf`, 70 tasks) and Test Writing
-lane (`data/tw`, 90 tasks). Its Codebase QnA lane produces an answer rather than a
-change, so a reviewer has nothing to read there.
+## 5. Lanes
 
-The SWE Atlas verifier grades each trial. A Refactoring trial resolves when the
-change breaks none of the task's relevant tests and passes every `must have`
-rubric. A Test Writing trial resolves when its tests pass the rubrics, the
-manifest check and the mutation check. Each trial also gets a rubric score, the
-share of rubric items it passed, which suss reports beside the resolve rate.
+Suss runs SWE-bench Pro V2: 642 tasks from 11 repositories, in `v2/tasks/` of the
+checkout. Each task gives the agent a repository at the commit before a real
+change, and an instruction written from that change: what it does, its
+requirements, and any interfaces it adds. The change is a bug fix or a feature.
 
-Every arm runs with the network restrictions SWE Atlas sets for the lane. Suss
-adds the coding agent's API host and the treatment's `allowed_hosts` to the
-allowlist, and nothing else.
+The task's hidden tests grade it. A trial resolves when the tests the real
+change made pass now pass, and the tests that passed before still pass. The share
+of trials that resolve is the measure suss compares arms on.
 
-## 6. Results
+Suss splits the tasks into lanes, so that a run can cover one language:
 
-Harbor writes each trial's directory as usual. Suss adds `suss.json` to the
-trial's agent logs, at `/logs/agent/suss.json` in the sandbox:
+| Lane | Tasks | Repositories, by the owner in the task's name |
+|---|---|---|
+| `pro-go` | 256 | `flipt-io`, `gravitational`, `future-architect`, `navidrome` |
+| `pro-python` | 237 | `ansible`, `internetarchive`, `qutebrowser` |
+| `pro-js` | 149 | `protonmail`, `element-hq`, `NodeBB`, `tutao` |
+| `pro-hard51` | 51 | the tasks listed in `v2/hard51_ids.txt` |
 
-```json
-{
-  "arm": "squiz",
-  "treatment": { "name": "squiz", "version": "0.1.0" },
-  "base": "5568b2e0a686cc4d838bddc095b831379143e61b",
-  "status": "ok",
-  "rounds": [
-    { "round": 1, "head": "…", "findings": 3, "review_seconds": 214, "turn_seconds": 388 },
-    { "round": 2, "head": "…", "findings": 0, "review_seconds": 160 }
-  ],
-  "usage": {
-    "agent": { "input_tokens": 2104000, "output_tokens": 61000, "cost_usd": 6.90 },
-    "treatment": { "input_tokens": 342000, "output_tokens": 15800, "cost_usd": 0.77 }
-  }
-}
-```
+A task's owner is the first part of its directory name,
+`instance_<owner>__<repo>-<commit>…`.
 
-`status` is `ok`, `treatment-failed` or `invalid`.
+A lane's result is a result for its repositories. With three or four per
+language, a harness that does better on `pro-go` may be doing better on
+gravitational's Teleport and flipt-io's Flipt rather than on Go.
 
-`suss compare` reads the results of two or more arms over the same tasks and
-prints, for each arm:
+Every task's agent phase has no network (`network_mode = "no-network"`). Suss
+passes each host in the harness's `allowed_hosts` to Harbor as
+`--allow-agent-host`, and nothing else.
 
-- the resolve rate, and the mean rubric score;
-- the mean agent and treatment cost a trial;
-- the share of trials that are not `ok`.
-
-For each pair of arms it prints the difference in resolve rate, with a 95%
-interval from a bootstrap that resamples tasks, so that each task's K trials stay
-together.
-
-## 7. Commands
+## 6. Commands
 
 ### `suss run`
 
 ```bash
 suss run <arm> <lane>... [-- <harbor args>]
-suss run squiz rf tw -- -i task-69391d8d1ce51c407be1e531
+suss run peer-review pro-go pro-python
 ```
 
-It reads the arm from `suss.toml` in the current directory and runs one
-`harbor run` for each lane, with suss as the agent. Anything after `--` goes to
-every `harbor run`. `DRY_RUN=1` prints the commands instead of running them.
+It reads the arm from `suss.toml` in the current directory. For each lane, it
+builds `lanes/<lane>/` as a directory of links to the lane's task directories in
+the checkout. Then, K times, it runs an agent job and its regrade:
 
-`suss.toml` names the SWE Atlas checkout and the arms:
+```bash
+harbor run -p lanes/pro-go -e modal -n 16 -k 1 \
+  -a suss.agent:SussAgent --ak arm=peer-review --ak config=suss.toml \
+  --allow-agent-host api.anthropic.com --allow-agent-host api.deepseek.com \
+  --jobs-dir results/pro-go/peer-review --job-name <stamp>-1
+
+PYTHONPATH=../SWE-bench_Pro-os/v2/tooling harbor run -p lanes/pro-go -e modal -n 16 -k 1 \
+  -a patch_replay:PatchReplayAgent -m replay \
+  --ak source_job=results/pro-go/peer-review/<stamp>-1 \
+  --jobs-dir results/pro-go/peer-review --job-name <stamp>-1-regrade
+```
+
+Anything after `--` goes to every agent job. `DRY_RUN=1` prints the commands
+instead of running them.
+
+It gives Harbor `results/<lane>/<arm>/` as its jobs directory, so each agent job
+and its regrade job are written there. Results stay there across runs, so an arm
+run later is compared against a baseline graded earlier, without running the
+baseline again.
+
+`suss.toml` names the SWE-bench Pro checkout, where the sandboxes run, the caps
+on each trial, and the arms:
 
 ```toml
-swe_atlas = "../swe-atlas"
-k = 3
+swe_bench_pro = "../SWE-bench_Pro-os"
+environment = "modal"
+k = 1
 concurrency = 16
+max_cost_usd = 20
+max_seconds = 2700
 
-[arms.baseline]
-agent = "claude-code"
-model = "anthropic/claude-opus-4-6"
-effort = "high"
+[arms.claude-code]
+harness = "claude-code"
+params = { version = "2.1.293", model = "claude-opus-4-6", effort = "high" }
 
 [arms.self-review]
-agent = "claude-code"
-model = "anthropic/claude-opus-4-6"
-effort = "high"
-treatment = "self-review"
-rounds = 3
+harness = "../self-review"
+baseline = "claude-code"
+params = { model = "claude-opus-4-6", effort = "high", rounds = 3 }
 
-[arms.squiz]
-agent = "claude-code"
-model = "anthropic/claude-opus-4-6"
-effort = "high"
-treatment = "../squiz/eval/suss"
-rounds = 3
+[arms.peer-review]
+harness = "../peer-review"
+baseline = "claude-code"
+params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "deepseek/deepseek-v3.2" }
 ```
 
-`treatment` is a path to a treatment directory, or the name of one suss ships.
+- `harness` is a path to a harness's adapter, or the name of a built-in one.
+- `params` is passed to the harness as it stands (§ 4). Suss reads none of it.
+- `environment` is passed to `harbor run` as `-e`: `modal` runs the sandboxes on
+  Modal, and `docker` runs them on this machine.
+- `max_cost_usd` and `max_seconds` cap each trial (§ 4, Running). Set at the top,
+  they apply to every arm, and an arm may set its own. `max_seconds` must be
+  under the task's agent timeout, 3000 seconds in every V2 task, so that suss
+  captures the patch before Harbor stops the trial.
 
 ### `suss compare`
 
@@ -314,42 +294,40 @@ rounds = 3
 suss compare <lane> <arm> <arm>...
 ```
 
-It prints the table in § 6, Results.
+It reads every trial under `results/<lane>/` for the arms it is given, with the
+result of its regrade, over the tasks every one of them has trials for, and
+prints the tables shown in § 1:
 
-## 8. The project
+- Every trial counts as its regrade graded it, `harness-failed` and `timed-out`
+  ones included.
+- `failed` is the share of trials whose status is `harness-failed`, and
+  `timed out` the share whose status is `timed-out`.
+- Each arm whose `baseline` is among the arms given gets a row in the second
+  table. The bracketed range is a 95% interval from a bootstrap that resamples
+  tasks, so that each task's K trials stay together.
+
+It exits with an error, and prints nothing else, if the arms' trials do not all
+carry the same `grader`.
+
+## 7. The project
 
 ### Language
 
-Python 3.12, managed with `uv`. Harbor is a dependency, pinned to 0.22.0.
-`uv run pytest` runs the tests.
+Python 3.12, managed with `uv`.
 
 ### Structure
 
 ```
 src/suss/
   agent.py        SussAgent, the Harbor custom agent
-  snapshot.py     the snapshot commit and the workspace check
-  treatment.py    reading a manifest, installing, running a review
+  workspace.py    finding the workspace, and capturing the patch
+  harness.py      reading a manifest, installing, and running a harness
+  lanes.py        building a lane's directory from the checkout
   config.py       suss.toml
   compare.py      suss compare
   cli.py          the suss command
-treatments/
-  self-review/    the self-review treatment
+harnesses/
+  claude-code/
 tests/
 docs/specs/
 ```
-
-## 9. Limits
-
-- **Claude Code is the only coding agent.** A later turn continues the agent's
-  session, and only Claude Code's continuation is specified (§ 3).
-- **A treatment's writes to the workspace are not detected.** The contract
-  forbids them (§ 4), but the workspace check cannot tell them from the coding
-  agent's, so a treatment that writes there changes the graded patch unseen.
-- **The rounds of a reviewer are not matched for compute.** An arm with a
-  treatment spends more than the baseline. `suss compare` reports the cost of
-  each arm, and leaves the reader to weigh it.
-- **The reviewer's model is not separated from the reviewer.** A squiz arm on
-  another model differs from self-review in both the tool and the model. Telling
-  the two apart needs a second squiz arm on the coding agent's own model, which
-  `suss.toml` can hold.
