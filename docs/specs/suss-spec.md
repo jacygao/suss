@@ -102,8 +102,15 @@ of each task, and suss runs K agent jobs for K trials (§ 6).
 
 ### The trial record
 
-Suss adds `suss.json` to the trial's agent logs, at `/logs/agent/suss.json` in the
-sandbox:
+Suss writes these files to `/logs/agent/` in the sandbox. Harbor keeps that
+directory as `agent/` in the trial's directory under `results/` (§ 6).
+
+| File | Holds |
+|---|---|
+| `suss.json` | the trial record, below |
+| `install.log` | the stdout and stderr of `install`, when the manifest names one |
+| `run.log` | the stdout and stderr of `run` |
+| `model.patch` | the patch (§ 3, Capturing the patch) |
 
 ```json
 {
@@ -113,6 +120,7 @@ sandbox:
   "grader": { "dataset": "swe-bench-pro-v2", "commit": "4e7a1c90…" },
   "base": "5568b2e0a686cc4d838bddc095b831379143e61b",
   "status": "ok",
+  "exit_codes": { "install": 0, "run": 0 },
   "run_seconds": 1290,
   "patch_bytes": 4182
 }
@@ -120,6 +128,8 @@ sandbox:
 
 - `grader` is the dataset and the commit of the checkout `suss run` used.
 - `status` is `ok`, `harness-failed` or `timed-out`.
+- `exit_codes` holds the exit code of `install` and of `run`. A command suss
+  skipped, or stopped at `max_seconds`, has `null`.
 
 ## 4. The harness contract
 
@@ -145,9 +155,16 @@ env = ["ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY"]
 ```
 
 Suss runs both commands as the agent's user, with the workspace as the current
-directory and only the variables in `env` taken from the `.env` file at the root
-of the run directory. `--params` is a JSON file holding the arm's `params` table
-from `suss.toml` (§ 6).
+directory. Their environment holds only the variables named in `env`, taken from
+the `.env` file beside `suss.toml`.
+
+Suss writes the two files the commands are given to `/opt/suss/`, outside the
+workspace, so neither becomes part of the patch:
+
+| Argument | File | Holds |
+|---|---|---|
+| `--instruction` | `/opt/suss/instruction.md` | the task's instruction, unchanged |
+| `--params` | `/opt/suss/params.json` | the arm's `params` table from `suss.toml` (§ 6), as JSON |
 
 ### Installing
 
@@ -279,7 +296,8 @@ baseline = "claude-code"
 params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "deepseek/deepseek-v3.2" }
 ```
 
-- `harness` is a path to a harness's adapter, or the name of a built-in one.
+- `harness` is the name of a built-in adapter, or a path to one, relative to
+  the directory holding `suss.toml`.
 - `params` is passed to the harness as it stands (§ 4). Suss reads none of it.
 - `environment` is passed to `harbor run` as `-e`: `modal` runs the sandboxes on
   Modal, and `docker` runs them on this machine.
@@ -294,12 +312,20 @@ params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "d
 suss compare <lane> <arm> <arm>...
 ```
 
-It reads every trial under `results/<lane>/` for the arms it is given, with the
-result of its regrade, over the tasks every one of them has trials for, and
-prints the tables shown in § 1:
+It reads every trial under `results/<lane>/<arm>/` for the arms it is given,
+and each arm's `baseline` from `suss.toml` in the current directory.
+
+A trial's result is the reward of its regrade. Suss pairs each trial in an agent
+job, `<stamp>-<i>`, with the trial for the same task in `<stamp>-<i>-regrade`.
+
+It compares the arms over the tasks every one of them has trials for, and prints
+the tables shown in § 1:
 
 - Every trial counts as its regrade graded it, `harness-failed` and `timed-out`
   ones included.
+- A trial whose regrade has no reward counts as unresolved. A trial with no
+  `suss.json`, which a sandbox that never started or a Harbor exception leaves,
+  counts as `harness-failed`.
 - `failed` is the share of trials whose status is `harness-failed`, and
   `timed out` the share whose status is `timed-out`.
 - Each arm whose `baseline` is among the arms given gets a row in the second
