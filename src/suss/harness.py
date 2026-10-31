@@ -257,8 +257,8 @@ def _limited(command: str, seconds: float) -> str:
     client on the host and leaves the command running in the container. The
     wrapper needs only bash, which Harbor runs every command with, and `sleep`.
 
-    It exits with the command's exit code, or prints TIMED_OUT when it killed
-    the command.
+    It exits with the command's exit code. At the limit it prints TIMED_OUT,
+    then kills the command.
     """
     return "\n".join(
         [
@@ -268,14 +268,14 @@ def _limited(command: str, seconds: float) -> str:
             f"{command} &",
             "run=$!",
             # `&&`, so that a missing sleep leaves the run to exec's backstop
-            # rather than killing it at once. The timer exits 0 only when its
-            # kill reached the run.
-            f"{{ sleep {seconds} && kill -KILL -- -$run; }} > /dev/null 2>&1 &",
+            # rather than killing it at once. The marker goes out before the
+            # kill, so killing the timer later cannot erase a timeout.
+            f"{{ sleep {seconds} > /dev/null 2>&1 && echo {shlex.quote(TIMED_OUT)}"
+            " && kill -KILL -- -$run 2> /dev/null; } &",
             "timer=$!",
             'wait "$run"',
             "code=$?",
             'kill -KILL -- "-$timer" 2> /dev/null',
-            f'if wait "$timer"; then echo {shlex.quote(TIMED_OUT)}; fi',
             'exit "$code"',
         ]
     )
