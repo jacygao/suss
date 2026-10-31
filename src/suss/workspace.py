@@ -59,12 +59,14 @@ async def capture_patch(
     git = f"git -C {shlex.quote(workspace)}"
     patch = shlex.quote(f"{logs_dir.rstrip('/')}/{PATCH_NAME}")
     # Git writes the file itself, because exec returns stdout as decoded text,
-    # which corrupts any byte that is not valid UTF-8.
+    # which corrupts any byte that is not valid UTF-8. The flags after --binary
+    # stop the repository's config writing a patch that does not apply.
     await _run(
         env,
         f"mkdir -p {shlex.quote(logs_dir)}"
         f" && {git} add -A"
-        f" && {git} diff --cached --binary --no-color --no-ext-diff --no-textconv"
+        f" && {git} diff --cached --binary"
+        " --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/"
         f" {shlex.quote(base)} -- > {patch}",
     )
     return int(await _run(env, f"wc -c < {patch}"))

@@ -123,6 +123,22 @@ def test_patch_rebuilds_the_harness_tree_from_the_base(
     )
 
 
+@pytest.mark.parametrize(
+    "setting", ["diff.noprefix=true", "color.ui=always"]
+)
+def test_the_repository_config_cannot_change_the_patch(
+    local_environment, repo, logs, tmp_path, setting
+):
+    key, value = setting.split("=")
+    git(repo, "config", key, value)
+    base = run(read_base(local_environment, str(repo)))
+    change_everything(repo)
+    run(capture_patch(local_environment, str(repo), base, str(logs)))
+
+    rebuilt = apply_to_fresh_clone(repo, base, logs / "model.patch", tmp_path / "rebuilt")
+    assert tree(rebuilt) == tree(repo), f"with {setting}, model.patch does not apply"
+
+
 def test_the_base_is_head_before_the_harness_runs(local_environment, repo):
     head = git(repo, "rev-parse", "HEAD").strip()
     assert run(read_base(local_environment, str(repo))) == head
@@ -174,11 +190,23 @@ def test_no_workspace_raises(local_environment, tmp_path):
 
 
 def test_the_workspace_is_found_in_the_sandbox_not_on_this_machine(
-    local_environment, tmp_path
+    local_environment, tmp_path, monkeypatch
 ):
-    """The sandbox is stood in for by an exec that maps the default paths into tmp_path, where only testbed exists."""
-    for path in ("/app", "/testbed"):
-        assert not os.path.exists(path), f"this test needs a machine with no {path}"
+    """
+    This machine is made to look as if it has /app, and the sandbox, stood in
+    for by an exec that maps the default paths into tmp_path, has only /testbed.
+    """
+    on_this_machine = {"/app", "/testbed"}
+    for name in ("exists", "is_dir"):
+        real = getattr(Path, name)
+        monkeypatch.setattr(
+            Path, name, lambda self, real=real: str(self) in on_this_machine or real(self)
+        )
+    for name in ("exists", "isdir"):
+        real = getattr(os.path, name)
+        monkeypatch.setattr(
+            os.path, name, lambda path, real=real: str(path) in on_this_machine or real(path)
+        )
     (tmp_path / "testbed").mkdir()
     real_exec = local_environment.exec
 
