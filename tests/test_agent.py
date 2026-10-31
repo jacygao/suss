@@ -11,10 +11,12 @@ siblings, so nothing suss writes to /opt/suss can fall inside the workspace.
 import asyncio
 import dataclasses
 import json
+import os
 import re
 import shlex
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -388,3 +390,112 @@ def test_files_go_into_opt_suss_as_root_and_belong_to_the_agent_user(
     assert any("chown" in command and "agent" in command for command in as_root)
     harness = [user for command, user in calls if "install.sh" in command or "run.sh" in command]
     assert harness == ["agent", "agent"], "the harness did not run as the agent user"
+
+
+# A harness mid-run with a child it backgrounded, which writes to the workspace
+# after the test has cancelled run.
+LATE_WRITE = "a late write"
+STILL_WORKING = (
+    f"{KNOWN_CHANGE}\n"
+    f'(sleep 2; echo "{LATE_WRITE}" >> hello.txt) &\n'
+    'echo $! $$ > "$here/run.pids"\n'
+    "sleep 30"
+)
+
+
+def without_max_seconds(trial: Trial) -> str:
+    config = trial.host / "unlimited.toml"
+    config.write_text(trial.config.read_text().replace("max_seconds = 60\n", ""))
+    return str(config)
+
+
+def cancel_mid_run(trial: Trial, env, agent: SussAgent) -> None:
+    """Cancel run once the harness has started its child, as Harbor's agent timeout does."""
+
+    async def scenario():
+        await agent.setup(environment=env)
+        running = asyncio.create_task(
+            agent.run(instruction=INSTRUCTION, environment=env, context=AgentContext())
+        )
+        pids = trial.sandbox_adapter / "run.pids"
+        deadline = time.monotonic() + 10
+        while not (pids.exists() and pids.read_text().strip()):
+            assert time.monotonic() < deadline, "the harness never started"
+            await asyncio.sleep(0.05)
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+
+    go(scenario())
+
+
+def is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def test_a_cancelled_run_writes_a_timed_out_record(local_environment, trial):
+    trial.then("run", STILL_WORKING)
+
+    cancel_mid_run(trial, local_environment, trial.agent())
+
+    record = json.loads((trial.logs / "suss.json").read_text())
+    assert set(record) == set(spec_trial_record()), "suss.json's keys are not the spec's"
+    assert record["status"] == "timed-out"
+    assert record["exit_codes"] == {"install": 0, "run": None}
+    assert isinstance(record["run_seconds"], float)
+    assert record["run_seconds"] > 0
+    assert record["patch_bytes"] == len((trial.logs / "model.patch").read_bytes())
+
+
+@pytest.mark.parametrize("limit", ["max_seconds", "no max_seconds"])
+def test_a_cancelled_run_stops_the_harness_before_the_patch(
+    local_environment, trial, tmp_path, limit
+):
+    trial.then("run", STILL_WORKING)
+    config = str(trial.config) if limit == "max_seconds" else without_max_seconds(trial)
+
+    cancel_mid_run(trial, local_environment, trial.agent(config=config))
+
+    pids = [int(pid) for pid in (trial.sandbox_adapter / "run.pids").read_text().split()]
+    alive = [pid for pid in pids if is_running(pid)]
+    assert not alive, f"harness processes {alive} outlived the cancelled run"
+    # Past the moment the child would have written.
+    time.sleep(3)
+    assert LATE_WRITE not in (trial.workspace / "hello.txt").read_text(), (
+        "the harness went on changing the workspace after run was cancelled"
+    )
+    assert LATE_WRITE not in trial.patch()
+    assert_patch_carries_the_known_change(trial, tmp_path)
+
+
+def test_harbors_agent_timeout_still_sees_the_cancel(local_environment, trial):
+    trial.then("run", STILL_WORKING)
+    agent = trial.agent()
+
+    async def under_harbors_timeout():
+        await agent.setup(environment=local_environment)
+        await asyncio.wait_for(
+            agent.run(
+                instruction=INSTRUCTION, environment=local_environment, context=AgentContext()
+            ),
+            timeout=1,
+        )
+
+    with pytest.raises(TimeoutError):
+        go(under_harbors_timeout())
+    assert json.loads((trial.logs / "suss.json").read_text())["status"] == "timed-out"
+
+
+def test_a_run_that_finishes_leaves_no_process_group_behind(local_environment, trial):
+    trial.then("run", KNOWN_CHANGE)
+
+    trial.run(local_environment)
+
+    left = sorted(path.name for path in trial.logs.iterdir())
+    assert left == ["install.log", "model.patch", "run.log", "suss.json"], (
+        "a finished run left a file a later cancel could act on"
+    )

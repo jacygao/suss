@@ -7,6 +7,7 @@ suss.toml, the manifest and the grader's commit, is read in the constructor,
 so a bad config fails before a sandbox starts.
 """
 
+import asyncio
 import json
 import shlex
 import subprocess
@@ -27,6 +28,8 @@ from suss.harness import SandboxPaths
 from suss.workspace import WORKSPACES, capture_patch, find_workspace, read_base
 
 RECORD_NAME = "suss.json"
+# How long a cancelled run may take to capture the patch and write suss.json.
+CLEANUP_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -104,6 +107,11 @@ class SussAgent(BaseAgent):
         The patch is captured however run ends, even when it raises, since a
         lost change reads exactly like a harness that changed nothing. suss.json
         is written only when run returned a status.
+
+        When the task is cancelled, as Harbor's agent timeout does, the harness
+        is stopped first and the trial is `timed-out`. The CancelledError is
+        raised once suss.json is written, or once CLEANUP_SECONDS have passed,
+        so Harbor still sees the timeout.
         """
         prepared = self._prepared
         if prepared is None:
@@ -120,11 +128,25 @@ class SussAgent(BaseAgent):
                 prepared.install_exit_code,
                 self.paths,
             )
-        finally:
-            patch_bytes = await capture_patch(
-                environment, prepared.workspace, prepared.base, self.paths.logs
-            )
+        except BaseException:
+            await capture_patch(environment, prepared.workspace, prepared.base, self.paths.logs)
+            raise
 
+        try:
+            # Harbor waits on a cancelled agent with no limit.
+            async with asyncio.timeout(CLEANUP_SECONDS if result.cancelled else None):
+                await self._record(environment, prepared, result)
+        finally:
+            if result.cancelled is not None:
+                raise result.cancelled
+
+    async def _record(
+        self, environment: BaseEnvironment, prepared: _Prepared, result: harness.HarnessResult
+    ) -> None:
+        """Capture the patch, then write suss.json beside it."""
+        patch_bytes = await capture_patch(
+            environment, prepared.workspace, prepared.base, self.paths.logs
+        )
         record = {
             "arm": self._config.arm.name,
             "harness": {"name": self._manifest.name, "version": self._manifest.version},
