@@ -258,7 +258,18 @@ suss run peer-review pro-go pro-python
 
 It reads the arm from `suss.toml` in the current directory. For each lane, it
 builds `lanes/<lane>/` as a directory of links to the lane's task directories in
-the checkout. Then, K times, it runs an agent job and its regrade:
+the checkout.
+
+When `environment` is `docker`, it then pulls the image each of the lane's tasks
+names in `[environment] docker_image` of its `task.toml`. The V2 images are
+built for amd64 only, so on a Docker engine that runs on arm64, such as Docker
+Desktop on Apple Silicon, it pulls them for amd64:
+
+```bash
+docker pull --platform linux/amd64 <docker_image>
+```
+
+Then, K times, it runs an agent job and its regrade:
 
 ```bash
 harbor run -p lanes/pro-go -e docker -n 16 -k 1 \
@@ -275,8 +286,14 @@ PYTHONPATH=../SWE-bench_Pro-os/v2/tooling harbor run -p lanes/pro-go -e docker -
 `<stamp>` is the time `suss run` started, in UTC, as `20261031T142500Z`. Every
 job of the run shares it, and `-1` to `-K` tell its agent jobs apart.
 
-Anything after `--` goes to every agent job. `DRY_RUN=1` prints the commands
-instead of running them.
+Anything after `--` goes to every agent job. `DRY_RUN=1` prints the
+`harbor run` commands instead of running them, and pulls nothing.
+
+Every agent job is followed by its regrade, whatever its trials did and whatever
+Harbor's exit code was. A trial that failed or errored is graded as its regrade
+grades it. The one exception is an agent job that leaves no trial in its job
+directory, as when Harbor cannot start at all: `suss run` then prints the job's
+name and Harbor's output, runs nothing more, and exits non-zero.
 
 It gives Harbor `results/<lane>/<arm>/` as its jobs directory, so each agent job
 and its regrade job are written there. Results stay there across runs, so an arm
