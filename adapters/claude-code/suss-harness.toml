@@ -1,0 +1,7 @@
+[harness]
+name = "claude-code"
+version = "0.1.0"
+install = "install.sh"
+run = "run.sh"
+allowed_hosts = ["api.anthropic.com"]
+env = ["ANTHROPIC_API_KEY"]
