@@ -6,14 +6,16 @@ run.
 ## M1 — One trial, end to end
 
 `SussAgent` runs one arm on one task. It records the base, installs and runs the
-harness through its adapter, captures the patch and writes the trial record. The
-built-in `claude-code` adapter is the harness it is proven with, and the arm is
-read from `suss.toml`.
+harness through its adapter, captures the patch and writes the trial record.
+The tests prove it with a fake adapter, and `adapters/claude-code/` is the first
+real one. The arm is read from `suss.toml`.
 
 ### Acceptance criteria
 
 - [ ] The repository is a `uv` project for Python 3.12, with suss under
       `src/suss/`, and `uv run pytest` passes in a fresh clone
+- [ ] The tests run `SussAgent` through a fake adapter under `tests/`, whose
+      `run` writes a known change and calls no model
 - [ ] This completes, and leaves `model.patch` and `suss.json` in the trial's
       agent logs:
       ```bash
@@ -40,8 +42,8 @@ read from `suss.toml`.
 - [ ] `--instruction` and `--params` name `/opt/suss/instruction.md` and
       `/opt/suss/params.json`, outside the workspace, and neither file appears
       in the patch
-- [ ] The `claude-code` adapter's `install` installs Claude Code at `version`
-      with its native installer. Its `run` runs Claude Code headless with the
+- [ ] In `adapters/claude-code/`, `install` installs Claude Code at `version`
+      with its native installer, and `run` runs Claude Code headless with the
       instruction as its prompt, every tool allowed except `WebSearch` and
       `WebFetch`, and `--max-cost-usd` passed as `--max-budget-usd`
 
@@ -68,8 +70,8 @@ its regrade. It writes both under `results/<lane>/<arm>/`.
       ones set at the top of `suss.toml`
 - [ ] An arm whose `max_seconds` is not under the agent timeout of every task in
       a lane makes `suss run` exit with an error before it runs any job
-- [ ] `harness` resolves to a built-in adapter by name, or to a path to one
-      relative to the directory holding `suss.toml`
+- [ ] `harness` resolves as a path to an adapter, relative to the directory
+      holding `suss.toml`
 - [ ] Trials already under `results/<lane>/<arm>/` are still there after another
       run of the same arm
 - [ ] With `--check`, `suss run` runs one agent job and its regrade over
