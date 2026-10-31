@@ -12,11 +12,13 @@ import asyncio
 import dataclasses
 import json
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+from harbor.cli.utils import parse_kwargs
 from harbor.environments.base import ExecResult
 from harbor.models.agent.context import AgentContext
 
@@ -317,6 +319,16 @@ def test_an_ak_value_harbor_parsed_as_json_is_refused_by_name(trial, key, value)
 
     assert key in str(raised.value)
     assert repr(value) in str(raised.value)
+
+
+@pytest.mark.parametrize("value", [2026, True, ["x"], {"it's": "a \"name\""}])
+def test_the_quoting_an_error_suggests_gives_harbor_a_string(trial, value):
+    with pytest.raises(TypeError) as raised:
+        SussAgent(arm=value, config=str(trial.config), logs_dir=trial.host_logs)
+
+    suggested = shlex.split(str(raised.value).split("--ak ")[-1])
+    assert len(suggested) == 1, f"the suggestion is not one shell word: {suggested}"
+    assert parse_kwargs(suggested) == {"arm": json.dumps(value)}
 
 
 def test_harbors_own_construction_keeps_the_specs_sandbox_paths(trial):

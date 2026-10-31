@@ -59,10 +59,11 @@ class SussAgent(BaseAgent):
         """
         for key, value in (("arm", arm), ("config", config)):
             if not isinstance(value, str):
+                quoted = shlex.quote(f"{key}={json.dumps(json.dumps(value))}")
                 raise TypeError(
                     f"--ak {key} must be a string, but Harbor parsed it as JSON into"
                     f" {value!r}, a {type(value).__name__}. Quote it as a JSON string:"
-                    f" --ak '{key}=\"{json.dumps(value)}\"'"
+                    f" --ak {quoted}"
                 )
         super().__init__(**kwargs)
         self.paths = paths
