@@ -94,6 +94,24 @@ def check_max_seconds(arm: Arm, lane: str, tasks: Iterable[Path]) -> None:
         )
 
 
+def images(tasks: Iterable[Path]) -> list[str]:
+    """
+    The images the tasks name in `[environment] docker_image`, each once, in
+    the order of the first task naming it.
+
+    Raises LaneError naming the task.toml of a task that names none.
+    """
+    found = {}
+    for task in tasks:
+        path = task / "task.toml"
+        with path.open("rb") as file:
+            image = tomllib.load(file).get("environment", {}).get("docker_image")
+        if not isinstance(image, str) or not image:
+            raise LaneError(f"{path}: no [environment] docker_image, so suss cannot pull its image")
+        found[image] = None
+    return list(found)
+
+
 def _agent_timeout(task: Path) -> float:
     path = task / "task.toml"
     with path.open("rb") as file:
