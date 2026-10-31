@@ -279,15 +279,39 @@ harbor run -p lanes/pro-go -e docker -n 16 -k 1 \
 
 PYTHONPATH=../SWE-bench_Pro-os/v2/tooling harbor run -p lanes/pro-go -e docker -n 16 -k 1 \
   -a patch_replay:PatchReplayAgent -m replay \
-  --ak source_job=results/pro-go/peer-review/<stamp>-1 \
+  --ak source_job=<dir>/results/pro-go/peer-review/<stamp>-1 \
   --jobs-dir results/pro-go/peer-review --job-name <stamp>-1-regrade
 ```
 
 `<stamp>` is the time `suss run` started, in UTC, as `20261031T142500Z`. Every
-job of the run shares it, and `-1` to `-K` tell its agent jobs apart.
+job of the run shares it, and `-1` to `-K` tell its agent jobs apart. `<dir>` is
+the directory holding `suss.toml`, so the regrade's `source_job` is the agent
+job's directory as an absolute path, which suss forms itself.
 
-Anything after `--` goes to every agent job. `DRY_RUN=1` prints the
-`harbor run` commands instead of running them, and pulls nothing.
+Options after `--` go to every agent job. Passing any of these, under any name
+or spelling Harbor accepts, is an error that names it and says why, and runs
+nothing:
+
+- An option suss sets on the agent job or its regrade, even with suss's own
+  value: `-p`, `-e`, `-n`, `-k`, `-a`, `-m`, `--ak`, `--allow-agent-host`,
+  `--jobs-dir` and `--job-name`.
+- An option that changes the tasks or the agent the agent job runs, or keeps it
+  from leaving a trial on this machine for its regrade: `-c`, `-d`, `-t`, `-i`,
+  `-x`, `-l`, `--registry-url`, `--registry-path`, `--repo`, `--task-git-url`,
+  `--task-git-commit`, `--agent-import-path`, `--environment-import-path`,
+  `--user-agent`, `--user-model`, `--uk`, `--user-persona-path`,
+  `--user-prompt-template-path`, `--bridge`, `--bridge-prompt-path`, `--bk`,
+  `--install-only`, `--launch`, `--dry-run`, `--init` and `--print-config`.
+- A positional argument, which `harbor run` does not take.
+
+```
+$ suss run peer-review pro-go -- -k 2
+error: -k/--n-attempts can't be passed after --: suss runs one trial per agent
+job, and k in suss.toml sets how many jobs
+```
+
+`DRY_RUN=1` prints the `harbor run` commands instead of running them, and pulls
+nothing.
 
 Every agent job is followed by its regrade, whatever its trials did and whatever
 Harbor's exit code was. A trial that failed or errored is graded as its regrade
