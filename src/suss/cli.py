@@ -87,7 +87,7 @@ def harbor_commands(
         "--jobs-dir", str(jobs_dir),
         "--job-name", f"{job_name}-regrade",
     ]
-    _refuse_options_suss_sets(harbor_args, _options(agent) | _options(regrade))
+    _refuse_options_suss_sets(harbor_args)
     agent += harbor_args
     # Absolute, so that Harbor imports patch_replay whatever directory it is in.
     tooling = config.swe_bench_pro / "v2" / "tooling"
@@ -108,10 +108,11 @@ def _kwarg(key: str, value: str) -> str:
     return f"{key}={json.dumps(value)}"
 
 
-# Where each option suss sets comes from instead, keyed by Harbor's name for it.
+# Every option suss sets on either job, even one a job leaves out, such as
+# --allow-agent-host for a harness that allows no hosts. Each maps Harbor's name
+# for it to where that setting comes from instead.
 _SET_BY_SUSS = {
-    "path": "suss gives each job its lane's directory",
-    "environment": "set environment in suss.toml",
+    "path": "suss gives each job its lane's directory",    "environment": "set environment in suss.toml",
     "n_concurrent_trials": "set concurrency in suss.toml",
     "n_attempts": "suss runs one trial per agent job, and k in suss.toml sets how many jobs",
     "agent_name": "suss runs every agent job with SussAgent",
@@ -146,12 +147,12 @@ def _options(argv: Sequence[str]) -> set[str]:
     return {param.name for param in found}
 
 
-def _refuse_options_suss_sets(harbor_args: Sequence[str], set_by_suss: set[str]) -> None:
+def _refuse_options_suss_sets(harbor_args: Sequence[str]) -> None:
     """
-    Raise ValueError naming an option in `set_by_suss` that `harbor_args`
-    include, whatever its value, since Harbor would take theirs over suss's.
+    Raise ValueError naming an option suss sets that `harbor_args` include,
+    whatever its value, since Harbor would take theirs over suss's.
     """
-    passed = _options(["harbor", "run", *harbor_args]) & set_by_suss
+    passed = _options(["harbor", "run", *harbor_args]) & _SET_BY_SUSS.keys()
     for param in _harbor_run().params:
         if param.name in passed:
             raise ValueError(

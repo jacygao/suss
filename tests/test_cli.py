@@ -250,7 +250,7 @@ def test_an_option_suss_sets_is_refused_in_every_spelling_whatever_its_value(ext
         harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, extra)
 
 
-def test_every_option_suss_sets_on_either_job_is_refused(tmp_path):
+def test_the_options_refused_are_exactly_those_suss_sets_on_either_job(tmp_path):
     run = typer.main.get_command(harbor_app).commands["run"]
     agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1)
     emitted = set()
@@ -258,7 +258,17 @@ def test_every_option_suss_sets_on_either_job_is_refused(tmp_path):
         _, _, found = run.make_parser(run.context_class(run)).parse_args(command.argv[2:])
         emitted |= {param.name for param in found}
     options = {param.name: param.opts[0] for param in run.params}
+    refused = set()
+    for param in run.params:
+        try:
+            harbor_commands(
+                make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, [param.opts[0], "1"]
+            )
+        except ValueError as error:
+            if "can't be passed after --" in str(error):
+                refused.add(param.name)
 
+    assert refused == emitted
     assert len(emitted) == 10
     for name in emitted:
         with pytest.raises(ValueError, match=f"^{re.escape(options[name])}"):
@@ -309,6 +319,14 @@ def test_a_refused_option_says_where_its_setting_comes_from(extra, message, tmp_
         harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, extra)
 
     assert str(refused.value) == message
+
+
+@pytest.mark.parametrize(
+    "extra", [["--allow-agent-host", "example.com"], ["--allow-agent-host=example.com"]]
+)
+def test_allow_agent_host_is_refused_when_the_manifest_allows_no_hosts(extra, tmp_path):
+    with pytest.raises(ValueError, match="^--allow-agent-host can't be passed after --"):
+        harbor_commands(make_config(tmp_path), make_manifest(()), "pro-go", STAMP, 1, extra)
 
 
 def test_an_option_harbor_does_not_know_is_refused(tmp_path):
