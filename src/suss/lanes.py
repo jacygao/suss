@@ -126,7 +126,7 @@ def images(tasks: Iterable[Path]) -> list[str]:
     found = {}
     for task in tasks:
         path = task / "task.toml"
-        image = _read_task(path).get("environment", {}).get("docker_image")
+        image = _field(path, "environment", "docker_image")
         if not isinstance(image, str) or not image:
             raise LaneError(f"{path}: no [environment] docker_image, so suss cannot pull its image")
         found[image] = None
@@ -135,10 +135,16 @@ def images(tasks: Iterable[Path]) -> list[str]:
 
 def _agent_timeout(task: Path) -> float:
     path = task / "task.toml"
-    timeout = _read_task(path).get("agent", {}).get("timeout_sec")
+    timeout = _field(path, "agent", "timeout_sec")
     if not isinstance(timeout, int | float):
         raise LaneError(f"{path}: no [agent] timeout_sec")
     return timeout
+
+
+def _field(path: Path, table: str, key: str) -> object:
+    """The task.toml's `key` in `[table]`, or None where either is missing or `table` is not a table."""
+    found = _read_task(path).get(table)
+    return found.get(key) if isinstance(found, dict) else None
 
 
 def _read_task(path: Path) -> dict:

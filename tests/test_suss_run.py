@@ -380,23 +380,28 @@ def test_a_check_lane_that_cannot_be_built_is_refused_before_anything_runs(proje
     assert project.records() == []
 
 
+# With no max_seconds nothing reads the timeout, so the image reader meets the file first.
 @pytest.mark.parametrize(
-    "contents, message",
+    "contents, max_seconds, message",
     [
-        (None, "task.toml: no such file"),
-        ("[agent\n", "task.toml: not valid TOML"),
-        ("directory", "task.toml: cannot be read"),
+        (None, None, "task.toml: no such file"),
+        ("[agent\n", "2700", "task.toml: not valid TOML"),
+        ("directory", "2700", "task.toml: cannot be read"),
+        ('environment = "docker"\n', None, "task.toml: no [environment] docker_image"),
+        ('agent = 3000\n[environment]\ndocker_image = "x"\n', "2700", "task.toml: no [agent] timeout_sec"),
     ],
+    ids=["missing", "not-toml", "a-directory", "environment-not-a-table", "agent-not-a-table"],
 )
-def test_a_task_toml_suss_cannot_read_is_an_error_naming_it(project, capfd, contents, message):
+def test_a_task_toml_suss_cannot_read_is_an_error_naming_it(
+    project, capfd, contents, max_seconds, message
+):
     task = project.checkout / "v2" / "tasks" / "instance_ansible__ansible-ggg"
     task.mkdir()
     if contents == "directory":
         (task / "task.toml").mkdir()
     elif contents is not None:
         (task / "task.toml").write_text(contents)
-    # With no max_seconds nothing reads the timeout, so the image reader meets the file first.
-    project.write_toml(max_seconds="2700" if contents else None)
+    project.write_toml(max_seconds=max_seconds)
 
     code = project.run("peer-review", "pro-python")
 
