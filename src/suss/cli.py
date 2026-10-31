@@ -1,5 +1,6 @@
 """The suss command, and the `harbor run` command lines it runs."""
 
+import functools
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -46,13 +47,13 @@ def harbor_commands(
     The `harbor run` commands for agent job `trial` of the arm on `lane`, and
     for its regrade.
 
-    Paths in them are relative to the directory holding suss.toml, which both
-    must run in, except the regrade's PYTHONPATH. `harbor_args` go to the
-    agent job only. With `check`, both take the lane's check directory and
-    write under `checks/` instead of `results/`.
+    Both must run in the directory holding suss.toml, which their relative
+    paths resolve from. `harbor_args` go to the agent job only. With `check`,
+    both take the lane's check directory and write under `checks/` instead of
+    `results/`.
 
-    Raises ValueError when `harbor_args` set the agent job's name or jobs
-    directory, since its regrade would then replay a job that is not there.
+    Raises ValueError, with a message for the user, when `harbor_args` include
+    an option suss sets on either job, or one Harbor's parser rejects.
     """
     lane_dir = f"lanes/{lane}-check" if check else f"lanes/{lane}"
     jobs_dir = PurePosixPath("checks" if check else "results", lane, config.arm.name)
@@ -73,17 +74,21 @@ def harbor_commands(
     ]
     for host in manifest.allowed_hosts:
         agent += ["--allow-agent-host", host]
-    agent += ["--jobs-dir", str(jobs_dir), "--job-name", job_name, *harbor_args]
-    _refuse_moving_the_job(agent, jobs_dir, job_name)
+    agent += ["--jobs-dir", str(jobs_dir), "--job-name", job_name]
 
+    # Absolute, so that it names the agent job whatever directory Harbor is in.
+    # A source_job that names no job gives every trial reward 0 and fails nothing.
+    source_job = config.path.parent / jobs_dir / job_name
     regrade = [
         *common,
         "-a", "patch_replay:PatchReplayAgent",
         "-m", "replay",
-        "--ak", _kwarg("source_job", str(jobs_dir / job_name)),
+        "--ak", _kwarg("source_job", str(source_job)),
         "--jobs-dir", str(jobs_dir),
         "--job-name", f"{job_name}-regrade",
     ]
+    _refuse_options_suss_sets(harbor_args, _options(agent) | _options(regrade))
+    agent += harbor_args
     # Absolute, so that Harbor imports patch_replay whatever directory it is in.
     tooling = config.swe_bench_pro / "v2" / "tooling"
     return Command(agent), Command(regrade, {"PYTHONPATH": str(tooling)})
@@ -103,19 +108,52 @@ def _kwarg(key: str, value: str) -> str:
     return f"{key}={json.dumps(value)}"
 
 
-def _refuse_moving_the_job(argv: list[str], jobs_dir: PurePosixPath, job_name: str) -> None:
-    """
-    Raise ValueError unless Harbor would read `argv` as writing the job named
-    `job_name` to `jobs_dir`.
+# Where each option suss sets comes from instead, keyed by Harbor's name for it.
+_SET_BY_SUSS = {
+    "path": "suss gives each job its lane's directory",
+    "environment": "set environment in suss.toml",
+    "n_concurrent_trials": "set concurrency in suss.toml",
+    "n_attempts": "suss runs one trial per agent job, and k in suss.toml sets how many jobs",
+    "agent_name": "suss runs every agent job with SussAgent",
+    "model_names": "set the arm's model in its params in suss.toml",
+    "agent_kwargs": "set the arm's params in suss.toml",
+    "allow_agent_hosts": "list the hosts in allowed_hosts in the harness's manifest",
+    "jobs_dir": "suss writes each job under results/<lane>/<arm>/, or checks/ with --check",
+    "job_name": "suss names each job from the run's stamp and its trial number",
+}
 
-    Harbor's own parser reads it, so every spelling of the options counts,
-    and of a repeated option Harbor takes the last.
+
+@functools.cache
+def _harbor_run() -> typer.core.TyperCommand:
+    return typer.main.get_command(harbor_app).commands["run"]
+
+
+def _options(argv: Sequence[str]) -> set[str]:
     """
-    run = typer.main.get_command(harbor_app).commands["run"]
-    params = run.make_context("run", argv[2:], resilient_parsing=True).params
-    if (params["job_name"], str(params["jobs_dir"])) != (job_name, str(jobs_dir)):
-        raise ValueError(
-            "the arguments after -- move the agent job away from its regrade:"
-            f" harbor would write {params['jobs_dir']}/{params['job_name']}"
-            f" instead of {jobs_dir}/{job_name}"
-        )
+    The name of each option Harbor's `run` parser finds in the `harbor run`
+    command `argv`.
+
+    Raises ValueError with the parser's own message for an argv it rejects.
+    """
+    run = _harbor_run()
+    # The parser alone, so that no option's callback runs and no value is checked.
+    parser = run.make_parser(run.context_class(run, info_name="run"))
+    try:
+        _, _, found = parser.parse_args(list(argv[2:]))
+    except Exception as error:
+        message = getattr(error, "format_message", lambda: str(error))()
+        raise ValueError(f"harbor run would refuse the arguments after --: {message}") from None
+    return {param.name for param in found}
+
+
+def _refuse_options_suss_sets(harbor_args: Sequence[str], set_by_suss: set[str]) -> None:
+    """
+    Raise ValueError naming an option in `set_by_suss` that `harbor_args`
+    include, whatever its value, since Harbor would take theirs over suss's.
+    """
+    passed = _options(["harbor", "run", *harbor_args]) & set_by_suss
+    for param in _harbor_run().params:
+        if param.name in passed:
+            raise ValueError(
+                f"{'/'.join(param.opts)} can't be passed after --: {_SET_BY_SUSS[param.name]}"
+            )
