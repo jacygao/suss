@@ -354,6 +354,20 @@ def test_a_later_lane_that_cannot_be_built_is_refused_before_any_lane_runs(proje
     assert not (project.directory / "lanes" / "pro-go").exists()
 
 
+@pytest.mark.parametrize("path", ["lanes/pro-python", "lanes"])
+def test_a_file_where_a_lane_directory_goes_is_refused_before_any_lane_runs(project, capfd, path):
+    stray = project.directory / path
+    stray.parent.mkdir(parents=True, exist_ok=True)
+    stray.write_text("not a directory")
+
+    code = project.run("peer-review", "pro-go", "pro-python")
+
+    err = capfd.readouterr().err
+    assert code != 0
+    assert err.startswith("error: ") and str(stray) in err, err
+    assert project.records() == []
+
+
 def test_a_check_lane_that_cannot_be_built_is_refused_before_anything_runs(project, capfd):
     stray = project.directory / "lanes" / "pro-go-check" / "notes.txt"
     stray.parent.mkdir(parents=True)
@@ -367,12 +381,19 @@ def test_a_check_lane_that_cannot_be_built_is_refused_before_anything_runs(proje
 
 
 @pytest.mark.parametrize(
-    "contents, message", [(None, "task.toml: no such file"), ("[agent\n", "task.toml: not valid TOML")]
+    "contents, message",
+    [
+        (None, "task.toml: no such file"),
+        ("[agent\n", "task.toml: not valid TOML"),
+        ("directory", "task.toml: cannot be read"),
+    ],
 )
 def test_a_task_toml_suss_cannot_read_is_an_error_naming_it(project, capfd, contents, message):
     task = project.checkout / "v2" / "tasks" / "instance_ansible__ansible-ggg"
     task.mkdir()
-    if contents is not None:
+    if contents == "directory":
+        (task / "task.toml").mkdir()
+    elif contents is not None:
         (task / "task.toml").write_text(contents)
     # With no max_seconds nothing reads the timeout, so the image reader meets the file first.
     project.write_toml(max_seconds="2700" if contents else None)

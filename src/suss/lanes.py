@@ -76,9 +76,14 @@ def check_buildable(lanes: Path, lane: str, check: bool = False) -> None:
     """
     Refuse a lane whose directory `build` would refuse, changing nothing.
 
-    Raises LaneError when the directory holds anything but links.
+    Raises LaneError when the directory, or the lanes directory holding it, is
+    something other than a directory, or when it holds anything but links.
     """
     directory = _directory(lanes, lane, check)
+    for path in (Path(lanes), directory):
+        # A dangling link does not exist, and still blocks the mkdir.
+        if (path.exists() or path.is_symlink()) and not path.is_dir():
+            raise LaneError(f"{path}: not a directory, so no lane can be built there")
     if not directory.is_dir():
         return
     for entry in directory.iterdir():
@@ -137,12 +142,14 @@ def _agent_timeout(task: Path) -> float:
 
 
 def _read_task(path: Path) -> dict:
-    """Read a task.toml, raising LaneError naming it when it is missing or is not TOML."""
+    """Read a task.toml, raising LaneError naming it when it cannot be read or is not TOML."""
     try:
         with path.open("rb") as file:
             return tomllib.load(file)
     except FileNotFoundError:
         raise LaneError(f"{path}: no such file") from None
+    except OSError as error:
+        raise LaneError(f"{path}: cannot be read: {error.strerror}") from None
     except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
         raise LaneError(f"{path}: not valid TOML: {error}") from None
 
