@@ -1,10 +1,18 @@
-"""A lane's directory of links to its task directories in the SWE-bench Pro checkout, which Harbor reads as `-p lanes/<lane>`."""
+"""
+A lane's directory of links to its task directories in the SWE-bench Pro
+checkout, which Harbor reads as `-p lanes/<lane>`, and the checks made on a
+lane before any job.
+"""
 
+import tomllib
+from collections.abc import Iterable
 from pathlib import Path
+
+from suss.config import Arm
 
 
 class LaneError(Exception):
-    """A lane cannot be built from the checkout given."""
+    """A lane cannot be built from the checkout given, or cannot run the arm given."""
 
 
 # Each lane's owners, or None for the lane listed in v2/hard51_ids.txt.
@@ -65,6 +73,42 @@ def build(checkout: Path, lane: str, lanes: Path, check: bool = False) -> Path:
     for task in found:
         (directory / task.name).symlink_to(task)
     return directory
+
+
+def check_max_seconds(arm: Arm, lane: str, tasks: Iterable[Path]) -> None:
+    """
+    Refuse an arm whose max_seconds is not under the agent timeout of every task.
+
+    Harbor stops a trial at its agent timeout, before suss can capture the
+    patch, so max_seconds must be strictly under the shortest one in the lane.
+    An arm with no max_seconds passes. `tasks` are the lane's task directories.
+    Raises LaneError naming the task.toml of a task with no [agent] timeout_sec.
+    """
+    if arm.max_seconds is None:
+        return
+    shortest = min(_agent_timeout(task) for task in tasks)
+    if arm.max_seconds >= shortest:
+        raise LaneError(
+            f"arm {arm.name} sets max_seconds = {_seconds(arm.max_seconds)}, which must be "
+            f"under the {_seconds(shortest)}-second agent timeout of the tasks in {lane}"
+        )
+
+
+def _agent_timeout(task: Path) -> float:
+    path = task / "task.toml"
+    with path.open("rb") as file:
+        data = tomllib.load(file)
+    timeout = data.get("agent", {}).get("timeout_sec")
+    if not isinstance(timeout, int | float):
+        raise LaneError(f"{path}: no [agent] timeout_sec")
+    return timeout
+
+
+def _seconds(value: float) -> str:
+    # A TOML float such as 3000.0 prints as 3000, and a fraction as it is.
+    if float(value).is_integer():
+        return str(int(value))
+    return str(value)
 
 
 def _owner(name: str) -> str | None:

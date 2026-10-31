@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from suss import lanes
+from suss import config, lanes
 from suss.lanes import LaneError
 
 SPEC = Path(__file__).resolve().parent.parent / "docs" / "specs" / "suss-spec.md"
@@ -203,3 +203,113 @@ def test_a_lane_with_no_tasks_in_the_checkout_is_an_error_naming_it(tmp_path: Pa
 
     with pytest.raises(LaneError, match="pro-go"):
         lanes.build(checkout, "pro-go", tmp_path / "lanes", check=True)
+
+
+TOP = """\
+swe_bench_pro = "../SWE-bench_Pro-os"
+dataset = "swe-bench-pro-v2"
+environment = "docker"
+k = 1
+concurrency = 1
+"""
+
+
+def spec_timeout_error() -> str:
+    """The error the spec shows for a max_seconds not under the timeout, unwrapped."""
+    blocks = re.findall(r"```\n\s*(\$ suss run .*?)```", SPEC.read_text(), re.DOTALL)
+    errors = [block for block in blocks if "agent timeout" in block]
+    assert len(errors) == 1, f"expected one agent timeout error in {SPEC}, found {len(errors)}"
+    printed = errors[0].split("\n", 1)[1]
+    return " ".join(printed.split())
+
+
+def arm(tmp_path: Path, toml: str, name: str = "peer-review") -> config.Arm:
+    path = tmp_path / "suss.toml"
+    path.write_text(toml)
+    return config.load(path, name).arm
+
+
+def timed_tasks(tmp_path: Path, *timeouts: object) -> list[Path]:
+    """One task directory per timeout, named in order; None leaves timeout_sec out."""
+    directories = []
+    for number, timeout in enumerate(timeouts):
+        directory = tmp_path / "tasks" / f"instance_owner__repo-{number:04d}"
+        directory.mkdir(parents=True)
+        agent = 'network_mode = "no-network"\n'
+        if timeout is not None:
+            agent += f"timeout_sec = {timeout}\n"
+        (directory / "task.toml").write_text(f'version = "1.0"\n\n[agent]\n{agent}')
+        directories.append(directory)
+    return directories
+
+
+def test_max_seconds_equal_to_the_timeout_is_the_error_the_spec_shows(tmp_path: Path):
+    peer_review = arm(tmp_path, TOP + '[arms.peer-review]\nharness = "h"\nmax_seconds = 3000\n')
+
+    with pytest.raises(LaneError) as error:
+        lanes.check_max_seconds(peer_review, "pro-go", timed_tasks(tmp_path, "3000.0", "3000.0"))
+
+    assert f"error: {error.value}" == spec_timeout_error()
+
+
+def test_max_seconds_one_under_the_timeout_passes(tmp_path: Path):
+    peer_review = arm(tmp_path, TOP + '[arms.peer-review]\nharness = "h"\nmax_seconds = 2999\n')
+
+    lanes.check_max_seconds(peer_review, "pro-go", timed_tasks(tmp_path, "3000.0", "3000.0"))
+
+
+def test_max_seconds_is_checked_against_the_shortest_timeout_in_the_lane(tmp_path: Path):
+    peer_review = arm(tmp_path, TOP + '[arms.peer-review]\nharness = "h"\nmax_seconds = 2000\n')
+    lane = timed_tasks(tmp_path, "3000.0", "1800.0", "2400.0")
+
+    with pytest.raises(LaneError) as error:
+        lanes.check_max_seconds(peer_review, "pro-go", lane)
+
+    assert "under the 1800-second agent timeout" in str(error.value)
+
+
+def test_the_top_level_max_seconds_applies_to_an_arm_that_sets_none(tmp_path: Path):
+    peer_review = arm(tmp_path, TOP + 'max_seconds = 3000\n[arms.peer-review]\nharness = "h"\n')
+
+    with pytest.raises(LaneError) as error:
+        lanes.check_max_seconds(peer_review, "pro-go", timed_tasks(tmp_path, "3000.0"))
+
+    assert "sets max_seconds = 3000," in str(error.value)
+
+
+def test_an_arm_max_seconds_is_checked_in_place_of_the_top_level_one(tmp_path: Path):
+    toml = TOP + 'max_seconds = 2700\n[arms.peer-review]\nharness = "h"\nmax_seconds = 3000\n'
+    peer_review = arm(tmp_path, toml)
+
+    with pytest.raises(LaneError) as error:
+        lanes.check_max_seconds(peer_review, "pro-go", timed_tasks(tmp_path, "3000.0"))
+
+    assert "sets max_seconds = 3000," in str(error.value)
+
+
+def test_an_arm_with_no_max_seconds_anywhere_passes(tmp_path: Path):
+    peer_review = arm(tmp_path, TOP + '[arms.peer-review]\nharness = "h"\n')
+
+    lanes.check_max_seconds(peer_review, "pro-go", timed_tasks(tmp_path, "3000.0"))
+
+
+def test_whole_floats_print_as_integers_and_fractions_as_they_are(tmp_path: Path):
+    peer_review = arm(tmp_path, TOP + '[arms.peer-review]\nharness = "h"\nmax_seconds = 3000.0\n')
+
+    with pytest.raises(LaneError) as error:
+        lanes.check_max_seconds(peer_review, "pro-go", timed_tasks(tmp_path, "2999.5"))
+
+    assert "sets max_seconds = 3000, which must be under the 2999.5-second agent timeout" in str(
+        error.value
+    )
+
+
+def test_a_task_with_no_timeout_is_an_error_naming_the_task(tmp_path: Path):
+    peer_review = arm(tmp_path, TOP + '[arms.peer-review]\nharness = "h"\nmax_seconds = 10\n')
+    lane = timed_tasks(tmp_path, "3000.0", None)
+
+    with pytest.raises(LaneError) as error:
+        lanes.check_max_seconds(peer_review, "pro-go", lane)
+
+    assert lane[1].name in str(error.value)
+    assert "timeout_sec" in str(error.value)
