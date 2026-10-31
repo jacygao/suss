@@ -34,22 +34,39 @@ class Config:
     env: dict[str, str]
 
 
+REQUIRED = ("swe_bench_pro", "dataset", "environment", "k", "concurrency")
+REQUIRED_IN_ARM = ("harness",)
+
+
 def load(path: Path, arm: str) -> Config:
     """
     Read the settings `arm` runs with from the suss.toml at `path`.
 
     Paths in the file resolve from the directory holding it, whatever the
-    current directory is. Raises ConfigError for an arm the file does not
-    define, or a .env line that is not NAME=VALUE.
+    current directory is. The caps are optional. Raises ConfigError, naming
+    the file, when it is missing or is not TOML, when a required key is
+    missing, when the file does not define `arm`, or when a .env line is not
+    NAME=VALUE.
     """
     path = Path(path).resolve()
     directory = path.parent
-    with path.open("rb") as file:
-        data = tomllib.load(file)
+    try:
+        with path.open("rb") as file:
+            data = tomllib.load(file)
+    except FileNotFoundError:
+        raise ConfigError(f"{path}: no such file") from None
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
+        raise ConfigError(f"{path}: not valid TOML: {error}") from None
+    for key in REQUIRED:
+        if key not in data:
+            raise ConfigError(f"{path}: no {key!r}")
     arms = data.get("arms", {})
     if arm not in arms:
         raise ConfigError(f"arm {arm} is not defined in {path}")
     table = arms[arm]
+    for key in REQUIRED_IN_ARM:
+        if key not in table:
+            raise ConfigError(f"{path}: [arms.{arm}] has no {key!r}")
     return Config(
         path=path,
         swe_bench_pro=(directory / data["swe_bench_pro"]).resolve(),

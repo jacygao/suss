@@ -232,3 +232,54 @@ def test_an_arm_the_file_does_not_define_is_an_error_naming_both(spec_config: Pa
 
     assert "no-such-arm" in str(error.value)
     assert str(spec_config) in str(error.value)
+
+
+def test_a_missing_suss_toml_is_an_error_naming_it(tmp_path: Path):
+    path = tmp_path / "suss.toml"
+
+    with pytest.raises(config.ConfigError) as error:
+        config.load(path, "a")
+
+    assert str(path) in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [b"k = \n", b"k = 1\nk = 2\n", b'dataset = "\xff"\n'],
+    ids=["no-value", "duplicate-key", "not-utf-8"],
+)
+def test_a_suss_toml_that_is_not_toml_is_an_error_naming_it(tmp_path: Path, content: bytes):
+    path = tmp_path / "suss.toml"
+    path.write_bytes(content)
+
+    with pytest.raises(config.ConfigError) as error:
+        config.load(path, "a")
+
+    assert str(path) in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "key", ["swe_bench_pro", "dataset", "environment", "k", "concurrency"]
+)
+def test_a_missing_top_level_key_is_an_error_naming_it_and_the_file(tmp_path: Path, key: str):
+    lines = [line for line in TOP.splitlines() if not line.startswith(f"{key} =")]
+    path = write_config(tmp_path, "\n".join(lines) + '\n[arms.a]\nharness = "h"\n')
+
+    with pytest.raises(config.ConfigError) as error:
+        config.load(path, "a")
+
+    assert repr(key) in str(error.value)
+    assert str(path) in str(error.value)
+
+
+def test_an_arm_without_a_harness_is_an_error_naming_the_key_the_arm_and_the_file(
+    tmp_path: Path,
+):
+    path = write_config(tmp_path, TOP + '[arms.lonely]\nbaseline = "claude-code"\n')
+
+    with pytest.raises(config.ConfigError) as error:
+        config.load(path, "lonely")
+
+    assert "'harness'" in str(error.value)
+    assert "lonely" in str(error.value)
+    assert str(path) in str(error.value)
