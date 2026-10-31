@@ -32,8 +32,8 @@ peer-review − claude-code   +6% [+1%, +11%]
 | Dependency | Version | Needed for |
 |---|---|---|
 | Harbor | 0.22.0 | Runs each task in a sandbox, runs suss in it, and grades the result with the task's own verifier. |
-| Modal | 1.5.1 or later, and the account Harbor's `modal` environment uses | The sandboxes, when `environment` in `suss.toml` is `modal`. Earlier versions cannot take a network policy per phase. |
-| Docker | any | The sandboxes, when `environment` is `docker`. |
+| Modal | 1.5.1 or later, and the account Harbor's `modal` environment uses | The sandboxes. Every SWE-bench Pro lane needs `environment = "modal"` in `suss.toml`. Versions before 1.5.1 cannot take a network policy per phase. |
+| Docker | any | The sandboxes, when `environment` is `docker`, which no SWE-bench Pro lane uses. |
 | SWE-bench Pro | a checkout of `scaleapi/SWE-bench_Pro-os` | The tasks, under `v2/tasks/`, and the regrading agent, under `v2/tooling/`. |
 | Python | 3.12 | Suss itself, which Harbor loads as a custom agent. |
 | `uv` | any | Installs suss and Harbor. |
@@ -317,7 +317,8 @@ params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "d
 - `params` is passed to the harness as it stands, as the JSON file `--params`
   names. Suss reads none of it.
 - `environment` is passed to `harbor run` as `-e`: `modal` runs the sandboxes on
-  Modal, and `docker` runs them on this machine.
+  Modal, and `docker` runs them on this machine. A SWE-bench Pro lane needs
+  `modal`.
 - `max_cost_usd` and `max_seconds` cap each trial: the harness keeps its
   models' spend under `max_cost_usd`, and suss stops `run` after `max_seconds`.
   Set at the top, they apply to every arm, and an arm may set its own.
