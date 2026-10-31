@@ -110,6 +110,15 @@ def test_a_manifest_that_is_not_toml_names_the_path(adapter):
     assert str(directory / "suss-harness.toml") in str(error.value)
 
 
+def test_a_manifest_that_is_not_utf8_names_the_path(tmp_path):
+    (tmp_path / "suss-harness.toml").write_text("[harness]\n" + REQUIRED, encoding="utf-16")
+
+    with pytest.raises(ManifestError) as error:
+        load_manifest(tmp_path)
+
+    assert str(tmp_path / "suss-harness.toml") in str(error.value)
+
+
 @pytest.mark.parametrize(
     "field, value",
     [

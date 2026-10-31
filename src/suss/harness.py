@@ -41,7 +41,7 @@ def load_manifest(adapter_dir: Path) -> Manifest:
             document = tomllib.load(f)
     except FileNotFoundError:
         raise ManifestError(f"{path}: no such file") from None
-    except tomllib.TOMLDecodeError as error:
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
         raise ManifestError(f"{path}: not valid TOML: {error}") from None
 
     table = document.get("harness")
