@@ -242,15 +242,39 @@ def test_run_seconds_measures_run_alone(local_environment, box):
     assert 0.5 <= result.run_seconds < 1.5, "run_seconds includes more than run"
 
 
-@pytest.mark.parametrize("command", ["install", "run"])
-def test_commands_run_as_the_environments_default_user(local_environment, box, command):
-    # Harbor sets the task's agent user as the default before the agent's
-    # phases. The stand-in refuses any user, so reaching it proves the
-    # command did not override the default.
-    local_environment.default_user = "agent"
+def test_run_seconds_leaves_out_suss_own_commands(local_environment, box, monkeypatch):
+    exec_as_given = local_environment.exec
 
-    with pytest.raises(NotImplementedError, match="'agent'"):
-        if command == "install":
-            install_in(local_environment, box)
-        else:
-            run_in(local_environment, box)
+    async def slow_unless_harness(command, **kwargs):
+        if box.paths.adapter not in command:
+            await asyncio.sleep(1)
+        return await exec_as_given(command, **kwargs)
+
+    monkeypatch.setattr(local_environment, "exec", slow_unless_harness)
+    result = run_in(local_environment, box)
+
+    assert result.run_seconds < 1, "run_seconds includes a command suss ran itself"
+
+
+@pytest.mark.parametrize("command", ["install", "run"])
+def test_commands_leave_the_user_to_the_environments_default(
+    local_environment, box, monkeypatch, command
+):
+    # Harbor sets the task's agent user as the default before each phase, and
+    # exec falls back to it only where no user is given.
+    exec_as_given = local_environment.exec
+    users = []
+
+    async def recording(command, **kwargs):
+        if box.paths.adapter in command:
+            users.append(kwargs.get("user"))
+        return await exec_as_given(command, **kwargs)
+
+    monkeypatch.setattr(local_environment, "exec", recording)
+    if command == "install":
+        install_in(local_environment, box)
+    else:
+        run_in(local_environment, box)
+
+    assert box.started(command)
+    assert users == [None], "the harness's command overrode the default user"

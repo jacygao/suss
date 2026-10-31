@@ -128,7 +128,7 @@ async def install(
     """
     if manifest.install is None:
         return None
-    return await _start(
+    exit_code, _ = await _start(
         env,
         manifest,
         manifest.install,
@@ -138,6 +138,7 @@ async def install(
         paths,
         INSTALL_LOG,
     )
+    return exit_code
 
 
 async def run(
@@ -170,11 +171,9 @@ async def run(
     if arm.max_cost_usd is not None:
         args += ["--max-cost-usd", str(arm.max_cost_usd)]
 
-    started = time.monotonic()
-    exit_code = await _start(
+    exit_code, run_seconds = await _start(
         env, manifest, manifest.run, args, workspace, dotenv, paths, RUN_LOG, arm.max_seconds
     )
-    run_seconds = time.monotonic() - started
 
     if exit_code is None:
         status = "timed-out"
@@ -199,10 +198,12 @@ async def _start(
     paths: SandboxPaths,
     log: str,
     timeout_sec: float | None = None,
-) -> int | None:
+) -> tuple[int | None, float]:
     """
-    Run an adapter's script in the workspace, with its output in the log, and
-    return its exit code, or None when it was stopped at the timeout.
+    Run an adapter's script in the workspace, with its output in the log.
+
+    Returns its exit code, or None when it was stopped at the timeout, and the
+    seconds it ran for, which leave out the commands suss runs to prepare it.
 
     No `user` is passed to exec, so the command runs as the environment's
     default user, which Harbor sets to the task's agent user.
@@ -224,13 +225,14 @@ async def _start(
     )
     # Only the named variables, so nothing else in the .env reaches the harness.
     passed = {name: dotenv[name] for name in manifest.env if name in dotenv}
+    started = time.monotonic()
     try:
         result = await env.exec(command, cwd=workspace, env=passed, timeout_sec=timeout_sec)
     except RuntimeError as error:
-        if _is_exec_timeout(error):
-            return None
-        raise
-    return result.return_code
+        if not _is_exec_timeout(error):
+            raise
+        return None, time.monotonic() - started
+    return result.return_code, time.monotonic() - started
 
 
 def _is_exec_timeout(error: RuntimeError) -> bool:
