@@ -380,7 +380,7 @@ def test_a_check_lane_that_cannot_be_built_is_refused_before_anything_runs(proje
     assert project.records() == []
 
 
-# With no max_seconds nothing reads the timeout, so the image reader meets the file first.
+# With no max_seconds nothing reads the timeout, so a task.toml with none reaches the image reader.
 @pytest.mark.parametrize(
     "contents, max_seconds, message",
     [
@@ -409,6 +409,24 @@ def test_a_task_toml_suss_cannot_read_is_an_error_naming_it(
     assert code != 0
     assert err.startswith("error: ") and f"instance_ansible__ansible-ggg/{message}" in err, err
     assert_nothing_ran(project)
+
+
+@pytest.mark.parametrize("check", [False, True], ids=["run", "check"])
+def test_a_later_lanes_broken_task_toml_is_refused_on_modal_with_no_max_seconds(
+    project, capfd, check
+):
+    # Sorts after the lane's first task, which is all a check runs.
+    task = project.checkout / "v2" / "tasks" / "instance_ansible__ansible-zzz"
+    task.mkdir()
+    (task / "task.toml").write_text("[agent\n")
+    project.write_toml(environment="modal", max_seconds=None)
+
+    code = project.run("peer-review", "pro-go", "pro-python", *(["--check"] if check else []))
+
+    err = capfd.readouterr().err
+    assert_nothing_ran(project)
+    assert code != 0
+    assert err.startswith("error: ") and "instance_ansible__ansible-zzz/task.toml" in err, err
 
 
 def test_the_max_seconds_error_is_printed_as_the_spec_shows(project, capfd):

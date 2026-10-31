@@ -5,7 +5,7 @@ lane before any job.
 """
 
 import tomllib
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from suss.config import Arm
@@ -95,19 +95,28 @@ def _directory(lanes: Path, lane: str, check: bool) -> Path:
     return Path(lanes) / (f"{lane}-check" if check else lane)
 
 
-def check_max_seconds(arm: Arm, lane: str, tasks: Iterable[Path]) -> None:
+def read_tasks(tasks: Iterable[Path]) -> dict[Path, dict]:
+    """
+    Each task directory's task.toml, read once for every check made on it.
+
+    Raises LaneError naming a task.toml that is missing, cannot be read, or
+    is not TOML.
+    """
+    return {task: _read_task(task / "task.toml") for task in tasks}
+
+
+def check_max_seconds(arm: Arm, lane: str, tasks: Mapping[Path, dict]) -> None:
     """
     Refuse an arm whose max_seconds is not under the agent timeout of every task.
 
     Harbor stops a trial at its agent timeout, before suss can capture the
     patch, so max_seconds must be strictly under the shortest one in the lane.
-    An arm with no max_seconds passes. `tasks` are the lane's task directories.
-    Raises LaneError naming a task.toml that is missing, is not TOML, or has
-    no [agent] timeout_sec.
+    An arm with no max_seconds passes. `tasks` are the lane's, as `read_tasks`
+    gives them. Raises LaneError naming a task.toml with no [agent] timeout_sec.
     """
     if arm.max_seconds is None:
         return
-    shortest = min(_agent_timeout(task) for task in tasks)
+    shortest = min(_agent_timeout(task, toml) for task, toml in tasks.items())
     if arm.max_seconds >= shortest:
         raise LaneError(
             f"arm {arm.name} sets max_seconds = {_seconds(arm.max_seconds)}, which must be "
@@ -115,35 +124,35 @@ def check_max_seconds(arm: Arm, lane: str, tasks: Iterable[Path]) -> None:
         )
 
 
-def images(tasks: Iterable[Path]) -> list[str]:
+def images(tasks: Mapping[Path, dict]) -> list[str]:
     """
     The images the tasks name in `[environment] docker_image`, each once, in
     the order of the first task naming it.
 
-    Raises LaneError naming a task.toml that is missing, is not TOML, or
-    names no image.
+    `tasks` are as `read_tasks` gives them. Raises LaneError naming a
+    task.toml that names no image.
     """
     found = {}
-    for task in tasks:
-        path = task / "task.toml"
-        image = _field(path, "environment", "docker_image")
+    for task, toml in tasks.items():
+        image = _field(toml, "environment", "docker_image")
         if not isinstance(image, str) or not image:
-            raise LaneError(f"{path}: no [environment] docker_image, so suss cannot pull its image")
+            raise LaneError(
+                f"{task / 'task.toml'}: no [environment] docker_image, so suss cannot pull its image"
+            )
         found[image] = None
     return list(found)
 
 
-def _agent_timeout(task: Path) -> float:
-    path = task / "task.toml"
-    timeout = _field(path, "agent", "timeout_sec")
+def _agent_timeout(task: Path, toml: dict) -> float:
+    timeout = _field(toml, "agent", "timeout_sec")
     if not isinstance(timeout, int | float):
-        raise LaneError(f"{path}: no [agent] timeout_sec")
+        raise LaneError(f"{task / 'task.toml'}: no [agent] timeout_sec")
     return timeout
 
 
-def _field(path: Path, table: str, key: str) -> object:
+def _field(toml: dict, table: str, key: str) -> object:
     """The task.toml's `key` in `[table]`, or None where either is missing or `table` is not a table."""
-    found = _read_task(path).get(table)
+    found = toml.get(table)
     return found.get(key) if isinstance(found, dict) else None
 
 
