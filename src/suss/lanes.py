@@ -5,7 +5,7 @@ lane before any job.
 """
 
 import tomllib
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from suss.config import Arm
@@ -62,31 +62,61 @@ def build(checkout: Path, lane: str, lanes: Path, check: bool = False) -> Path:
     found = tasks(checkout, lane)
     if check:
         found = found[:1]
-    directory = Path(lanes) / (f"{lane}-check" if check else lane)
+    check_buildable(lanes, lane, check)
+    directory = _directory(lanes, lane, check)
     directory.mkdir(parents=True, exist_ok=True)
-    entries = list(directory.iterdir())
-    for entry in entries:
-        if not entry.is_symlink():
-            raise LaneError(f"{entry}: not a link, so not left by a lane build")
-    for entry in entries:
+    for entry in directory.iterdir():
         entry.unlink()
     for task in found:
         (directory / task.name).symlink_to(task)
     return directory
 
 
-def check_max_seconds(arm: Arm, lane: str, tasks: Iterable[Path]) -> None:
+def check_buildable(lanes: Path, lane: str, check: bool = False) -> None:
+    """
+    Refuse a lane whose directory `build` would refuse, changing nothing.
+
+    Raises LaneError when the directory, or the lanes directory holding it, is
+    something other than a directory, or when it holds anything but links.
+    """
+    directory = _directory(lanes, lane, check)
+    for path in (Path(lanes), directory):
+        # A dangling link does not exist, and still blocks the mkdir.
+        if (path.exists() or path.is_symlink()) and not path.is_dir():
+            raise LaneError(f"{path}: not a directory, so no lane can be built there")
+    if not directory.is_dir():
+        return
+    for entry in directory.iterdir():
+        if not entry.is_symlink():
+            raise LaneError(f"{entry}: not a link, so not left by a lane build")
+
+
+def _directory(lanes: Path, lane: str, check: bool) -> Path:
+    return Path(lanes) / (f"{lane}-check" if check else lane)
+
+
+def read_tasks(tasks: Iterable[Path]) -> dict[Path, dict]:
+    """
+    Each task directory's task.toml, read once for every check made on it.
+
+    Raises LaneError naming a task.toml that is missing, cannot be read, or
+    is not TOML.
+    """
+    return {task: _read_task(task / "task.toml") for task in tasks}
+
+
+def check_max_seconds(arm: Arm, lane: str, tasks: Mapping[Path, dict]) -> None:
     """
     Refuse an arm whose max_seconds is not under the agent timeout of every task.
 
     Harbor stops a trial at its agent timeout, before suss can capture the
     patch, so max_seconds must be strictly under the shortest one in the lane.
-    An arm with no max_seconds passes. `tasks` are the lane's task directories.
-    Raises LaneError naming the task.toml of a task with no [agent] timeout_sec.
+    An arm with no max_seconds passes. `tasks` are the lane's, as `read_tasks`
+    gives them. Raises LaneError naming a task.toml with no [agent] timeout_sec.
     """
     if arm.max_seconds is None:
         return
-    shortest = min(_agent_timeout(task) for task in tasks)
+    shortest = min(_agent_timeout(task, toml) for task, toml in tasks.items())
     if arm.max_seconds >= shortest:
         raise LaneError(
             f"arm {arm.name} sets max_seconds = {_seconds(arm.max_seconds)}, which must be "
@@ -94,14 +124,49 @@ def check_max_seconds(arm: Arm, lane: str, tasks: Iterable[Path]) -> None:
         )
 
 
-def _agent_timeout(task: Path) -> float:
-    path = task / "task.toml"
-    with path.open("rb") as file:
-        data = tomllib.load(file)
-    timeout = data.get("agent", {}).get("timeout_sec")
+def images(tasks: Mapping[Path, dict]) -> list[str]:
+    """
+    The images the tasks name in `[environment] docker_image`, each once, in
+    the order of the first task naming it.
+
+    `tasks` are as `read_tasks` gives them. Raises LaneError naming a
+    task.toml that names no image.
+    """
+    found = {}
+    for task, toml in tasks.items():
+        image = _field(toml, "environment", "docker_image")
+        if not isinstance(image, str) or not image:
+            raise LaneError(
+                f"{task / 'task.toml'}: no [environment] docker_image, so suss cannot pull its image"
+            )
+        found[image] = None
+    return list(found)
+
+
+def _agent_timeout(task: Path, toml: dict) -> float:
+    timeout = _field(toml, "agent", "timeout_sec")
     if not isinstance(timeout, int | float):
-        raise LaneError(f"{path}: no [agent] timeout_sec")
+        raise LaneError(f"{task / 'task.toml'}: no [agent] timeout_sec")
     return timeout
+
+
+def _field(toml: dict, table: str, key: str) -> object:
+    """The task.toml's `key` in `[table]`, or None where either is missing or `table` is not a table."""
+    found = toml.get(table)
+    return found.get(key) if isinstance(found, dict) else None
+
+
+def _read_task(path: Path) -> dict:
+    """Read a task.toml, raising LaneError naming it when it cannot be read or is not TOML."""
+    try:
+        with path.open("rb") as file:
+            return tomllib.load(file)
+    except FileNotFoundError:
+        raise LaneError(f"{path}: no such file") from None
+    except OSError as error:
+        raise LaneError(f"{path}: cannot be read: {error.strerror}") from None
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
+        raise LaneError(f"{path}: not valid TOML: {error}") from None
 
 
 def _seconds(value: float) -> str:

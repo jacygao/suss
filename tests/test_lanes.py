@@ -229,8 +229,8 @@ def arm(tmp_path: Path, toml: str, name: str = "peer-review") -> config.Arm:
     return config.load(path, name).arm
 
 
-def timed_tasks(tmp_path: Path, *timeouts: object) -> list[Path]:
-    """One task directory per timeout, named in order; None leaves timeout_sec out."""
+def timed_tasks(tmp_path: Path, *timeouts: object) -> dict[Path, dict]:
+    """One task per timeout, named in order and read; None leaves timeout_sec out."""
     directories = []
     for number, timeout in enumerate(timeouts):
         directory = tmp_path / "tasks" / f"instance_owner__repo-{number:04d}"
@@ -240,7 +240,7 @@ def timed_tasks(tmp_path: Path, *timeouts: object) -> list[Path]:
             agent += f"timeout_sec = {timeout}\n"
         (directory / "task.toml").write_text(f'version = "1.0"\n\n[agent]\n{agent}')
         directories.append(directory)
-    return directories
+    return lanes.read_tasks(directories)
 
 
 def test_max_seconds_equal_to_the_timeout_is_the_error_the_spec_shows(tmp_path: Path):
@@ -311,5 +311,5 @@ def test_a_task_with_no_timeout_is_an_error_naming_the_task(tmp_path: Path):
     with pytest.raises(LaneError) as error:
         lanes.check_max_seconds(peer_review, "pro-go", lane)
 
-    assert lane[1].name in str(error.value)
+    assert list(lane)[1].name in str(error.value)
     assert "timeout_sec" in str(error.value)

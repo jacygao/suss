@@ -9,6 +9,9 @@ dependencies = [
     "harbor==0.22.0",
 ]
 
+[project.scripts]
+suss = "suss.cli:main"
+
 [dependency-groups]
 dev = [
     "pytest",
