@@ -204,7 +204,7 @@ path, as it names any other adapter, and suss runs it the same way.
 
 | Adapter | Params | What it does |
 |---|---|---|
-| `adapters/claude-code/` | `version`, `model`, `effort` | `install` installs Claude Code at `version` with its native installer. `run` runs it headless, with the instruction as its prompt, every tool allowed except `WebSearch` and `WebFetch`, and `--max-cost-usd` as its `--max-budget-usd`. |
+| `adapters/claude-code/` | `version`, `model`, `effort` | `install` installs Claude Code at `version` with its native installer. `run` runs it headless, with the instruction as its prompt, every tool allowed except `WebSearch` and `WebFetch`, and `--max-cost-usd` as its `--max-budget-usd`. `run` exits 0 when Claude Code stops at that budget. |
 
 ## 5. Lanes
 
