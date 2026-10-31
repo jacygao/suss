@@ -32,11 +32,18 @@ peer-review − claude-code   +6% [+1%, +11%]
 | Dependency | Version | Needed for |
 |---|---|---|
 | Harbor | 0.22.0 | Runs each task in a sandbox, runs suss in it, and grades the result with the task's own verifier. |
-| Modal | 1.5.1 or later, and the account Harbor's `modal` environment uses | The sandboxes. Every SWE-bench Pro lane needs `environment = "modal"` in `suss.toml`. Versions before 1.5.1 cannot take a network policy per phase. |
-| Docker | any | The sandboxes, when `environment` is `docker`, which no SWE-bench Pro lane uses. |
+| Docker | Docker Desktop 4.86.0 or later on macOS. On Linux and Windows, a Docker engine whose kernel has `CONFIG_NFT_FIB_INET`. | The sandboxes, including every SWE-bench Pro lane's, with `environment = "docker"` in `suss.toml`. Without `CONFIG_NFT_FIB_INET`, Harbor refuses every SWE-bench Pro task. |
+| Modal | 1.5.1 or later, and the account Harbor's `modal` environment uses | The sandboxes, when `environment` is `modal`. Versions before 1.5.1 cannot take a network policy per phase. |
 | SWE-bench Pro | a checkout of `scaleapi/SWE-bench_Pro-os` | The tasks, under `v2/tasks/`, and the regrading agent, under `v2/tooling/`. |
 | Python | 3.12 | Suss itself, which Harbor loads as a custom agent. |
 | `uv` | any | Installs suss and Harbor. |
+
+A Docker engine's kernel has the option when this prints `CONFIG_NFT_FIB_INET=y`
+or `CONFIG_NFT_FIB_INET=m`:
+
+```bash
+docker run --rm alpine:3.19 sh -c 'zcat /proc/config.gz | grep NFT_FIB_INET'
+```
 
 ## 3. A trial
 
@@ -254,12 +261,12 @@ builds `lanes/<lane>/` as a directory of links to the lane's task directories in
 the checkout. Then, K times, it runs an agent job and its regrade:
 
 ```bash
-harbor run -p lanes/pro-go -e modal -n 16 -k 1 \
+harbor run -p lanes/pro-go -e docker -n 16 -k 1 \
   -a suss.agent:SussAgent --ak arm=peer-review --ak config=suss.toml \
   --allow-agent-host api.anthropic.com --allow-agent-host api.deepseek.com \
   --jobs-dir results/pro-go/peer-review --job-name <stamp>-1
 
-PYTHONPATH=../SWE-bench_Pro-os/v2/tooling harbor run -p lanes/pro-go -e modal -n 16 -k 1 \
+PYTHONPATH=../SWE-bench_Pro-os/v2/tooling harbor run -p lanes/pro-go -e docker -n 16 -k 1 \
   -a patch_replay:PatchReplayAgent -m replay \
   --ak source_job=results/pro-go/peer-review/<stamp>-1 \
   --jobs-dir results/pro-go/peer-review --job-name <stamp>-1-regrade
@@ -292,7 +299,7 @@ sandboxes run, the caps on each trial, and the arms:
 ```toml
 swe_bench_pro = "../SWE-bench_Pro-os"
 dataset = "swe-bench-pro-v2"
-environment = "modal"
+environment = "docker"
 k = 1
 concurrency = 16
 max_cost_usd = 20
@@ -319,9 +326,8 @@ params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "d
   `suss.toml`.
 - `params` is passed to the harness as it stands, as the JSON file `--params`
   names. Suss reads none of it.
-- `environment` is passed to `harbor run` as `-e`: `modal` runs the sandboxes on
-  Modal, and `docker` runs them on this machine. A SWE-bench Pro lane needs
-  `modal`.
+- `environment` is passed to `harbor run` as `-e`: `docker` runs the sandboxes
+  on this machine, and `modal` runs them on Modal.
 - `max_cost_usd` and `max_seconds` cap each trial: the harness keeps its
   models' spend under `max_cost_usd`, and suss stops `run` after `max_seconds`.
   Set at the top, they apply to every arm, and an arm may set its own.

@@ -43,7 +43,7 @@ def test_reads_the_top_level_keys_of_the_spec_example(spec_config: Path):
     settings = config.load(spec_config, "claude-code")
 
     assert settings.dataset == "swe-bench-pro-v2"
-    assert settings.environment == "modal"
+    assert settings.environment == "docker"
     assert settings.k == 1
     assert settings.concurrency == 16
     assert settings.arm.max_cost_usd == 20
