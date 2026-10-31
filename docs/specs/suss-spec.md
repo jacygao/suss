@@ -125,7 +125,8 @@ directory as `agent/` in the trial's directory under `results/`.
 }
 ```
 
-- `grader` is the dataset and the commit of the checkout `suss run` used.
+- `grader` is the `dataset` that `suss.toml` names, and the commit of the
+  checkout `suss run` used.
 - `status` is `ok`, `harness-failed` or `timed-out`.
 - `exit_codes` holds the exit code of `install` and of `run`. A command suss
   skipped, or stopped at `max_seconds`, has `null`.
@@ -282,11 +283,12 @@ writes both to `checks/<lane>/<arm>/` instead of `results/`:
 suss run peer-review pro-go --check
 ```
 
-`suss.toml` names the SWE-bench Pro checkout, where the sandboxes run, the caps
-on each trial, and the arms:
+`suss.toml` names the SWE-bench Pro checkout and its dataset, where the
+sandboxes run, the caps on each trial, and the arms:
 
 ```toml
 swe_bench_pro = "../SWE-bench_Pro-os"
+dataset = "swe-bench-pro-v2"
 environment = "modal"
 k = 1
 concurrency = 16
@@ -308,6 +310,8 @@ baseline = "claude-code"
 params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "deepseek/deepseek-v3.2" }
 ```
 
+- `dataset` names the dataset the checkout holds. Suss copies it into each
+  trial's `grader` as it stands.
 - `harness` is the path to an adapter, relative to the directory holding
   `suss.toml`.
 - `params` is passed to the harness as it stands, as the JSON file `--params`
