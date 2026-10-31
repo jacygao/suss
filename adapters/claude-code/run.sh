@@ -30,6 +30,10 @@ set -- -p --output-format json --model "$model" --effort "$effort" \
     --dangerously-skip-permissions --disallowedTools WebSearch WebFetch
 [ -n "$budget_given" ] && set -- "$@" --max-budget-usd "$budget"
 
+# Claude Code refuses --dangerously-skip-permissions as root unless told it
+# is in a sandbox, and task images commonly run the agent as root.
+export IS_SANDBOX=1
+
 # Kept outside the workspace, where anything written becomes part of the patch.
 out=$(mktemp) || fail "cannot make a temporary file"
 trap 'rm -f "$out"' EXIT

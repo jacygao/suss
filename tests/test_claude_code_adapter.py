@@ -200,6 +200,18 @@ def test_run_passes_the_instruction_on_stdin_and_the_params_as_flags(box):
     assert '"subtype":"success"' in result.stdout
 
 
+def test_run_tells_claude_it_is_in_a_sandbox_so_root_may_skip_permissions(box):
+    # Claude Code refuses --dangerously-skip-permissions as root without
+    # IS_SANDBOX=1, and the V2 task images run the agent as root.
+    seen = box / "records" / "IS_SANDBOX"
+    stand_in(box, "claude", f"printf '%s' \"${{IS_SANDBOX-unset}}\" > '{seen}'\n")
+
+    result = run(box)
+
+    assert result.returncode == 0, result.stderr
+    assert seen.read_text() == "1", "claude was run without IS_SANDBOX=1"
+
+
 def test_run_reads_its_flags_by_name_in_any_order(box):
     stand_in_claude(box, '{"type":"result","subtype":"success"}', 0)
 
