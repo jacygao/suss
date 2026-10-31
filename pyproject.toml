@@ -1,0 +1,19 @@
+[project]
+name = "suss"
+version = "0.1.0"
+description = "Measures and compares how well coding harnesses do specific kinds of coding work."
+readme = "README.md"
+license = "MIT"
+requires-python = "==3.12.*"
+dependencies = [
+    "harbor==0.22.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14.0"]
+build-backend = "uv_build"
