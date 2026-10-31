@@ -3,6 +3,7 @@ Read a harness's manifest from its adapter directory, and run its `install`
 and `run` in the sandbox as the harness contract fixes.
 """
 
+import math
 import shlex
 import time
 import tomllib
@@ -19,6 +20,12 @@ from suss.workspace import LOGS_DIR
 MANIFEST_NAME = "suss-harness.toml"
 INSTALL_LOG = "install.log"
 RUN_LOG = "run.log"
+
+# What the in-sandbox limit prints when it stopped the command.
+TIMED_OUT = "suss: stopped at the time limit"
+# exec's own timeout sits this far past the limit, as a backstop for a sandbox
+# where the limit cannot run.
+EXEC_TIMEOUT_GRACE_SECONDS = 30
 
 
 class ManifestError(Exception):
@@ -225,14 +232,53 @@ async def _start(
     )
     # Only the named variables, so nothing else in the .env reaches the harness.
     passed = {name: dotenv[name] for name in manifest.env if name in dotenv}
+    exec_timeout = None
+    if timeout_sec is not None:
+        command = _limited(command, timeout_sec)
+        exec_timeout = math.ceil(timeout_sec) + EXEC_TIMEOUT_GRACE_SECONDS
     started = time.monotonic()
     try:
-        result = await env.exec(command, cwd=workspace, env=passed, timeout_sec=timeout_sec)
+        result = await env.exec(command, cwd=workspace, env=passed, timeout_sec=exec_timeout)
     except RuntimeError as error:
         if not _is_exec_timeout(error):
             raise
         return None, time.monotonic() - started
+    if TIMED_OUT in (result.stdout or "").splitlines():
+        return None, time.monotonic() - started
     return result.return_code, time.monotonic() - started
+
+
+def _limited(command: str, seconds: float) -> str:
+    """
+    Wrap a command so that the sandbox itself kills it, and every process it
+    started, after `seconds`.
+
+    exec's own timeout cannot be relied on for this: Docker's stops only the
+    client on the host and leaves the command running in the container. The
+    wrapper needs only bash, which Harbor runs every command with, and `sleep`.
+
+    It exits with the command's exit code, or prints TIMED_OUT when it killed
+    the command.
+    """
+    return "\n".join(
+        [
+            # Job control puts each background job in a process group of its
+            # own, which a kill of the group then reaches all of.
+            "set -m",
+            f"{command} &",
+            "run=$!",
+            # `&&`, so that a missing sleep leaves the run to exec's backstop
+            # rather than killing it at once. The timer exits 0 only when its
+            # kill reached the run.
+            f"{{ sleep {seconds} && kill -KILL -- -$run; }} > /dev/null 2>&1 &",
+            "timer=$!",
+            'wait "$run"',
+            "code=$?",
+            'kill -KILL -- "-$timer" 2> /dev/null',
+            f'if wait "$timer"; then echo {shlex.quote(TIMED_OUT)}; fi',
+            'exit "$code"',
+        ]
+    )
 
 
 def _is_exec_timeout(error: RuntimeError) -> bool:
@@ -240,7 +286,8 @@ def _is_exec_timeout(error: RuntimeError) -> bool:
     Whether exec raised because the command was still running at `timeout_sec`.
 
     This is the form Harbor's docker environment raises, after it has stopped
-    the command. Other environments may report a timeout differently.
+    its client on the host. The command itself may still be running. Other
+    environments may report a timeout differently.
     """
     return str(error).startswith("Command timed out after ")
 
