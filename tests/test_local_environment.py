@@ -100,6 +100,19 @@ def test_stop_kills_what_a_timeout_left_running(local_environment, tmp_path):
         assert dies(pid), f"process {pid} outlived stop, as no container's would"
 
 
+def test_stop_kills_jobs_a_command_put_in_process_groups_of_their_own(local_environment, tmp_path):
+    # As suss's time limit does, with job control.
+    pids = shlex.quote(str(tmp_path / "pids"))
+    command = f"set -m; sleep 30 & echo $! > {pids}; echo $$ >> {pids}; wait"
+    with pytest.raises(RuntimeError):
+        run(local_environment.exec(command, timeout_sec=1))
+
+    run(local_environment.stop(delete=True))
+
+    for pid in map(int, (tmp_path / "pids").read_text().split()):
+        assert dies(pid), f"process {pid} outlived stop, as no container's would"
+
+
 def test_exec_refuses_a_user_it_cannot_switch_to(local_environment):
     with pytest.raises(NotImplementedError, match="user"):
         run(local_environment.exec("true", user="agent"))

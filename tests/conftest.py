@@ -35,11 +35,31 @@ class LocalEnvironment(BaseEnvironment):
         pass
 
     async def stop(self, delete: bool):
-        """Kill every command still running, as deleting a container does."""
-        for group in getattr(self, "_groups", []):
+        """
+        Kill every command still running, and everything it started, as
+        deleting a container does.
+
+        That includes the process groups a command's own job control made,
+        which a kill of the command's group does not reach.
+        """
+        table = subprocess.run(
+            ["ps", "-A", "-o", "pid=,ppid=,pgid="], capture_output=True, text=True, check=True
+        ).stdout
+        processes = [tuple(map(int, line.split())) for line in table.splitlines()]
+        groups = set(getattr(self, "_groups", []))
+        descendants = set(groups)
+        # Repeated until nothing is added, since a parent may be listed after its child.
+        while True:
+            found = {pid for pid, ppid, _ in processes if ppid in descendants} - descendants
+            if not found:
+                break
+            descendants |= found
+        groups |= {pgid for pid, _, pgid in processes if pid in descendants}
+        for group in groups:
             try:
                 os.killpg(group, signal.SIGKILL)
-            except ProcessLookupError:
+            # Gone, or left with only zombies, which macOS refuses to signal.
+            except (ProcessLookupError, PermissionError):
                 pass
 
     async def exec(
