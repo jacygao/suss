@@ -78,7 +78,7 @@ its regrade. It writes both under `results/<lane>/<arm>/`.
       `lanes/<lane>-check/`, which holds only the lane's first task by name,
       whatever `k` is, and writes them under `checks/<lane>/<arm>/`.
       `lanes/<lane>/` is left as it was
-- [ ] `suss run claude-code pro-go --check` on Modal leaves an agent job and its
+- [ ] `suss run claude-code pro-go --check` under Docker leaves an agent job and its
       regrade under `checks/pro-go/claude-code/`, and the regrade's reward is
       the trial's result
 - [ ] `uv run pytest` passes
