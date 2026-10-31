@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import os
+import shlex
 import time
 
 import pytest
@@ -63,7 +64,7 @@ def test_exec_still_sees_the_inherited_environment(local_environment):
 
 
 def test_exec_at_timeout_kills_the_command_and_its_children(local_environment, tmp_path):
-    pids = tmp_path / "pids"
+    pids = shlex.quote(str(tmp_path / "pids"))
     command = f"sleep 30 & echo $! > {pids}; echo $$ >> {pids}; sleep 30"
 
     started = time.monotonic()
@@ -72,8 +73,23 @@ def test_exec_at_timeout_kills_the_command_and_its_children(local_environment, t
     elapsed = time.monotonic() - started
 
     assert elapsed < 3, f"exec took {elapsed:.1f}s to give up on a 1s timeout"
-    for pid in map(int, pids.read_text().split()):
+    for pid in map(int, (tmp_path / "pids").read_text().split()):
         assert not is_running(pid), f"process {pid} outlived the timeout"
+
+
+def test_exec_at_timeout_still_raises_when_termination_floods_stdout(local_environment):
+    # The trap writes more than a pipe holds, so it blocks unless stdout is still being read.
+    command = "trap 'head -c 1000000 /dev/zero; exit 1' TERM; sleep 30 & wait"
+
+    async def bounded():
+        return await asyncio.wait_for(local_environment.exec(command, timeout_sec=1), 15)
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match=r"^Command timed out after 1 seconds$"):
+        run(bounded())
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 3, f"exec took {elapsed:.1f}s to give up on a 1s timeout"
 
 
 def test_exec_refuses_a_user_it_cannot_switch_to(local_environment):

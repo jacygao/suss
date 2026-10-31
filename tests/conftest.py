@@ -68,15 +68,19 @@ class LocalEnvironment(BaseEnvironment):
             # Its own process group, so a timeout can kill what it started too.
             start_new_session=True,
         )
-        try:
-            # Docker treats a timeout of 0 as none.
-            if timeout_sec:
-                stdout, _ = await asyncio.wait_for(process.communicate(), timeout_sec)
-            else:
-                stdout, _ = await process.communicate()
-        except asyncio.TimeoutError:
+        # The reader is never cancelled. Output written while the command dies
+        # would otherwise fill the pipe and block it from dying.
+        output = asyncio.ensure_future(process.communicate())
+        # Docker treats a timeout of 0 as none.
+        done, _ = await asyncio.wait({output}, timeout=timeout_sec or None)
+        if not done:
             await _kill_group(process)
+            # Bounded, since a process that left the group can hold the pipe open.
+            done, _ = await asyncio.wait({output}, timeout=5)
+            if not done:
+                output.cancel()
             raise RuntimeError(f"Command timed out after {timeout_sec} seconds")
+        stdout, _ = output.result()
 
         return ExecResult(
             stdout=stdout.decode(errors="replace") if stdout else None,
@@ -111,7 +115,6 @@ async def _kill_group(process: asyncio.subprocess.Process) -> None:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    await process.wait()
 
 
 @pytest.fixture
