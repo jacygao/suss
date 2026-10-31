@@ -3,13 +3,15 @@ Read a harness's manifest from its adapter directory, and run its `install`
 and `run` in the sandbox as the harness contract fixes.
 """
 
+import asyncio
 import math
+import secrets
 import shlex
 import time
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from harbor.environments.base import BaseEnvironment
@@ -26,6 +28,9 @@ TIMED_OUT = "suss: stopped at the time limit"
 # exec's own timeout sits this far past the limit, as a backstop for a sandbox
 # where the limit cannot run.
 EXEC_TIMEOUT_GRACE_SECONDS = 30
+# How long stopping a cancelled command may take. Harbor waits on a cancelled
+# agent with no limit, so a stuck exec here would hang the trial.
+STOP_SECONDS = 10
 
 
 class ManifestError(Exception):
@@ -118,6 +123,9 @@ class HarnessResult:
     exit_codes: dict[str, int | None]
     # None when run was skipped.
     run_seconds: float | None
+    # The cancel that stopped run, which the caller must raise once it has
+    # recorded the trial.
+    cancelled: asyncio.CancelledError | None = None
 
 
 async def install(
@@ -135,7 +143,8 @@ async def install(
     """
     if manifest.install is None:
         return None
-    exit_code, _ = await _start(
+    await _make_logs(env, paths)
+    return await _start(
         env,
         manifest,
         manifest.install,
@@ -145,7 +154,6 @@ async def install(
         paths,
         INSTALL_LOG,
     )
-    return exit_code
 
 
 async def run(
@@ -165,6 +173,11 @@ async def run(
     is not started and the trial is `harness-failed`. Raises HarnessError when
     the logs directory cannot be made, and lets any other failure of `exec`
     through, since neither is the harness's doing.
+
+    When the task is cancelled while `run` is going, the harness is stopped
+    inside the sandbox, and the trial is `timed-out`. The result then carries
+    the CancelledError instead of raising it, so that the caller can capture
+    the patch and record the trial first. The caller must raise it after.
     """
     if install_exit_code not in (0, None):
         return HarnessResult(
@@ -178,9 +191,20 @@ async def run(
     if arm.max_cost_usd is not None:
         args += ["--max-cost-usd", str(arm.max_cost_usd)]
 
-    exit_code, run_seconds = await _start(
-        env, manifest, manifest.run, args, workspace, dotenv, paths, RUN_LOG, arm.max_seconds
-    )
+    await _make_logs(env, paths)
+    started = time.monotonic()
+    try:
+        exit_code = await _start(
+            env, manifest, manifest.run, args, workspace, dotenv, paths, RUN_LOG, arm.max_seconds
+        )
+    except asyncio.CancelledError as cancelled:
+        return HarnessResult(
+            status="timed-out",
+            exit_codes={"install": install_exit_code, "run": None},
+            run_seconds=time.monotonic() - started,
+            cancelled=cancelled,
+        )
+    run_seconds = time.monotonic() - started
 
     if exit_code is None:
         status = "timed-out"
@@ -195,6 +219,14 @@ async def run(
     )
 
 
+async def _make_logs(env: BaseEnvironment, paths: SandboxPaths) -> None:
+    made = await env.exec(f"mkdir -p {shlex.quote(paths.logs)}")
+    if made.return_code != 0:
+        raise HarnessError(
+            f"cannot make the logs directory {paths.logs}: {(made.stdout or '').strip()}"
+        )
+
+
 async def _start(
     env: BaseEnvironment,
     manifest: Manifest,
@@ -205,22 +237,17 @@ async def _start(
     paths: SandboxPaths,
     log: str,
     timeout_sec: float | None = None,
-) -> tuple[int | None, float]:
+) -> int | None:
     """
     Run an adapter's script in the workspace, with its output in the log.
 
-    Returns its exit code, or None when it was stopped at the timeout, and the
-    seconds it ran for, which leave out the commands suss runs to prepare it.
+    Returns its exit code, or None when it was stopped at the timeout. When
+    the task is cancelled, it kills the script and everything it started
+    inside the sandbox, then raises the CancelledError.
 
     No `user` is passed to exec, so the command runs as the environment's
     default user, which Harbor sets to the task's agent user.
     """
-    made = await env.exec(f"mkdir -p {shlex.quote(paths.logs)}")
-    if made.return_code != 0:
-        raise HarnessError(
-            f"cannot make the logs directory {paths.logs}: {(made.stdout or '').strip()}"
-        )
-
     executable = f"{paths.adapter.rstrip('/')}/{script}"
     log_path = f"{paths.logs.rstrip('/')}/{log}"
     # The shell writes the log, not suss, so the log holds what was printed
@@ -230,55 +257,83 @@ async def _start(
         " ".join(shlex.quote(part) for part in [executable, *args])
         + f" > {shlex.quote(log_path)} 2>&1"
     )
+    # A new name for each start, so a cancel never acts on an id that an
+    # earlier command left behind.
+    token = secrets.token_hex(8)
+    group_file = f"{paths.logs.rstrip('/')}/{PurePosixPath(log).stem}-{token}.pgid"
+    command = _limited(command, timeout_sec, group_file)
     # Only the named variables, so nothing else in the .env reaches the harness.
     passed = {name: dotenv[name] for name in manifest.env if name in dotenv}
     exec_timeout = None
     if timeout_sec is not None:
-        command = _limited(command, timeout_sec)
         exec_timeout = math.ceil(timeout_sec) + EXEC_TIMEOUT_GRACE_SECONDS
-    started = time.monotonic()
     try:
         result = await env.exec(command, cwd=workspace, env=passed, timeout_sec=exec_timeout)
     except RuntimeError as error:
         if not _is_exec_timeout(error):
             raise
-        return None, time.monotonic() - started
+        return None
+    except asyncio.CancelledError:
+        await _stop(env, group_file)
+        raise
     if TIMED_OUT in (result.stdout or "").splitlines():
-        return None, time.monotonic() - started
-    return result.return_code, time.monotonic() - started
+        return None
+    return result.return_code
 
 
-def _limited(command: str, seconds: float) -> str:
+def _limited(command: str, seconds: float | None, group_file: str) -> str:
     """
-    Wrap a command so that the sandbox itself kills it, and every process it
-    started, after `seconds`.
+    Wrap a command so that the sandbox itself can kill it, and every process
+    it started: after `seconds`, when given, and through `_stop` at any time.
 
     exec's own timeout cannot be relied on for this: Docker's stops only the
     client on the host and leaves the command running in the container. The
     wrapper needs only bash, which Harbor runs every command with, and `sleep`.
 
     It exits with the command's exit code. At the limit it prints TIMED_OUT,
-    then kills the command.
+    then kills the command. While the command runs, `group_file` holds the id
+    of its process group, and the wrapper deletes it once the command exits.
     """
-    return "\n".join(
-        [
-            # Job control puts each background job in a process group of its
-            # own, which a kill of the group then reaches all of.
-            "set -m",
-            f"{command} &",
-            "run=$!",
+    group = shlex.quote(group_file)
+    lines = [
+        # Job control puts each background job in a process group of its
+        # own, which a kill of the group then reaches all of.
+        "set -m",
+        f"{command} &",
+        "run=$!",
+        f'echo "$run" > {group}',
+    ]
+    if seconds is not None:
+        lines += [
             # `&&`, so that a missing sleep leaves the run to exec's backstop
             # rather than killing it at once. The marker goes out before the
             # kill, so killing the timer later cannot erase a timeout.
             f"{{ sleep {seconds} > /dev/null 2>&1 && echo {shlex.quote(TIMED_OUT)}"
             " && kill -KILL -- -$run 2> /dev/null; } &",
             "timer=$!",
-            'wait "$run"',
-            "code=$?",
-            'kill -KILL -- "-$timer" 2> /dev/null',
-            'exit "$code"',
         ]
-    )
+    lines += ['wait "$run"', "code=$?", f"rm -f {group}"]
+    if seconds is not None:
+        lines.append('kill -KILL -- "-$timer" 2> /dev/null')
+    lines.append('exit "$code"')
+    return "\n".join(lines)
+
+
+async def _stop(env: BaseEnvironment, group_file: str) -> None:
+    """
+    Kill the process group that `group_file` names, if the command is still
+    running.
+
+    Never raises an Exception, and gives up after STOP_SECONDS. A stop that
+    fails leaves the harness running, but the caller still has a trial to
+    record and a cancel to pass on.
+    """
+    group = shlex.quote(group_file)
+    command = f'[ -f {group} ] && kill -KILL -- "-$(cat {group})" 2> /dev/null; rm -f {group}'
+    try:
+        await asyncio.wait_for(env.exec(command, timeout_sec=STOP_SECONDS), STOP_SECONDS + 5)
+    except Exception:
+        pass
 
 
 def _is_exec_timeout(error: RuntimeError) -> bool:

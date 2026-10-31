@@ -120,16 +120,19 @@ directory as `agent/` in the trial's directory under `results/`.
   "base": "5568b2e0a686cc4d838bddc095b831379143e61b",
   "status": "ok",
   "exit_codes": { "install": 0, "run": 0 },
-  "run_seconds": 1290,
+  "run_seconds": 1290.4,
   "patch_bytes": 4182
 }
 ```
 
 - `grader` is the `dataset` that `suss.toml` names, and the commit of the
   checkout `suss run` used.
-- `status` is `ok`, `harness-failed` or `timed-out`.
+- `status` is `ok`, `harness-failed` or `timed-out`. A trial is `timed-out`
+  when suss stops `run` at `max_seconds`, and when Harbor's agent timeout stops
+  the trial while `run` is going. Either way, suss stops the harness inside the
+  sandbox, then captures the patch and writes the record.
 - `exit_codes` holds the exit code of `install` and of `run`. A command suss
-  skipped, or stopped at `max_seconds`, has `null`.
+  skipped or stopped has `null`.
 
 ## 4. The harness contract
 
