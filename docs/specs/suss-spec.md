@@ -49,7 +49,7 @@ peer-review − claude-code   +6% [+1%, +11%]
 | **Harness** | What is being measured, reached through its adapter. |
 | **Adapter** | The directory that lets suss run a harness: a manifest, `suss-harness.toml`, and the commands it names. |
 | **Arm** | A harness and the parameters it runs with, such as a model and a reasoning effort. |
-| **Baseline** | The arm another arm is measured against, usually the harness's coding agent on its own. |
+| **Baseline** | The arm another arm is measured against, named by that arm's `baseline` in `suss.toml`. Any arm can be one. |
 | **Trial** | Harbor's unit of work: one attempt at one task by one arm, in a fresh sandbox. |
 | **Base** | The commit the workspace's `HEAD` names when the trial starts. |
 
@@ -196,14 +196,14 @@ it calls. Suss stops `run` after the arm's `max_seconds`, marks the trial
 A non-zero exit marks the trial `harness-failed`. Either way, suss captures the
 patch, and the regrade grades it.
 
-### Built-in harnesses
+### Adapters in this repository
 
-Suss includes an adapter for the baseline other arms are measured against, in
-`harnesses/`.
+The repository publishes adapters under `adapters/`. An arm names one by its
+path, as it names any other adapter, and suss runs it the same way.
 
-| Harness | Params | What it does |
+| Adapter | Params | What it does |
 |---|---|---|
-| `claude-code` | `version`, `model`, `effort` | `install` installs Claude Code at `version` with its native installer. `run` runs it headless, with the instruction as its prompt, every tool allowed except `WebSearch` and `WebFetch`, and `--max-cost-usd` as its `--max-budget-usd`. |
+| `adapters/claude-code/` | `version`, `model`, `effort` | `install` installs Claude Code at `version` with its native installer. `run` runs it headless, with the instruction as its prompt, every tool allowed except `WebSearch` and `WebFetch`, and `--max-cost-usd` as its `--max-budget-usd`. |
 
 ## 5. Lanes
 
@@ -294,7 +294,7 @@ max_cost_usd = 20
 max_seconds = 2700
 
 [arms.claude-code]
-harness = "claude-code"
+harness = "adapters/claude-code"
 params = { version = "2.1.293", model = "claude-opus-4-6", effort = "high" }
 
 [arms.self-review]
@@ -308,8 +308,8 @@ baseline = "claude-code"
 params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "deepseek/deepseek-v3.2" }
 ```
 
-- `harness` is the name of a built-in adapter, or a path to one, relative to
-  the directory holding `suss.toml`.
+- `harness` is the path to an adapter, relative to the directory holding
+  `suss.toml`.
 - `params` is passed to the harness as it stands, as the JSON file `--params`
   names. Suss reads none of it.
 - `environment` is passed to `harbor run` as `-e`: `modal` runs the sandboxes on
@@ -378,7 +378,7 @@ src/suss/
   config.py       suss.toml
   compare.py      suss compare
   cli.py          the suss command
-harnesses/
+adapters/
   claude-code/
 tests/
 docs/specs/
