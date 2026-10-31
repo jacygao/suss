@@ -332,8 +332,9 @@ the tables shown in § 1:
   table. The bracketed range is a 95% interval from a bootstrap that resamples
   tasks, so that each task's K trials stay together.
 
-It exits with an error, and prints nothing else, if the arms' trials do not all
-carry the same `grader`.
+It exits with an error, and prints nothing else, if the arms' trials that have a
+`suss.json` do not all carry the same `grader`. A trial with no `suss.json` has
+no `grader` to compare, and still counts as `harness-failed`.
 
 ## 7. The project
 
