@@ -156,3 +156,15 @@ def test_upload_dir_merges_into_an_existing_target(local_environment, tmp_path):
     assert (target / "suss-harness.toml").read_text() == "new"
     assert (target / "kept").read_text() == "kept"
     assert not (target / "claude-code").exists(), "the source dir was nested, not its contents"
+
+
+def test_stop_kills_a_job_its_command_left_behind_when_it_exited(local_environment, tmp_path):
+    # The job outlives its shell, so nothing links it to the command by parent any more.
+    pids = shlex.quote(str(tmp_path / "pids"))
+    command = f"set -m; sleep 30 > /dev/null 2>&1 & echo $! > {pids}"
+    run(local_environment.exec(command))
+
+    run(local_environment.stop(delete=True))
+
+    for pid in map(int, (tmp_path / "pids").read_text().split()):
+        assert dies(pid), f"process {pid} outlived stop, as no container's would"

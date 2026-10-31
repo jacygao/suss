@@ -36,30 +36,21 @@ class LocalEnvironment(BaseEnvironment):
 
     async def stop(self, delete: bool):
         """
-        Kill every command still running, and everything it started, as
-        deleting a container does.
+        Kill every process in the session of a command this ran, as deleting
+        a container does.
 
-        That includes the process groups a command's own job control made,
-        which a kill of the command's group does not reach.
+        The session, not the process group, since a command's job control puts
+        jobs in groups of their own, and those keep the session when they
+        outlive the command.
         """
-        table = subprocess.run(
-            ["ps", "-A", "-o", "pid=,ppid=,pgid="], capture_output=True, text=True, check=True
-        ).stdout
-        processes = [tuple(map(int, line.split())) for line in table.splitlines()]
-        groups = set(getattr(self, "_groups", []))
-        descendants = set(groups)
-        # Repeated until nothing is added, since a parent may be listed after its child.
-        while True:
-            found = {pid for pid, ppid, _ in processes if ppid in descendants} - descendants
-            if not found:
-                break
-            descendants |= found
-        groups |= {pgid for pid, _, pgid in processes if pid in descendants}
-        for group in groups:
+        sessions = set(getattr(self, "_sessions", []))
+        listed = subprocess.run(["ps", "-A", "-o", "pid="], capture_output=True, text=True).stdout
+        for pid in map(int, listed.split()):
             try:
-                os.killpg(group, signal.SIGKILL)
-            # Gone, or left with only zombies, which macOS refuses to signal.
-            except (ProcessLookupError, PermissionError):
+                if os.getsid(pid) in sessions:
+                    os.kill(pid, signal.SIGKILL)
+            # Gone since it was listed.
+            except ProcessLookupError:
                 pass
 
     async def exec(
@@ -92,10 +83,10 @@ class LocalEnvironment(BaseEnvironment):
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            # Its own process group, so that stop can kill what it started too.
+            # A session of its own, so that stop can kill what it started too.
             start_new_session=True,
         )
-        self._groups = [*getattr(self, "_groups", []), process.pid]
+        self._sessions = [*getattr(self, "_sessions", []), process.pid]
         # Read on a thread rather than the event loop, since a command left
         # running at a timeout outlives the loop. Docker goes on reading what
         # it writes, so it never blocks on a full pipe.
