@@ -250,31 +250,169 @@ def test_an_option_suss_sets_is_refused_in_every_spelling_whatever_its_value(ext
         harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, extra)
 
 
-def test_the_options_refused_are_exactly_those_suss_sets_on_either_job(tmp_path):
+def harbor_run_options():
     run = typer.main.get_command(harbor_app).commands["run"]
+    return run, run.params
+
+
+def options_suss_sets(tmp_path) -> set[str]:
+    run, _ = harbor_run_options()
     agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1)
     emitted = set()
     for command in (agent, regrade):
         _, _, found = run.make_parser(run.context_class(run)).parse_args(command.argv[2:])
         emitted |= {param.name for param in found}
-    options = {param.name: param.opts[0] for param in run.params}
-    refused = set()
-    for param in run.params:
-        try:
-            harbor_commands(
-                make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, [param.opts[0], "1"]
-            )
-        except ValueError as error:
-            if "can't be passed after --" in str(error):
-                refused.add(param.name)
+    return emitted
 
-    assert refused == emitted
+
+def refused_options(tmp_path) -> set[str]:
+    _, params = harbor_run_options()
+    refused = set()
+    for param in params:
+        extra = [param.opts[0]] if param.is_flag else [param.opts[0], "1"]
+        try:
+            harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, extra)
+        except ValueError as error:
+            if str(error).startswith(param.opts[0]):
+                refused.add(param.name)
+    return refused
+
+
+def test_every_option_suss_sets_on_either_job_is_refused(tmp_path):
+    emitted = options_suss_sets(tmp_path)
+
     assert len(emitted) == 10
-    for name in emitted:
-        with pytest.raises(ValueError, match=f"^{re.escape(options[name])}"):
-            harbor_commands(
-                make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, [options[name], "x"]
-            )
+    assert emitted <= refused_options(tmp_path)
+
+
+def test_the_options_refused_beyond_those_suss_sets_are_these(tmp_path):
+    # Each selects other tasks or another agent, or keeps the agent job from leaving a
+    # local trial, so its regrade would find no patch and score 0.
+    assert refused_options(tmp_path) - options_suss_sets(tmp_path) == {
+        "config_path",
+        "agent_import_path",
+        "environment_import_path",
+        "dataset_name_version",
+        "registry_url",
+        "registry_path",
+        "repo",
+        "task_git_url",
+        "task_git_commit_id",
+        "task_ref",
+        "dataset_task_names",
+        "dataset_exclude_task_names",
+        "n_tasks",
+        "user_agent_name",
+        "user_model",
+        "user_agent_kwargs",
+        "user_persona_path",
+        "user_prompt_template_path",
+        "bridge_kind",
+        "bridge_prompt_path",
+        "bridge_kwargs",
+        "install_only",
+        "launch",
+        "dry_run",
+        "init",
+        "print_config",
+    }
+
+
+@pytest.mark.parametrize(
+    "extra, message",
+    [
+        (
+            ["-c", "job.yaml"],
+            "-c/--config can't be passed after --: a job config file can change anything"
+            " suss sets on the job",
+        ),
+        (
+            ["-t", "org/task"],
+            "-t/--task can't be passed after --: a run covers every task in its lanes,"
+            " and the regrade grades them all",
+        ),
+        (
+            ["-i", "instance_*"],
+            "-i/--include-task-name can't be passed after --: a run covers every task in its"
+            " lanes, and the regrade grades them all",
+        ),
+        (
+            ["-x", "instance_*"],
+            "-x/--exclude-task-name can't be passed after --: a run covers every task in its"
+            " lanes, and the regrade grades them all",
+        ),
+        (
+            ["-l", "5"],
+            "-l/--n-tasks can't be passed after --: a run covers every task in its lanes,"
+            " and the regrade grades them all",
+        ),
+        (
+            ["-d", "swe-bench-pro@2"],
+            "-d/--dataset can't be passed after --: a run covers every task in its lanes,"
+            " and the regrade grades them all",
+        ),
+        (
+            ["--agent-import-path", "x:Y"],
+            "--agent-import-path can't be passed after --: suss runs every agent job with"
+            " SussAgent",
+        ),
+        (
+            ["--environment-import-path", "x:Y"],
+            "--environment-import-path can't be passed after --: set environment in suss.toml",
+        ),
+        (
+            ["--user-agent", "x"],
+            "--user-agent can't be passed after --: suss runs SussAgent alone, with no"
+            " simulated user",
+        ),
+        (
+            ["--install-only"],
+            "--install-only can't be passed after --: it skips the agent run, so the regrade"
+            " would find no patch to grade",
+        ),
+        (
+            ["--launch"],
+            "--launch can't be passed after --: suss runs each agent job locally, where its"
+            " regrade can read it",
+        ),
+        (
+            ["--init"],
+            "--init can't be passed after --: it stops harbor before the job runs;"
+            " DRY_RUN=1 prints suss's commands instead",
+        ),
+    ],
+)
+def test_an_option_that_changes_what_the_agent_job_runs_says_why_it_is_refused(
+    extra, message, tmp_path
+):
+    with pytest.raises(ValueError) as refused:
+        harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, extra)
+
+    assert str(refused.value) == message
+
+
+@pytest.mark.parametrize(
+    "extra, word",
+    [
+        (["stray"], "stray"),
+        (["--max-retries", "2", "stray"], "stray"),
+        (["--", "x"], "x"),
+        (["--", "-k", "2"], "-k"),
+    ],
+)
+def test_a_positional_argument_is_refused_by_name(extra, word, tmp_path):
+    with pytest.raises(ValueError) as refused:
+        harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, extra)
+
+    assert str(refused.value) == f"{word} can't be passed after --: harbor run takes only options"
+
+
+def test_an_options_value_is_not_taken_for_a_positional_argument(tmp_path):
+    extra = ["--max-retries", "2", "--ae=FOO=bar", "--retry-include", "stray"]
+
+    agent, _ = harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, extra)
+
+    assert agent.argv[-5:] == extra
 
 
 @pytest.mark.parametrize(

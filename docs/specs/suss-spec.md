@@ -288,12 +288,21 @@ job of the run shares it, and `-1` to `-K` tell its agent jobs apart. `<dir>` is
 the directory holding `suss.toml`, so the regrade's `source_job` is the agent
 job's directory as an absolute path, which suss forms itself.
 
-Anything after `--` goes to every agent job, except an option suss sets on the
-agent job or its regrade: `-p`, `-e`, `-n`, `-k`, `-a`, `-m`, `--ak`,
-`--allow-agent-host`, `--jobs-dir` and `--job-name`, under any name or spelling
-Harbor accepts for them. Passing one, even with suss's own value, is an error
-that names the option and where its setting comes from instead, and runs
+Options after `--` go to every agent job. Passing any of these, under any name
+or spelling Harbor accepts, is an error that names it and says why, and runs
 nothing:
+
+- An option suss sets on the agent job or its regrade, even with suss's own
+  value: `-p`, `-e`, `-n`, `-k`, `-a`, `-m`, `--ak`, `--allow-agent-host`,
+  `--jobs-dir` and `--job-name`.
+- An option that changes the tasks or the agent the agent job runs, or keeps it
+  from leaving a trial on this machine for its regrade: `-c`, `-d`, `-t`, `-i`,
+  `-x`, `-l`, `--registry-url`, `--registry-path`, `--repo`, `--task-git-url`,
+  `--task-git-commit`, `--agent-import-path`, `--environment-import-path`,
+  `--user-agent`, `--user-model`, `--uk`, `--user-persona-path`,
+  `--user-prompt-template-path`, `--bridge`, `--bridge-prompt-path`, `--bk`,
+  `--install-only`, `--launch`, `--dry-run`, `--init` and `--print-config`.
+- A positional argument, which `harbor run` does not take.
 
 ```
 $ suss run peer-review pro-go -- -k 2

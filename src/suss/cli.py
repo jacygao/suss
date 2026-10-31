@@ -53,7 +53,8 @@ def harbor_commands(
     `results/`.
 
     Raises ValueError, with a message for the user, when `harbor_args` include
-    an option suss sets on either job, or one Harbor's parser rejects.
+    a positional argument, an option suss sets on either job, an option that
+    changes what the agent job runs, or anything Harbor's parser rejects.
     """
     lane_dir = f"lanes/{lane}-check" if check else f"lanes/{lane}"
     jobs_dir = PurePosixPath("checks" if check else "results", lane, config.arm.name)
@@ -87,7 +88,7 @@ def harbor_commands(
         "--jobs-dir", str(jobs_dir),
         "--job-name", f"{job_name}-regrade",
     ]
-    _refuse_options_suss_sets(harbor_args)
+    _refuse(harbor_args)
     agent += harbor_args
     # Absolute, so that Harbor imports patch_replay whatever directory it is in.
     tooling = config.swe_bench_pro / "v2" / "tooling"
@@ -108,11 +109,17 @@ def _kwarg(key: str, value: str) -> str:
     return f"{key}={json.dumps(value)}"
 
 
-# Every option suss sets on either job, even one a job leaves out, such as
-# --allow-agent-host for a harness that allows no hosts. Each maps Harbor's name
-# for it to where that setting comes from instead.
-_SET_BY_SUSS = {
-    "path": "suss gives each job its lane's directory",    "environment": "set environment in suss.toml",
+_ALL_TASKS = "a run covers every task in its lanes, and the regrade grades them all"
+_NO_SIMULATED_USER = "suss runs SussAgent alone, with no simulated user"
+_HARBOR_STOPS = "it stops harbor before the job runs; DRY_RUN=1 prints suss's commands instead"
+
+# Every option refused after --, keyed by Harbor's name for it, with where its
+# setting comes from instead, or why suss cannot honour it.
+_REFUSED = {
+    # Those suss sets on either job, even one a job leaves out, such as
+    # --allow-agent-host for a harness that allows no hosts.
+    "path": "suss gives each job its lane's directory",
+    "environment": "set environment in suss.toml",
     "n_concurrent_trials": "set concurrency in suss.toml",
     "n_attempts": "suss runs one trial per agent job, and k in suss.toml sets how many jobs",
     "agent_name": "suss runs every agent job with SussAgent",
@@ -121,6 +128,34 @@ _SET_BY_SUSS = {
     "allow_agent_hosts": "list the hosts in allowed_hosts in the harness's manifest",
     "jobs_dir": "suss writes each job under results/<lane>/<arm>/, or checks/ with --check",
     "job_name": "suss names each job from the run's stamp and its trial number",
+    # Those that would change what the agent job runs. The regrade still grades
+    # every task in the lane, so a task the agent job skips scores 0.
+    "config_path": "a job config file can change anything suss sets on the job",
+    "agent_import_path": "suss runs every agent job with SussAgent",
+    "environment_import_path": "set environment in suss.toml",
+    "dataset_name_version": _ALL_TASKS,
+    "registry_url": _ALL_TASKS,
+    "registry_path": _ALL_TASKS,
+    "repo": _ALL_TASKS,
+    "task_git_url": _ALL_TASKS,
+    "task_git_commit_id": _ALL_TASKS,
+    "task_ref": _ALL_TASKS,
+    "dataset_task_names": _ALL_TASKS,
+    "dataset_exclude_task_names": _ALL_TASKS,
+    "n_tasks": _ALL_TASKS,
+    "user_agent_name": _NO_SIMULATED_USER,
+    "user_model": _NO_SIMULATED_USER,
+    "user_agent_kwargs": _NO_SIMULATED_USER,
+    "user_persona_path": _NO_SIMULATED_USER,
+    "user_prompt_template_path": _NO_SIMULATED_USER,
+    "bridge_kind": _NO_SIMULATED_USER,
+    "bridge_prompt_path": _NO_SIMULATED_USER,
+    "bridge_kwargs": _NO_SIMULATED_USER,
+    "install_only": "it skips the agent run, so the regrade would find no patch to grade",
+    "launch": "suss runs each agent job locally, where its regrade can read it",
+    "dry_run": "it validates a --launch, and suss runs each agent job locally",
+    "init": _HARBOR_STOPS,
+    "print_config": _HARBOR_STOPS,
 }
 
 
@@ -129,32 +164,28 @@ def _harbor_run() -> typer.core.TyperCommand:
     return typer.main.get_command(harbor_app).commands["run"]
 
 
-def _options(argv: Sequence[str]) -> set[str]:
+def _refuse(harbor_args: Sequence[str]) -> None:
     """
-    The name of each option Harbor's `run` parser finds in the `harbor run`
-    command `argv`.
+    Raise ValueError, naming the argument, when `harbor_args` include a
+    positional argument or an option in `_REFUSED`, whatever its value.
 
-    Raises ValueError with the parser's own message for an argv it rejects.
+    Harbor's own `run` parser reads them, so every spelling of an option counts,
+    and an option's value is never taken for an option. Raises ValueError with
+    the parser's message for arguments it rejects.
     """
     run = _harbor_run()
     # The parser alone, so that no option's callback runs and no value is checked.
     parser = run.make_parser(run.context_class(run, info_name="run"))
     try:
-        _, _, found = parser.parse_args(list(argv[2:]))
+        _, positional, found = parser.parse_args(list(harbor_args))
     except Exception as error:
         message = getattr(error, "format_message", lambda: str(error))()
         raise ValueError(f"harbor run would refuse the arguments after --: {message}") from None
-    return {param.name for param in found}
-
-
-def _refuse_options_suss_sets(harbor_args: Sequence[str]) -> None:
-    """
-    Raise ValueError naming an option suss sets that `harbor_args` include,
-    whatever its value, since Harbor would take theirs over suss's.
-    """
-    passed = _options(["harbor", "run", *harbor_args]) & _SET_BY_SUSS.keys()
-    for param in _harbor_run().params:
-        if param.name in passed:
+    if positional:
+        raise ValueError(f"{positional[0]} can't be passed after --: harbor run takes only options")
+    passed = {param.name for param in found}
+    for param in run.params:
+        if param.name in passed and param.name in _REFUSED:
             raise ValueError(
-                f"{'/'.join(param.opts)} can't be passed after --: {_SET_BY_SUSS[param.name]}"
+                f"{'/'.join(param.opts)} can't be passed after --: {_REFUSED[param.name]}"
             )
