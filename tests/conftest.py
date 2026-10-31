@@ -2,6 +2,9 @@ import asyncio
 import os
 import shutil
 import signal
+import subprocess
+import threading
+from concurrent.futures import Future
 from pathlib import Path
 
 import pytest
@@ -32,7 +35,23 @@ class LocalEnvironment(BaseEnvironment):
         pass
 
     async def stop(self, delete: bool):
-        pass
+        """
+        Kill every process in the session of a command this ran, as deleting
+        a container does.
+
+        The session, not the process group, since a command's job control puts
+        jobs in groups of their own, and those keep the session when they
+        outlive the command.
+        """
+        sessions = set(getattr(self, "_sessions", []))
+        listed = subprocess.run(["ps", "-A", "-o", "pid="], capture_output=True, text=True).stdout
+        for pid in map(int, listed.split()):
+            try:
+                if os.getsid(pid) in sessions:
+                    os.kill(pid, signal.SIGKILL)
+            # Gone since it was listed.
+            except ProcessLookupError:
+                pass
 
     async def exec(
         self,
@@ -46,8 +65,9 @@ class LocalEnvironment(BaseEnvironment):
         Run the command with bash, as Docker does.
 
         Docker merges stderr into stdout, so stderr is always None, and empty
-        output is None rather than "". At the timeout, the command and every
-        process it started are killed, and RuntimeError is raised.
+        output is None rather than "". At the timeout, RuntimeError is raised
+        and the command is left running, since Docker stops only its own client
+        there. `stop` kills it.
 
         Raises NotImplementedError for a user, since this machine cannot run
         the command as anyone else.
@@ -56,29 +76,28 @@ class LocalEnvironment(BaseEnvironment):
         if user is not None:
             raise NotImplementedError(f"cannot run a command as user {user!r} locally")
 
-        process = await asyncio.create_subprocess_exec(
-            "bash",
-            "-c",
-            command,
+        process = subprocess.Popen(
+            ["bash", "-c", command],
             cwd=cwd or self.task_env_config.workdir,
             env={**os.environ, **(self._merge_env(env) or {})},
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            # Its own process group, so a timeout can kill what it started too.
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            # A session of its own, so that stop can kill what it started too.
             start_new_session=True,
         )
-        # The reader is never cancelled. Output written while the command dies
-        # would otherwise fill the pipe and block it from dying.
-        output = asyncio.ensure_future(process.communicate())
+        self._sessions = [*getattr(self, "_sessions", []), process.pid]
+        # Read on a thread rather than the event loop, since a command left
+        # running at a timeout outlives the loop. Docker goes on reading what
+        # it writes, so it never blocks on a full pipe.
+        output: Future[tuple[bytes, bytes]] = Future()
+        threading.Thread(
+            target=lambda: output.set_result(process.communicate()), daemon=True
+        ).start()
+        # asyncio.wait, not wait_for, which would cancel the future the thread still sets.
         # Docker treats a timeout of 0 as none.
-        done, _ = await asyncio.wait({output}, timeout=timeout_sec or None)
+        done, _ = await asyncio.wait({asyncio.wrap_future(output)}, timeout=timeout_sec or None)
         if not done:
-            await _kill_group(process)
-            # Bounded, since a process that left the group can hold the pipe open.
-            done, _ = await asyncio.wait({output}, timeout=5)
-            if not done:
-                output.cancel()
             raise RuntimeError(f"Command timed out after {timeout_sec} seconds")
         stdout, _ = output.result()
 
@@ -103,27 +122,15 @@ class LocalEnvironment(BaseEnvironment):
         raise NotImplementedError
 
 
-async def _kill_group(process: asyncio.subprocess.Process) -> None:
-    """Terminate the process group, then kill whatever is left of it after 5s, as Docker does."""
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-        try:
-            await asyncio.wait_for(process.wait(), 5)
-        except asyncio.TimeoutError:
-            pass
-        # Children that ignored SIGTERM, or outlived the leader.
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-
-
 @pytest.fixture
 def local_environment(tmp_path_factory):
     root = tmp_path_factory.mktemp("local-environment")
-    return LocalEnvironment(
+    environment = LocalEnvironment(
         environment_dir=root,
         environment_name="local",
         session_id="local",
         trial_paths=TrialPaths(root / "trial"),
         task_env_config=EnvironmentConfig(),
     )
+    yield environment
+    asyncio.run(environment.stop(delete=True))

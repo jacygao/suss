@@ -9,6 +9,7 @@ Every path the commands see holds a space.
 
 import asyncio
 import dataclasses
+import os
 import shutil
 import time
 from pathlib import Path
@@ -80,6 +81,27 @@ def box(tmp_path) -> Box:
             logs=str(root / "agent logs"),
         ),
     )
+
+
+# A harness's own process, and a child it backgrounds, as a coding agent's tools are.
+RECORD_PIDS = 'sleep 30 &\necho $! $$ > "$here/run.pids"'
+
+
+def assert_all_dead(box: Box) -> None:
+    """Fail unless the processes RECORD_PIDS named are gone, allowing 2s for them to be reaped."""
+    pids = [int(pid) for pid in box.recorded("run", "pids")[0].split()]
+    deadline = time.monotonic() + 2
+    while alive := [pid for pid in pids if _is_running(pid)]:
+        assert time.monotonic() < deadline, f"processes {alive} outlived the run that started them"
+        time.sleep(0.05)
+
+
+def _is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
 
 
 def install_in(env, box: Box, dotenv=None):
@@ -205,7 +227,7 @@ def test_a_manifest_without_install_runs_none(local_environment, box):
 
 
 def test_a_run_past_max_seconds_is_stopped_and_timed_out(local_environment, box):
-    box.then("run", "echo before the limit\nsleep 30")
+    box.then("run", f"echo before the limit\n{RECORD_PIDS}\nsleep 30")
 
     started = time.monotonic()
     result = run_in(local_environment, box, arm(max_seconds=1))
@@ -218,6 +240,37 @@ def test_a_run_past_max_seconds_is_stopped_and_timed_out(local_environment, box)
     assert "before the limit" in (box.logs / "run.log").read_text(), (
         "what run printed before it was stopped is missing from run.log"
     )
+    assert_all_dead(box)
+
+
+def test_a_run_stopped_as_execs_own_timeout_fires_is_still_timed_out(
+    local_environment, box, monkeypatch
+):
+    # exec's timeout_sec set to max_seconds itself, so the two limits race.
+    box.then("run", f"{RECORD_PIDS}\nsleep 30")
+    exec_as_given = local_environment.exec
+
+    async def racing(command, **kwargs):
+        if kwargs.get("timeout_sec") is not None:
+            kwargs["timeout_sec"] = 1
+        return await exec_as_given(command, **kwargs)
+
+    monkeypatch.setattr(local_environment, "exec", racing)
+    result = run_in(local_environment, box, arm(max_seconds=1))
+
+    assert result.status == "timed-out"
+    assert result.exit_codes["run"] is None
+    assert_all_dead(box)
+
+
+def test_a_run_under_max_seconds_keeps_its_exit_code(local_environment, box):
+    box.then("run", "echo finished\nexit 5")
+
+    result = run_in(local_environment, box, arm(max_seconds=30))
+
+    assert result.status == "harness-failed"
+    assert result.exit_codes["run"] == 5
+    assert (box.logs / "run.log").read_text() == "finished\n"
 
 
 def test_each_command_writes_stdout_and_stderr_to_its_log(local_environment, box):

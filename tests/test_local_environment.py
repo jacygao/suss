@@ -20,6 +20,16 @@ def is_running(pid: int) -> bool:
     return True
 
 
+def dies(pid: int, within: float = 2) -> bool:
+    """Whether the process is gone within the time, which allows for its parent reaping it."""
+    deadline = time.monotonic() + within
+    while is_running(pid):
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
 @pytest.mark.parametrize("method", ["exec", "upload_file", "upload_dir"])
 def test_methods_match_harbors_signatures(local_environment, method):
     ours = getattr(type(local_environment), method)
@@ -63,7 +73,8 @@ def test_exec_still_sees_the_inherited_environment(local_environment):
     assert result.stdout == f"{os.environ['PATH']}\n"
 
 
-def test_exec_at_timeout_kills_the_command_and_its_children(local_environment, tmp_path):
+def test_exec_at_timeout_raises_and_leaves_the_command_running(local_environment, tmp_path):
+    # Docker stops only its own client at the timeout, never the command in the container.
     pids = shlex.quote(str(tmp_path / "pids"))
     command = f"sleep 30 & echo $! > {pids}; echo $$ >> {pids}; sleep 30"
 
@@ -74,22 +85,32 @@ def test_exec_at_timeout_kills_the_command_and_its_children(local_environment, t
 
     assert elapsed < 3, f"exec took {elapsed:.1f}s to give up on a 1s timeout"
     for pid in map(int, (tmp_path / "pids").read_text().split()):
-        assert not is_running(pid), f"process {pid} outlived the timeout"
+        assert is_running(pid), f"process {pid} was killed at the timeout, which Docker does not do"
 
 
-def test_exec_at_timeout_still_raises_when_termination_floods_stdout(local_environment):
-    # The trap writes more than a pipe holds, so it blocks unless stdout is still being read.
-    command = "trap 'head -c 1000000 /dev/zero; exit 1' TERM; sleep 30 & wait"
+def test_stop_kills_what_a_timeout_left_running(local_environment, tmp_path):
+    pids = shlex.quote(str(tmp_path / "pids"))
+    command = f"sleep 30 & echo $! > {pids}; echo $$ >> {pids}; sleep 30"
+    with pytest.raises(RuntimeError):
+        run(local_environment.exec(command, timeout_sec=1))
 
-    async def bounded():
-        return await asyncio.wait_for(local_environment.exec(command, timeout_sec=1), 15)
+    run(local_environment.stop(delete=True))
 
-    started = time.monotonic()
-    with pytest.raises(RuntimeError, match=r"^Command timed out after 1 seconds$"):
-        run(bounded())
-    elapsed = time.monotonic() - started
+    for pid in map(int, (tmp_path / "pids").read_text().split()):
+        assert dies(pid), f"process {pid} outlived stop, as no container's would"
 
-    assert elapsed < 3, f"exec took {elapsed:.1f}s to give up on a 1s timeout"
+
+def test_stop_kills_jobs_a_command_put_in_process_groups_of_their_own(local_environment, tmp_path):
+    # As suss's time limit does, with job control.
+    pids = shlex.quote(str(tmp_path / "pids"))
+    command = f"set -m; sleep 30 & echo $! > {pids}; echo $$ >> {pids}; wait"
+    with pytest.raises(RuntimeError):
+        run(local_environment.exec(command, timeout_sec=1))
+
+    run(local_environment.stop(delete=True))
+
+    for pid in map(int, (tmp_path / "pids").read_text().split()):
+        assert dies(pid), f"process {pid} outlived stop, as no container's would"
 
 
 def test_exec_refuses_a_user_it_cannot_switch_to(local_environment):
@@ -135,3 +156,15 @@ def test_upload_dir_merges_into_an_existing_target(local_environment, tmp_path):
     assert (target / "suss-harness.toml").read_text() == "new"
     assert (target / "kept").read_text() == "kept"
     assert not (target / "claude-code").exists(), "the source dir was nested, not its contents"
+
+
+def test_stop_kills_a_job_its_command_left_behind_when_it_exited(local_environment, tmp_path):
+    # The job outlives its shell, so nothing links it to the command by parent any more.
+    pids = shlex.quote(str(tmp_path / "pids"))
+    command = f"set -m; sleep 30 > /dev/null 2>&1 & echo $! > {pids}"
+    run(local_environment.exec(command))
+
+    run(local_environment.stop(delete=True))
+
+    for pid in map(int, (tmp_path / "pids").read_text().split()):
+        assert dies(pid), f"process {pid} outlived stop, as no container's would"
