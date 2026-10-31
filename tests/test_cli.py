@@ -178,15 +178,31 @@ def test_the_regrade_allows_no_agent_host():
 
 
 def test_arguments_after_the_separator_go_to_the_agent_job_only():
-    # One of them looks like a flag the regrade takes, so it must not be mistaken for one.
-    extra = ["--max-retries", "2", "--job-name", "other"]
+    # `-m replay` is the regrade's own flag, so it must not be mistaken for one.
+    extra = ["--max-retries", "2", "-m", "replay"]
 
     agent, regrade = harbor_commands(make_config(), make_manifest(), "pro-go", STAMP, 1, extra)
     plain_agent, plain_regrade = harbor_commands(make_config(), make_manifest(), "pro-go", STAMP, 1)
 
     assert agent.argv == plain_agent.argv + extra
     assert regrade == plain_regrade
-    assert regrade.argv.count("--job-name") == 1
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--job-name", "other"],
+        ["--job-name=other"],
+        ["--jobs-dir", "elsewhere"],
+        ["--jobs-dir=elsewhere"],
+        ["-o", "elsewhere"],
+        ["-oelsewhere"],
+    ],
+)
+def test_arguments_that_would_move_the_agent_job_away_from_its_regrade_are_refused(extra):
+    # Harbor takes the last of a repeated option, so these would win over suss's own.
+    with pytest.raises(ValueError, match="regrade"):
+        harbor_commands(make_config(), make_manifest(), "pro-go", STAMP, 1, extra)
 
 
 def test_only_the_regrade_gets_pythonpath_and_it_is_absolute():

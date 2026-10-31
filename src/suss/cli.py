@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
 
+import typer.main
+from harbor.cli.main import app as harbor_app
 from harbor.cli.utils import parse_kwargs
 
 from suss.config import Config
@@ -48,6 +50,9 @@ def harbor_commands(
     must run in, except the regrade's PYTHONPATH. `harbor_args` go to the
     agent job only. With `check`, both take the lane's check directory and
     write under `checks/` instead of `results/`.
+
+    Raises ValueError when `harbor_args` set the agent job's name or jobs
+    directory, since its regrade would then replay a job that is not there.
     """
     lane_dir = f"lanes/{lane}-check" if check else f"lanes/{lane}"
     jobs_dir = PurePosixPath("checks" if check else "results", lane, config.arm.name)
@@ -69,6 +74,7 @@ def harbor_commands(
     for host in manifest.allowed_hosts:
         agent += ["--allow-agent-host", host]
     agent += ["--jobs-dir", str(jobs_dir), "--job-name", job_name, *harbor_args]
+    _refuse_moving_the_job(agent, jobs_dir, job_name)
 
     regrade = [
         *common,
@@ -89,9 +95,27 @@ def _kwarg(key: str, value: str) -> str:
 
     Harbor parses each value as JSON first, then as a Python literal, and
     strips it, so a value it would not return unchanged is written as a JSON
-    string. An ordinary one stays as it is, as the spec writes it.
+    string. An ordinary one stays as it is.
     """
     plain = f"{key}={value}"
     if parse_kwargs([plain]) == {key: value}:
         return plain
     return f"{key}={json.dumps(value)}"
+
+
+def _refuse_moving_the_job(argv: list[str], jobs_dir: PurePosixPath, job_name: str) -> None:
+    """
+    Raise ValueError unless Harbor would read `argv` as writing the job named
+    `job_name` to `jobs_dir`.
+
+    Harbor's own parser reads it, so every spelling of the options counts,
+    and of a repeated option Harbor takes the last.
+    """
+    run = typer.main.get_command(harbor_app).commands["run"]
+    params = run.make_context("run", argv[2:], resilient_parsing=True).params
+    if (params["job_name"], str(params["jobs_dir"])) != (job_name, str(jobs_dir)):
+        raise ValueError(
+            "the arguments after -- move the agent job away from its regrade:"
+            f" harbor would write {params['jobs_dir']}/{params['job_name']}"
+            f" instead of {jobs_dir}/{job_name}"
+        )
