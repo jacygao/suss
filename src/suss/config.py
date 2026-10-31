@@ -45,8 +45,8 @@ def load(path: Path, arm: str) -> Config:
     Paths in the file resolve from the directory holding it, whatever the
     current directory is. The caps are optional. Raises ConfigError, naming
     the file, when it is missing or is not TOML, when a required key is
-    missing, when the file does not define `arm`, or when a .env line is not
-    NAME=VALUE.
+    missing, when `k` is not a whole number of at least 1, when the file does
+    not define `arm`, or when a .env line is not NAME=VALUE.
     """
     path = Path(path).resolve()
     directory = path.parent
@@ -60,6 +60,9 @@ def load(path: Path, arm: str) -> Config:
     for key in REQUIRED:
         if key not in data:
             raise ConfigError(f"{path}: no {key!r}")
+    # bool is an int in Python, and true is not a number of jobs.
+    if not isinstance(data["k"], int) or isinstance(data["k"], bool) or data["k"] < 1:
+        raise ConfigError(f"{path}: 'k' must be a whole number of at least 1, not {data['k']!r}")
     arms = data.get("arms", {})
     if arm not in arms:
         raise ConfigError(f"arm {arm} is not defined in {path}")

@@ -65,15 +65,21 @@ class Project:
         """Make each named job behave as given, with job names' `-` written as `_`."""
         self.plan.write_text(json.dumps({name.replace("_", "-"): job for name, job in jobs.items()}))
 
-    def write_toml(self, extra: str = "", arm_extra: str = "", environment: str = "docker") -> None:
+    def write_toml(
+        self,
+        arm_extra: str = "",
+        environment: str = "docker",
+        k: str = "2",
+        max_seconds: str | None = "2700",
+    ) -> None:
+        cap = f"max_seconds = {max_seconds}\n" if max_seconds else ""
         (self.directory / "suss.toml").write_text(
             f'swe_bench_pro = "{self.checkout}"\n'
             'dataset = "swe-bench-pro-v2"\n'
             f'environment = "{environment}"\n'
-            "k = 2\n"
+            f"k = {k}\n"
             "concurrency = 4\n"
-            "max_seconds = 2700\n"
-            f"{extra}\n"
+            f"{cap}\n"
             "[arms.peer-review]\n"
             'harness = "adapter"\n'
             f"{arm_extra}\n"
@@ -320,6 +326,63 @@ def test_a_max_seconds_over_any_lanes_timeout_is_refused_before_any_lane_runs(pr
     assert code != 0
     assert_nothing_ran(project)
     assert "pro-python" in capfd.readouterr().err
+
+
+@pytest.mark.parametrize("k", ["0", "-1", "1.5", '"2"'])
+def test_a_k_that_is_not_a_whole_number_of_jobs_is_refused_before_anything_runs(project, capfd, k):
+    project.write_toml(k=k)
+
+    code = project.run("peer-review", "pro-go", "--", "-k", "2")
+
+    err = capfd.readouterr().err
+    assert code != 0
+    assert err.startswith("error: ") and "'k'" in err, err
+    assert_nothing_ran(project)
+
+
+def test_a_later_lane_that_cannot_be_built_is_refused_before_any_lane_runs(project, capfd):
+    stray = project.directory / "lanes" / "pro-python" / "notes.txt"
+    stray.parent.mkdir(parents=True)
+    stray.write_text("not a link")
+
+    code = project.run("peer-review", "pro-go", "pro-python")
+
+    err = capfd.readouterr().err
+    assert code != 0
+    assert err.startswith("error: ") and str(stray) in err, err
+    assert project.records() == []
+    assert not (project.directory / "lanes" / "pro-go").exists()
+
+
+def test_a_check_lane_that_cannot_be_built_is_refused_before_anything_runs(project, capfd):
+    stray = project.directory / "lanes" / "pro-go-check" / "notes.txt"
+    stray.parent.mkdir(parents=True)
+    stray.write_text("not a link")
+
+    code = project.run("peer-review", "pro-python", "pro-go", "--check")
+
+    assert code != 0
+    assert str(stray) in capfd.readouterr().err
+    assert project.records() == []
+
+
+@pytest.mark.parametrize(
+    "contents, message", [(None, "task.toml: no such file"), ("[agent\n", "task.toml: not valid TOML")]
+)
+def test_a_task_toml_suss_cannot_read_is_an_error_naming_it(project, capfd, contents, message):
+    task = project.checkout / "v2" / "tasks" / "instance_ansible__ansible-ggg"
+    task.mkdir()
+    if contents is not None:
+        (task / "task.toml").write_text(contents)
+    # With no max_seconds nothing reads the timeout, so the image reader meets the file first.
+    project.write_toml(max_seconds="2700" if contents else None)
+
+    code = project.run("peer-review", "pro-python")
+
+    err = capfd.readouterr().err
+    assert code != 0
+    assert err.startswith("error: ") and f"instance_ansible__ansible-ggg/{message}" in err, err
+    assert_nothing_ran(project)
 
 
 def test_the_max_seconds_error_is_printed_as_the_spec_shows(project, capfd):

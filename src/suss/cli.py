@@ -366,6 +366,7 @@ def _plan(
     found = lanes.tasks(settings.swe_bench_pro, lane)
     # The whole lane even for a check, which tests that the arm can run it.
     lanes.check_max_seconds(settings.arm, lane, found)
+    lanes.check_buildable(settings.path.parent / "lanes", lane, check)
     used = found[:1] if check else found
     images = lanes.images(used) if settings.environment == "docker" else []
     pairs = []
