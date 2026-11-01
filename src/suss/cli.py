@@ -4,6 +4,7 @@ import argparse
 import codecs
 import fcntl
 import functools
+import importlib.util
 import io
 import json
 import os
@@ -301,6 +302,8 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
     dry_run = _dry_run()
     run_stamp = stamp(clock())
     settings = config.load(directory / "suss.toml", args.arm)
+    if settings.environment == "modal":
+        _require_modal()
     root = settings.path.parent
     manifest = load_manifest(settings.arm.harness)
     for at, lane in enumerate(args.lanes):
@@ -346,6 +349,21 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
     for failure in failed_regrades:
         print(f"error: {failure}, so its trials may not be graded", file=sys.stderr)
     return 1 if failed_regrades else 0
+
+
+def _require_modal() -> None:
+    """
+    Raise _Stop, naming the command that installs it, when Modal's client is
+    not installed beside suss, where the harbor suss runs imports it from.
+
+    It looks the module up without importing it, so an installed client that
+    fails to import is not reported as missing: Harbor's own import of it
+    shows the real error.
+    """
+    if importlib.util.find_spec("modal") is None:
+        raise _Stop(
+            "environment is modal, but Modal's client is not installed: run uv sync --extra modal"
+        )
 
 
 def _plan(

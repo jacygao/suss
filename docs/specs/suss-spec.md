@@ -33,7 +33,7 @@ peer-review − claude-code   +6% [+1%, +11%]
 |---|---|---|
 | Harbor | 0.22.0 | Runs each task in a sandbox, runs suss in it, and grades the result with the task's own verifier. |
 | Docker | Docker Desktop 4.86.0 or later on macOS. On Linux and Windows, a Docker engine whose kernel has `CONFIG_NFT_FIB_INET`. | The sandboxes, including every SWE-bench Pro lane's, with `environment = "docker"` in `suss.toml`. Without `CONFIG_NFT_FIB_INET`, Harbor refuses every SWE-bench Pro task. |
-| Modal | 1.5.1 or later, and the account Harbor's `modal` environment uses | The sandboxes, when `environment` is `modal`. Versions before 1.5.1 cannot take a network policy per phase. |
+| Modal | 1.5.1 or later, and the account Harbor's `modal` environment uses. `uv sync --extra modal` installs its client into suss's environment, through Harbor's own `modal` extra at the Harbor version above. A plain `uv sync` leaves it out. | The sandboxes, when `environment` is `modal`. Versions before 1.5.1 cannot take a network policy per phase. |
 | SWE-bench Pro | a checkout of `scaleapi/SWE-bench_Pro-os` | The tasks, under `v2/tasks/`, and the regrading agent, under `v2/tooling/`. |
 | Python | 3.12 | Suss itself, which Harbor loads as a custom agent. |
 | `uv` | any | Installs suss and Harbor. |
@@ -377,7 +377,15 @@ params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "d
 - `params` is passed to the harness as it stands, as the JSON file `--params`
   names. Suss reads none of it.
 - `environment` is passed to `harbor run` as `-e`: `docker` runs the sandboxes
-  on this machine, and `modal` runs them on Modal.
+  on this machine, and `modal` runs them on Modal. With `modal`, when Modal's
+  client is not installed in suss's environment, `suss run` exits with an error
+  before it builds a lane or runs any job, with `DRY_RUN=1` and `--check` too:
+
+  ```
+  $ suss run peer-review pro-go
+  error: environment is modal, but Modal's client is not installed: run uv sync
+  --extra modal
+  ```
 - `max_cost_usd` and `max_seconds` cap each trial: the harness keeps its
   models' spend under `max_cost_usd`, and suss stops `run` after `max_seconds`.
   Set at the top, they apply to every arm, and an arm may set its own.
