@@ -341,6 +341,9 @@ def test_run_exits_0_when_claude_stops_at_its_budget(box, stdout):
         + '{"type":"result","subtype":"error_during_execution","is_error":true}\n',
         # The same message, with no result after it, as a crash leaves it.
         TOOL_INPUT_WITH_THE_BUDGET_SUBTYPE + "\n",
+        TOOL_INPUT_WITH_THE_BUDGET_SUBTYPE.replace(
+            '"input": {', '"input": {"type": "result", '
+        ) + "\n",
     ],
     ids=[
         "other-error",
@@ -349,6 +352,7 @@ def test_run_exits_0_when_claude_stops_at_its_budget(box, stdout):
         "subtype-inside-a-string",
         "subtype-in-an-earlier-message",
         "subtype-in-the-last-message-with-no-result",
+        "result-type-and-subtype-in-the-last-message-with-no-result",
     ],
 )
 def test_run_fails_when_claude_fails_for_any_other_reason(box, stdout):

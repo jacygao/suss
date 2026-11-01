@@ -52,6 +52,10 @@ Each model call's final usage, in its `message_delta` event:
 - The result's `total_cost_usd` is the run's cost in dollars. On the budget stop
   the result's own `usage` read all zeros while `total_cost_usd` was 0.0067723,
   so read the tokens from the `message_delta` events, not from the result.
+- Every message but the result opens with its type, as `{"type":"assistant"`.
+  The result opens with `{"duration_api_ms"`. That held for all 117 lines of
+  six runs, and `run` relies on it to tell the result from a message that only
+  holds its keys.
 - A call cut off by the kill has a `message_start` event, with its input and
   cache tokens, and no `message_delta`. Its output tokens are not in `run.log`.
 

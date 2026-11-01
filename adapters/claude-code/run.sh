@@ -59,10 +59,19 @@ last_has() {
         | grep -Eq "[{,][[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*\"$2\""
 }
 
+# Whether the stream's last line opens with a `type` other than `result`. Every
+# message but the result opens with its own type, and the result opens with
+# another key, so such a line is another message whatever its contents hold.
+last_opens_as_another_message() {
+    sed -n '$p' "$dir/out" | grep -Eq '^\{[[:space:]]*"type"[[:space:]]*:' \
+        && ! sed -n '$p' "$dir/out" | grep -Eq '^\{[[:space:]]*"type"[[:space:]]*:[[:space:]]*"result"'
+}
+
 # Claude Code exits 1 at its budget, as it does for any error, so only the
 # result's `subtype` tells the two apart. The result is the stream's last line,
 # and a crash leaves some other message there.
-if [ "$status" -ne 0 ] && last_has type result && last_has subtype error_max_budget_usd; then
+if [ "$status" -ne 0 ] && ! last_opens_as_another_message \
+    && last_has type result && last_has subtype error_max_budget_usd; then
     status=0
 fi
 exit "$status"
