@@ -8,7 +8,9 @@ tested without `jq` or Python, as a task image may lack both.
 
 import json
 import os
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -21,6 +23,24 @@ SYSTEM_PATH = "/usr/bin:/bin"
 BUDGET_STOP = (
     '{"type":"result","subtype":"error_max_budget_usd","is_error":true,'
     '"errors":["Reached maximum budget ($0.01)"],"total_cost_usd":0.153664}'
+)
+
+# What Claude Code 2.1.293 printed, run as `run` runs it, when it stopped at a
+# $0.001 budget after its first API call. That call's token usage is in its
+# `message_delta` event, and the result, which alone carries a cost, is last.
+REAL_STREAM = (Path(__file__).resolve().parent / "claude-code-budget-stop.jsonl").read_text()
+USAGE_LINE = next(line for line in REAL_STREAM.splitlines() if '"type":"message_delta"' in line)
+
+# A tool's input, which the stream holds as an object rather than a string.
+TOOL_INPUT_WITH_THE_BUDGET_SUBTYPE = json.dumps(
+    {
+        "type": "assistant",
+        "message": {
+            "content": [
+                {"type": "tool_use", "name": "Bash", "input": {"subtype": "error_max_budget_usd"}}
+            ]
+        },
+    }
 )
 
 
@@ -74,36 +94,64 @@ def stand_in_claude(box: Path, stdout: str, exit_code: int) -> None:
     )
 
 
+def environment(box: Path) -> dict[str, str]:
+    return {"PATH": f"{box / 'bin'}:{SYSTEM_PATH}", "HOME": str(box / "home")}
+
+
 def execute(box: Path, script: str, *args: str) -> subprocess.CompletedProcess:
-    env = {"PATH": f"{box / 'bin'}:{SYSTEM_PATH}", "HOME": str(box / "home")}
     return subprocess.run(
         [str(ADAPTER / script), *args],
         cwd=box / "workspace",
-        env=env,
+        env=environment(box),
         capture_output=True,
         text=True,
         timeout=30,
     )
 
 
-def run(box: Path, *extra: str) -> subprocess.CompletedProcess:
-    return execute(
-        box,
-        "run.sh",
+def run_args(box: Path) -> list[str]:
+    return [
         "--workspace",
         str(box / "workspace"),
         "--instruction",
         str(box / "opt" / "instruction.md"),
         "--params",
         str(box / "opt" / "params.json"),
-        *extra,
-    )
+    ]
+
+
+def run(box: Path, *extra: str) -> subprocess.CompletedProcess:
+    return execute(box, "run.sh", *run_args(box), *extra)
+
+
+def start_run(box: Path, log: Path) -> subprocess.Popen:
+    """Start run.sh with its output in `log`, in a process group of its own, as suss does."""
+    with open(log, "wb") as out:
+        return subprocess.Popen(
+            [str(ADAPTER / "run.sh"), *run_args(box), "--max-cost-usd", "0.001"],
+            cwd=box / "workspace",
+            env=environment(box),
+            stdout=out,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+
+def wait_for(condition, seconds: float = 10) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.05)
+    return condition()
 
 
 EXPECTED_CLAUDE_ARGV = [
     "-p",
     "--output-format",
-    "json",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
     "--model",
     "claude-sonnet-5",
     "--effort",
@@ -261,9 +309,8 @@ def test_run_fails_without_a_model(box):
     [
         BUDGET_STOP,
         BUDGET_STOP.replace('":', '": ').replace(",", ", "),
-        json.dumps(json.loads(BUDGET_STOP), indent=2),
     ],
-    ids=["compact", "spaced", "indented"],
+    ids=["compact", "spaced"],
 )
 def test_run_exits_0_when_claude_stops_at_its_budget(box, stdout):
     stand_in_claude(box, stdout, 1)
@@ -288,8 +335,25 @@ def test_run_exits_0_when_claude_stops_at_its_budget(box, stdout):
                 "result": 'I saw {"subtype":"error_max_budget_usd"} in the logs',
             }
         ),
+        # Only an earlier message carries the budget subtype.
+        TOOL_INPUT_WITH_THE_BUDGET_SUBTYPE
+        + "\n"
+        + '{"type":"result","subtype":"error_during_execution","is_error":true}\n',
+        # The same message, with no result after it, as a crash leaves it.
+        TOOL_INPUT_WITH_THE_BUDGET_SUBTYPE + "\n",
+        TOOL_INPUT_WITH_THE_BUDGET_SUBTYPE.replace(
+            '"input": {', '"input": {"type": "result", '
+        ) + "\n",
     ],
-    ids=["other-error", "no-output", "text", "subtype-inside-a-string"],
+    ids=[
+        "other-error",
+        "no-output",
+        "text",
+        "subtype-inside-a-string",
+        "subtype-in-an-earlier-message",
+        "subtype-in-the-last-message-with-no-result",
+        "result-type-and-subtype-in-the-last-message-with-no-result",
+    ],
 )
 def test_run_fails_when_claude_fails_for_any_other_reason(box, stdout):
     stand_in_claude(box, stdout, 1)
@@ -314,3 +378,51 @@ def test_run_writes_nothing_inside_the_workspace(box):
 
     recorded(box / "records" / "claude")
     assert snapshot(box / "workspace") == before
+
+
+def test_run_streams_claudes_messages_as_they_arrive_and_keeps_them_when_killed(box):
+    # suss stops run at max_seconds by killing its process group, which leaves
+    # run no chance to write out anything it held back.
+    head = REAL_STREAM[: REAL_STREAM.index(USAGE_LINE) + len(USAGE_LINE) + 1]
+    (box / "claude-stdout").write_text(head)
+    stand_in(box, "claude", f"cat > /dev/null\ncat '{box / 'claude-stdout'}'\nexec sleep 60\n")
+    log = box / "run.log"
+
+    process = start_run(box, log)
+    try:
+        arrived = wait_for(lambda: USAGE_LINE in log.read_text())
+    finally:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+
+    assert arrived, "claude's usage had not reached run's output while claude was still running"
+    assert log.read_text() == head
+
+
+def test_run_streams_claudes_messages_and_exits_0_when_the_stream_ends_at_the_budget(box):
+    head, result = REAL_STREAM.rstrip("\n").rsplit("\n", 1)
+    (box / "head").write_text(head + "\n")
+    (box / "result").write_text(result + "\n")
+    go = box / "go"
+    stand_in(
+        box,
+        "claude",
+        f"cat > /dev/null\ncat '{box / 'head'}'\n"
+        f"while [ ! -e '{go}' ]; do sleep 0.05; done\n"
+        f"cat '{box / 'result'}'\nexit 1\n",
+    )
+    log = box / "run.log"
+
+    process = start_run(box, log)
+    try:
+        arrived = wait_for(lambda: USAGE_LINE in log.read_text())
+        go.touch()
+        code = process.wait(timeout=10)
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+
+    assert arrived, "claude's usage had not reached run's output while claude was still running"
+    assert code == 0, "a budget stop is not a harness failure"
+    assert log.read_text() == REAL_STREAM
