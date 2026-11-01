@@ -31,6 +31,13 @@ EXEC_TIMEOUT_GRACE_SECONDS = 30
 # How long stopping a cancelled command may take. Harbor waits on a cancelled
 # agent with no limit, so a stuck exec here would hang the trial.
 STOP_SECONDS = 10
+# Set to a new token on each command suss starts. Every process the command
+# starts inherits it, whatever session or process group it moves to, so the
+# stop finds them by it in /proc.
+MARKER = "SUSS_START_TOKEN"
+# Each pass of the stop kills what it finds, and the next catches what was
+# forked meanwhile. The cap keeps a process that will not die from hanging it.
+STOP_PASSES = 50
 
 
 class ManifestError(Exception):
@@ -261,7 +268,7 @@ async def _start(
     # earlier command left behind.
     token = secrets.token_hex(8)
     group_file = f"{paths.logs.rstrip('/')}/{PurePosixPath(log).stem}-{token}.pgid"
-    command = _limited(command, timeout_sec, group_file)
+    command = _limited(f"{MARKER}={token} {command}", timeout_sec, group_file, token)
     # Only the named variables, so nothing else in the .env reaches the harness.
     passed = {name: dotenv[name] for name in manifest.env if name in dotenv}
     exec_timeout = None
@@ -272,16 +279,18 @@ async def _start(
     except RuntimeError as error:
         if not _is_exec_timeout(error):
             raise
+        # The command goes on in the sandbox after exec gives up on it.
+        await _stop(env, group_file, token)
         return None
     except asyncio.CancelledError:
-        await _stop(env, group_file)
+        await _stop(env, group_file, token)
         raise
     if TIMED_OUT in (result.stdout or "").splitlines():
         return None
     return result.return_code
 
 
-def _limited(command: str, seconds: float | None, group_file: str) -> str:
+def _limited(command: str, seconds: float | None, group_file: str, token: str) -> str:
     """
     Wrap a command so that the sandbox itself can kill it, and every process
     it started: after `seconds`, when given, and through `_stop` at any time.
@@ -291,11 +300,13 @@ def _limited(command: str, seconds: float | None, group_file: str) -> str:
     wrapper needs only bash, which Harbor runs every command with, and `sleep`.
 
     It exits with the command's exit code. At the limit it prints TIMED_OUT,
-    then kills the command. While the command runs, `group_file` holds the id
-    of its process group, and the wrapper deletes it once the command exits.
+    then kills the command and every process carrying `token`, and exits only
+    once they are dead. While the command runs, `group_file` holds the id of
+    its process group, and the wrapper deletes it once the command exits.
     """
     group = shlex.quote(group_file)
     lines = [
+        _KILL_MARKED,
         # Job control puts each background job in a process group of its
         # own, which a kill of the group then reaches all of.
         "set -m",
@@ -305,31 +316,62 @@ def _limited(command: str, seconds: float | None, group_file: str) -> str:
     ]
     if seconds is not None:
         lines += [
-            # `&&`, so that a missing sleep leaves the run to exec's backstop
-            # rather than killing it at once. The marker goes out before the
-            # kill, so killing the timer later cannot erase a timeout.
-            f"{{ sleep {seconds} > /dev/null 2>&1 && echo {shlex.quote(TIMED_OUT)}"
-            " && kill -KILL -- -$run 2> /dev/null; } &",
+            # The timer signals the wrapper rather than killing the command
+            # itself, so the kill finishes before the wrapper exits. `&&`, so
+            # that a missing sleep leaves the run to exec's backstop.
+            "trap 'timed_out=1' USR1",
+            f"{{ sleep {seconds} > /dev/null 2>&1 && kill -USR1 $$; }} &",
             "timer=$!",
         ]
-    lines += ['wait "$run"', "code=$?", f"rm -f {group}"]
+    lines += ['wait "$run"', "code=$?"]
     if seconds is not None:
-        lines.append('kill -KILL -- "-$timer" 2> /dev/null')
-    lines.append('exit "$code"')
+        lines += [
+            'if [ -n "$timed_out" ]; then',
+            f"  echo {shlex.quote(TIMED_OUT)}",
+            '  kill -KILL -- "-$run" 2> /dev/null',
+            f"  suss_kill_marked {token}",
+            "fi",
+            'kill -KILL -- "-$timer" 2> /dev/null',
+        ]
+    lines += [f"rm -f {group}", 'exit "$code"']
     return "\n".join(lines)
 
 
-async def _stop(env: BaseEnvironment, group_file: str) -> None:
+# A bash function that kills every process whose environment holds MARKER set
+# to the token it is given. It reads /proc with bash alone, since an image need
+# not have ps, grep or tr. A process that has exited reads as empty there.
+_KILL_MARKED = f"""suss_kill_marked() {{
+  local pass p v found
+  for ((pass = 0; pass < {STOP_PASSES}; pass++)); do
+    found=
+    for p in /proc/[0-9]*; do
+      while IFS= read -r -d '' v; do
+        if [ "$v" = "{MARKER}=$1" ]; then
+          kill -KILL "${{p#/proc/}}" 2> /dev/null && found=1
+          break
+        fi
+      done 2> /dev/null < "$p/environ"
+    done
+    [ -n "$found" ] || return 0
+  done
+}}"""
+
+
+async def _stop(env: BaseEnvironment, group_file: str, token: str) -> None:
     """
     Kill the process group that `group_file` names, if the command is still
-    running.
+    running, and every process that carries `token`.
 
     Never raises an Exception, and gives up after STOP_SECONDS. A stop that
     fails leaves the harness running, but the caller still has a trial to
     record and a cancel to pass on.
     """
     group = shlex.quote(group_file)
-    command = f'[ -f {group} ] && kill -KILL -- "-$(cat {group})" 2> /dev/null; rm -f {group}'
+    command = (
+        f"{_KILL_MARKED}\n"
+        f'[ -f {group} ] && kill -KILL -- "-$(cat {group})" 2> /dev/null; rm -f {group}\n'
+        f"suss_kill_marked {token}"
+    )
     try:
         await asyncio.wait_for(env.exec(command, timeout_sec=STOP_SECONDS), STOP_SECONDS + 5)
     except Exception:
