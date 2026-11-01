@@ -263,6 +263,25 @@ def test_a_run_stopped_as_execs_own_timeout_fires_is_still_timed_out(
     assert_all_dead(box)
 
 
+def test_a_run_that_only_execs_own_timeout_stops_is_still_stopped(
+    local_environment, box, monkeypatch
+):
+    # exec gives up long before max_seconds, as it does where the sandbox has no `sleep`.
+    box.then("run", f"{RECORD_PIDS}\nsleep 30")
+    exec_as_given = local_environment.exec
+
+    async def early(command, **kwargs):
+        if kwargs.get("timeout_sec") is not None:
+            kwargs["timeout_sec"] = 1
+        return await exec_as_given(command, **kwargs)
+
+    monkeypatch.setattr(local_environment, "exec", early)
+    result = run_in(local_environment, box, arm(max_seconds=60))
+
+    assert result.status == "timed-out"
+    assert_all_dead(box)
+
+
 def test_a_run_under_max_seconds_keeps_its_exit_code(local_environment, box):
     box.then("run", "echo finished\nexit 5")
 

@@ -72,21 +72,7 @@ class LocalEnvironment(BaseEnvironment):
         Raises NotImplementedError for a user, since this machine cannot run
         the command as anyone else.
         """
-        user = self._resolve_user(user)
-        if user is not None:
-            raise NotImplementedError(f"cannot run a command as user {user!r} locally")
-
-        process = subprocess.Popen(
-            ["bash", "-c", command],
-            cwd=cwd or self.task_env_config.workdir,
-            env={**os.environ, **(self._merge_env(env) or {})},
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            # A session of its own, so that stop can kill what it started too.
-            start_new_session=True,
-        )
-        self._sessions = [*getattr(self, "_sessions", []), process.pid]
+        process = self._start(command, cwd, self._merge_env(env), self._resolve_user(user))
         # Read on a thread rather than the event loop, since a command left
         # running at a timeout outlives the loop. Docker goes on reading what
         # it writes, so it never blocks on a full pipe.
@@ -106,6 +92,24 @@ class LocalEnvironment(BaseEnvironment):
             stderr=None,
             return_code=process.returncode or 0,
         )
+
+    def _start(
+        self, command: str, cwd: str | None, env: dict[str, str] | None, user: str | int | None
+    ) -> subprocess.Popen:
+        if user is not None:
+            raise NotImplementedError(f"cannot run a command as user {user!r} locally")
+        process = subprocess.Popen(
+            ["bash", "-c", command],
+            cwd=cwd or self.task_env_config.workdir,
+            env={**os.environ, **(env or {})},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            # A session of its own, so that stop can kill what it started too.
+            start_new_session=True,
+        )
+        self._sessions = [*getattr(self, "_sessions", []), process.pid]
+        return process
 
     async def upload_file(self, source_path: Path | str, target_path: str):
         Path(target_path).parent.mkdir(parents=True, exist_ok=True)
@@ -132,5 +136,72 @@ def local_environment(tmp_path_factory):
         trial_paths=TrialPaths(root / "trial"),
         task_env_config=EnvironmentConfig(),
     )
+    yield environment
+    asyncio.run(environment.stop(delete=True))
+
+
+# Small, with bash, ps and setsid, as the task images are.
+CONTAINER_IMAGE = "ubuntu:24.04"
+
+
+class ContainerEnvironment(LocalEnvironment):
+    """
+    The stand-in's commands, run in a real Docker container as Harbor's
+    `docker exec` runs them, for what only a container can show: `/proc`, the
+    user a command runs as, and what is left running after a stop.
+
+    The container mounts a directory of this machine at the same path, so
+    paths mean the same on both sides. Process ids do not: they are the
+    container's, and only a command run in it can look them up.
+    """
+
+    container: str
+
+    def _start(
+        self, command: str, cwd: str | None, env: dict[str, str] | None, user: str | int | None
+    ) -> subprocess.Popen:
+        argv = ["docker", "exec"]
+        if cwd:
+            argv += ["-w", cwd]
+        for name, value in (env or {}).items():
+            argv += ["-e", f"{name}={value}"]
+        if user is not None:
+            argv += ["-u", str(user)]
+        return subprocess.Popen(
+            [*argv, self.container, "bash", "-c", command],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+    async def stop(self, delete: bool):
+        subprocess.run(["docker", "rm", "-f", self.container], capture_output=True)
+
+
+@pytest.fixture
+def container_environment(tmp_path_factory):
+    """A ContainerEnvironment whose mounted directory is `environment.environment_dir`."""
+    if shutil.which("docker") is None or subprocess.run(
+        ["docker", "info"], capture_output=True
+    ).returncode != 0:
+        pytest.skip("Docker is not running")
+    root = tmp_path_factory.mktemp("container-environment").resolve()
+    # Open to every user, so a command run as a user other than root can write here.
+    root.chmod(0o777)
+    started = subprocess.run(
+        ["docker", "run", "-d", "--rm", "-v", f"{root}:{root}", CONTAINER_IMAGE,
+         "sh", "-c", "sleep infinity"],
+        capture_output=True,
+        text=True,
+    )
+    assert started.returncode == 0, f"cannot start a container: {started.stderr}"
+    environment = ContainerEnvironment(
+        environment_dir=root,
+        environment_name="container",
+        session_id="container",
+        trial_paths=TrialPaths(root / "trial"),
+        task_env_config=EnvironmentConfig(),
+    )
+    environment.container = started.stdout.strip()
     yield environment
     asyncio.run(environment.stop(delete=True))
