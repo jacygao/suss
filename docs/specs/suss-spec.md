@@ -79,8 +79,9 @@ In the agent phase, suss:
 5. **captures the patch**, the whole change from the base;
 6. **writes the trial record**, `suss.json`, and returns.
 
-Harbor then runs the task's verifier in the same sandbox. Suss ignores that
-result. The trial's result comes from a regrade in a fresh sandbox.
+Harbor then ends the trial without running the task's verifier, because suss
+runs every agent job with `--disable-verification`. The trial's result comes
+from a regrade in a fresh sandbox.
 
 ### Capturing the patch
 
@@ -275,6 +276,7 @@ Then, K times, it runs an agent job and its regrade:
 <env>/bin/harbor run -p lanes/pro-go -e docker -n 16 -k 1 \
   -a suss.agent:SussAgent --ak arm=peer-review --ak config=suss.toml \
   --allow-agent-host api.anthropic.com --allow-agent-host api.deepseek.com \
+  --disable-verification \
   --jobs-dir results/pro-go/peer-review --job-name <stamp>-1
 
 PYTHONPATH=<checkout>/v2/tooling <env>/bin/harbor run -p lanes/pro-go -e docker -n 16 -k 1 \
@@ -300,6 +302,7 @@ nothing:
 
 - An option suss sets on the agent job or its regrade, even with suss's own
   value: `-p`, `-e`, `-n`, `-k`, `-a`, `-m`, `--ak`, `--allow-agent-host`,
+  `--disable-verification` and its opposite `--enable-verification`,
   `--jobs-dir` and `--job-name`.
 - An option that changes the tasks or the agent the agent job runs, or keeps it
   from leaving a trial on this machine for its regrade: `-c`, `-d`, `-t`, `-i`,
