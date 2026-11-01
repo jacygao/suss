@@ -3,8 +3,10 @@ import os
 import shlex
 import subprocess
 import sys
+import types
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from importlib.machinery import ModuleSpec
 from pathlib import Path
 
 import pytest
@@ -142,6 +144,11 @@ def project(tmp_path, monkeypatch) -> Project:
     monkeypatch.setenv("STAND_IN_DOCKER_ARCH", "x86_64")
     monkeypatch.delenv("DRY_RUN", raising=False)
     monkeypatch.delenv("PYTHONPATH", raising=False)
+    # Installed, whether or not this environment has the extra. A test that
+    # needs it missing puts None in its place.
+    modal = types.ModuleType("modal")
+    modal.__spec__ = ModuleSpec("modal", None)
+    monkeypatch.setitem(sys.modules, "modal", modal)
     return created
 
 
@@ -503,6 +510,57 @@ def test_a_dry_run_value_other_than_1_is_refused(project, capfd, monkeypatch):
     assert code != 0
     assert err.startswith("error: ") and "DRY_RUN" in err
     assert_nothing_ran(project)
+
+
+# Modal
+
+
+@pytest.mark.parametrize(
+    "dry_run, check", [(False, False), (True, False), (False, True)], ids=["run", "dry-run", "check"]
+)
+def test_modal_without_its_client_is_refused_naming_the_install_before_anything_runs(
+    project, capfd, monkeypatch, dry_run, check
+):
+    if dry_run:
+        monkeypatch.setenv("DRY_RUN", "1")
+    # A None entry makes the module unfindable, as though it were not installed.
+    monkeypatch.setitem(sys.modules, "modal", None)
+    project.write_toml(environment="modal")
+
+    code = project.run("peer-review", "pro-go", *(["--check"] if check else []))
+
+    out, err = capfd.readouterr()
+    assert code != 0
+    assert err == (
+        "error: environment is modal, but Modal's client is not installed: "
+        "run uv sync --extra modal\n"
+    )
+    assert out == ""
+    assert_nothing_ran(project)
+
+
+def test_a_modal_client_that_fails_to_import_is_not_reported_as_missing(
+    project, capfd, monkeypatch, tmp_path
+):
+    broken = tmp_path / "site" / "modal"
+    broken.mkdir(parents=True)
+    (broken / "__init__.py").write_text("raise RuntimeError('broken install')\n")
+    monkeypatch.delitem(sys.modules, "modal")
+    monkeypatch.syspath_prepend(str(broken.parent))
+    project.write_toml(environment="modal")
+
+    code = project.run("peer-review", "pro-go")
+
+    assert code == 0, capfd.readouterr().err
+    assert len(project.records("harbor")) == 4
+
+
+def test_docker_runs_without_modals_client(project, monkeypatch):
+    monkeypatch.setitem(sys.modules, "modal", None)
+
+    assert project.run("peer-review", "pro-go") == 0
+
+    assert len(project.records("harbor")) == 4
 
 
 # Pulling images
