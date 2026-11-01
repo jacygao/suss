@@ -31,6 +31,18 @@ BUDGET_STOP = (
 REAL_STREAM = (Path(__file__).resolve().parent / "claude-code-budget-stop.jsonl").read_text()
 USAGE_LINE = next(line for line in REAL_STREAM.splitlines() if '"type":"message_delta"' in line)
 
+# A tool's input, which the stream holds as an object rather than a string.
+TOOL_INPUT_WITH_THE_BUDGET_SUBTYPE = json.dumps(
+    {
+        "type": "assistant",
+        "message": {
+            "content": [
+                {"type": "tool_use", "name": "Bash", "input": {"subtype": "error_max_budget_usd"}}
+            ]
+        },
+    }
+)
+
 
 def snapshot(directory: Path) -> dict[str, bytes]:
     return {
@@ -323,24 +335,12 @@ def test_run_exits_0_when_claude_stops_at_its_budget(box, stdout):
                 "result": 'I saw {"subtype":"error_max_budget_usd"} in the logs',
             }
         ),
-        # Only an earlier message carries the budget subtype, here as a tool's
-        # input, which the stream holds as an object rather than a string.
-        json.dumps(
-            {
-                "type": "assistant",
-                "message": {
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "name": "Bash",
-                            "input": {"subtype": "error_max_budget_usd"},
-                        }
-                    ]
-                },
-            }
-        )
+        # Only an earlier message carries the budget subtype.
+        TOOL_INPUT_WITH_THE_BUDGET_SUBTYPE
         + "\n"
         + '{"type":"result","subtype":"error_during_execution","is_error":true}\n',
+        # The same message, with no result after it, as a crash leaves it.
+        TOOL_INPUT_WITH_THE_BUDGET_SUBTYPE + "\n",
     ],
     ids=[
         "other-error",
@@ -348,6 +348,7 @@ def test_run_exits_0_when_claude_stops_at_its_budget(box, stdout):
         "text",
         "subtype-inside-a-string",
         "subtype-in-an-earlier-message",
+        "subtype-in-the-last-message-with-no-result",
     ],
 )
 def test_run_fails_when_claude_fails_for_any_other_reason(box, stdout):

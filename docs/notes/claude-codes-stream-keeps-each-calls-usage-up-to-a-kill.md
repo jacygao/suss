@@ -26,8 +26,8 @@ recheck-when: the example arm pins a Claude Code version other than 2.1.293
 - **`run` still tests the result's `subtype` for the budget stop, now on the
   stream's last line.** Claude Code exits 1 at its budget in this format too,
   and its last line is the result with `"subtype":"error_max_budget_usd"`.
-  Testing only the last line keeps an earlier message, such as a tool's input,
-  from passing a crash off as a budget stop.
+  Testing only the last line, and only when it has `"type":"result"`, keeps a
+  tool's input from passing a crash off as a budget stop.
 
 ## Needs your input
 

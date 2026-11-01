@@ -51,12 +51,18 @@ trap 'rm -rf "$dir"' EXIT
 } | tee "$dir/out"
 read -r status < "$dir/status" || status=1
 
+# Whether the stream's last line has the key $1 with the string value $2. A `"`
+# inside a JSON string is always escaped, so one following `{` or `,` opens a
+# key, never text.
+last_has() {
+    sed -n '$p' "$dir/out" \
+        | grep -Eq "[{,][[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*\"$2\""
+}
+
 # Claude Code exits 1 at its budget, as it does for any error, so only the
-# result's `subtype` tells the two apart. The result is the stream's last
-# line. A `"` inside a JSON string is always escaped, so one following `{` or
-# `,` opens a key, never text.
-if [ "$status" -ne 0 ] && sed -n '$p' "$dir/out" \
-    | grep -Eq '[{,][[:space:]]*"subtype"[[:space:]]*:[[:space:]]*"error_max_budget_usd"'; then
+# result's `subtype` tells the two apart. The result is the stream's last line,
+# and a crash leaves some other message there.
+if [ "$status" -ne 0 ] && last_has type result && last_has subtype error_max_budget_usd; then
     status=0
 fi
 exit "$status"
