@@ -317,20 +317,27 @@ def _limited(command: str, seconds: float | None, group_file: str, token: str) -
     if seconds is not None:
         lines += [
             # The timer signals the wrapper rather than killing the command
-            # itself, so the kill finishes before the wrapper exits. `&&`, so
-            # that a missing sleep leaves the run to exec's backstop.
-            "trap 'timed_out=1' USR1",
+            # itself, so the kill finishes before the wrapper exits. The
+            # handler does the kill and exits, so a signal that arrives before
+            # `wait` starts is not lost. `&&`, so that a missing sleep leaves
+            # the run to exec's backstop.
+            "on_timeout() {",
+            f"  echo {shlex.quote(TIMED_OUT)}",
+            '  kill -KILL -- "-$run" 2> /dev/null',
+            f"  suss_kill_marked {token}",
+            f"  rm -f {group}",
+            "  exit 137",
+            "}",
+            "trap on_timeout USR1",
             f"{{ sleep {seconds} > /dev/null 2>&1 && kill -USR1 $$; }} &",
             "timer=$!",
         ]
     lines += ['wait "$run"', "code=$?"]
     if seconds is not None:
         lines += [
-            'if [ -n "$timed_out" ]; then',
-            f"  echo {shlex.quote(TIMED_OUT)}",
-            '  kill -KILL -- "-$run" 2> /dev/null',
-            f"  suss_kill_marked {token}",
-            "fi",
+            # Ignored rather than reset, since USR1's default would kill the
+            # wrapper before it reports the command's exit code.
+            "trap '' USR1",
             'kill -KILL -- "-$timer" 2> /dev/null',
         ]
     lines += [f"rm -f {group}", 'exit "$code"']
