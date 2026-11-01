@@ -959,7 +959,8 @@ def test_a_dry_run_prints_each_pair_in_run_order_and_runs_nothing(project, capfd
             common = f"{project.harbor} run -p lanes/{lane} -e docker -n 4 -k 1"
             expected.append(
                 f"{common} -a suss.agent:SussAgent --ak arm=peer-review --ak config=suss.toml "
-                f"--allow-agent-host api.anthropic.com --jobs-dir {jobs} --job-name {STAMP}-{trial}"
+                f"--allow-agent-host api.anthropic.com --disable-verification "
+                f"--jobs-dir {jobs} --job-name {STAMP}-{trial}"
             )
             expected.append(
                 f"PYTHONPATH={project.tooling} {common} -a patch_replay:PatchReplayAgent -m replay "

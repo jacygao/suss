@@ -88,6 +88,8 @@ def harbor_commands(
     ]
     for host in manifest.allowed_hosts:
         agent += ["--allow-agent-host", host]
+    # The regrade, in a fresh sandbox, is the trial's only grading.
+    agent += ["--disable-verification"]
     agent += ["--jobs-dir", str(jobs_dir), "--job-name", job_name]
 
     # Absolute, so that it names the agent job whatever directory Harbor is in.
@@ -141,6 +143,9 @@ _REFUSED = {
     "allow_agent_hosts": "list the hosts in allowed_hosts in the harness's manifest",
     "jobs_dir": "suss writes each job under results/<lane>/<arm>/, or checks/ with --check",
     "job_name": "suss names each job from the run's stamp and its trial number",
+    "disable_verification": (
+        "suss grades each trial by its regrade alone, so the agent job never runs the verifier"
+    ),
     # Those that would change what the agent job runs. The regrade still grades
     # every task in the lane, so a task the agent job skips scores 0.
     "config_path": "a job config file can change anything suss sets on the job",
@@ -200,7 +205,8 @@ def _refuse(harbor_args: Sequence[str]) -> None:
     for param in run.params:
         if param.name in passed and param.name in _REFUSED:
             raise ValueError(
-                f"{'/'.join(param.opts)} can't be passed after --: {_REFUSED[param.name]}"
+                f"{'/'.join(param.opts + param.secondary_opts)} can't be passed after --: "
+                f"{_REFUSED[param.name]}"
             )
 
 

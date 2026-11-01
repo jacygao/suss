@@ -193,8 +193,19 @@ def test_a_harness_with_no_allowed_hosts_gets_no_allow_agent_host(tmp_path):
     assert agent.argv == [
         "harbor", "run", "-p", "lanes/pro-go", "-e", "docker", "-n", "16", "-k", "1",
         "-a", "suss.agent:SussAgent", "--ak", "arm=peer-review", "--ak", "config=suss.toml",
+        "--disable-verification",
         "--jobs-dir", "results/pro-go/peer-review", "--job-name", f"{STAMP}-1",
     ]
+
+
+def test_the_regrade_runs_the_verifier(tmp_path):
+    _, regrade = harbor_commands(
+        make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, ["--max-retries", "2"]
+    )
+
+    # Its verifier's reward is the trial's result, and with verification disabled it records none.
+    assert "--disable-verification" not in regrade.argv
+    assert "--enable-verification" not in regrade.argv
 
 
 def test_the_regrade_allows_no_agent_host(tmp_path):
@@ -250,6 +261,8 @@ def test_a_refused_option_as_another_options_value_passes_through(tmp_path):
         ["-oelsewhere"],
         ["--job-name", f"{STAMP}-1"],
         ["--job-name=other"],
+        ["--disable-verification"],
+        ["--enable-verification"],
         ["--max-retries", "2", "-k", "2"],
     ],
 )
@@ -290,7 +303,7 @@ def refused_options(tmp_path) -> set[str]:
 def test_every_option_suss_sets_on_either_job_is_refused(tmp_path):
     emitted = options_suss_sets(tmp_path)
 
-    assert len(emitted) == 10
+    assert len(emitted) == 11
     assert emitted <= refused_options(tmp_path)
 
 
@@ -453,6 +466,16 @@ def test_an_options_value_is_not_taken_for_a_positional_argument(tmp_path):
             ["-o", "x"],
             "-o/--jobs-dir can't be passed after --: suss writes each job under"
             " results/<lane>/<arm>/, or checks/ with --check",
+        ),
+        (
+            ["--disable-verification"],
+            "--disable-verification/--enable-verification can't be passed after --: suss grades"
+            " each trial by its regrade alone, so the agent job never runs the verifier",
+        ),
+        (
+            ["--enable-verification"],
+            "--disable-verification/--enable-verification can't be passed after --: suss grades"
+            " each trial by its regrade alone, so the agent job never runs the verifier",
         ),
         (
             ["--job-name", "x"],
