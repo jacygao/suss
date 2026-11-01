@@ -204,6 +204,35 @@ def _refuse(harbor_args: Sequence[str]) -> None:
             )
 
 
+# The agent job's options that change what each of its trials takes from Docker.
+_OVERRIDES = ("override_cpus", "override_memory_mb")
+
+
+def _overrides(harbor_args: Sequence[str]) -> dict[str, int]:
+    """
+    The CPUs and memory the agent job's trials take in place of their tasks',
+    from `harbor_args`, keyed by the option that sets each.
+
+    `harbor_args` must have passed `_refuse`. Raises _Stop for a value that is
+    not a whole number, which harbor run would refuse.
+    """
+    run = _harbor_run()
+    parser = run.make_parser(run.context_class(run, info_name="run"))
+    given, _, _ = parser.parse_args(list(harbor_args))
+    found = {}
+    for param in run.params:
+        if param.name in _OVERRIDES and given.get(param.name) is not None:
+            option = param.opts[0]
+            try:
+                found[option] = int(given[param.name])
+            except ValueError:
+                raise _Stop(
+                    f"harbor run would refuse {option} {given[param.name]!r}: "
+                    "it takes a whole number"
+                ) from None
+    return found
+
+
 class _Stop(Exception):
     """An error suss prints as `error: <message>` before it exits non-zero."""
 
@@ -218,6 +247,10 @@ class _Lane:
     name: str
     # Empty when the sandboxes do not run on this machine's Docker.
     images: list[str]
+    # The most CPUs and MiB any one trial takes, or None off this machine's Docker.
+    needs: tuple[int, int] | None
+    # Which trials those are, as the capacity error names them.
+    trials: str
     pairs: list[tuple[Command, Command]]
 
 
@@ -315,6 +348,12 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
         _plan(settings, manifest, lane, run_stamp, harbor_args, args.check, harbor)
         for lane in args.lanes
     ]
+    if settings.environment == "docker":
+        capacity = _docker_capacity(docker, root)
+        # A check runs one trial, whatever concurrency is.
+        concurrency = 1 if args.check else settings.concurrency
+        for lane in planned:
+            lanes.check_capacity(lane.trials, lane.needs, concurrency, capacity)
     # A dry run builds no lane: a build removes the links a running job may be reading.
     if dry_run:
         for lane in planned:
@@ -386,7 +425,8 @@ def _plan(
     lanes.check_max_seconds(settings.arm, lane, found)
     lanes.check_buildable(settings.path.parent / "lanes", lane, check)
     used = dict(list(found.items())[:1]) if check else found
-    images = lanes.images(used) if settings.environment == "docker" else []
+    on_docker = settings.environment == "docker"
+    images = lanes.images(used) if on_docker else []
     pairs = []
     for trial in range(1, 2 if check else settings.k + 1):
         try:
@@ -396,7 +436,17 @@ def _plan(
         pairs.append(
             tuple(Command([str(harbor), *command.argv[1:]], command.env) for command in commands)
         )
-    return _Lane(lane, images, pairs)
+    needs = None
+    trials = f"the first task in {lane}" if check else f"the tasks in {lane}"
+    if on_docker:
+        cpus, memory_mb = lanes.needs(used)
+        overrides = _overrides(harbor_args)
+        # The regrade runs each trial at its task's own size, after the agent job.
+        cpus = max(cpus, overrides.get("--override-cpus", 0))
+        memory_mb = max(memory_mb, overrides.get("--override-memory-mb", 0))
+        needs = (cpus, memory_mb)
+        trials += "".join(f" under {option} {value}" for option, value in overrides.items())
+    return _Lane(lane, images, needs, trials, pairs)
 
 
 def _environment(extra: dict[str, str]) -> dict[str, str]:
@@ -428,9 +478,29 @@ def _platform_args(docker: str, root: Path) -> list[str]:
     The V2 images are amd64 only. The engine's architecture is what counts,
     not this machine's, since the engine may run elsewhere.
     """
+    if _docker_info(docker, root, "{{.Architecture}}") in ("aarch64", "arm64"):
+        return ["--platform", "linux/amd64"]
+    return []
+
+
+def _docker_capacity(docker: str, root: Path) -> tuple[int, int]:
+    """The Docker engine's CPUs, and its memory in bytes."""
+    output = _docker_info(docker, root, "{{.NCPU}} {{.MemTotal}}")
+    try:
+        cpus, memory = (int(field) for field in output.split())
+    except ValueError:
+        raise _Stop(
+            f"docker info gave {output!r} for the engine's CPUs and memory, "
+            "which suss cannot read as two whole numbers"
+        ) from None
+    return cpus, memory
+
+
+def _docker_info(docker: str, root: Path, format: str) -> str:
+    """What `docker info` prints for `format`, stripped, raising _Stop when it cannot run."""
     try:
         result = subprocess.run(
-            [docker, "info", "--format", "{{.Architecture}}"],
+            [docker, "info", "--format", format],
             cwd=root,
             capture_output=True,
             text=True,
@@ -439,9 +509,7 @@ def _platform_args(docker: str, root: Path) -> list[str]:
         raise _Stop(f"{docker}: no such program, and the sandboxes run on Docker") from None
     if result.returncode != 0:
         raise _Stop(f"docker info exited {result.returncode}: {result.stderr.strip()}")
-    if result.stdout.strip() in ("aarch64", "arm64"):
-        return ["--platform", "linux/amd64"]
-    return []
+    return result.stdout.strip()
 
 
 def _call(argv: list[str], cwd: Path) -> int:

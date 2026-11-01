@@ -386,6 +386,28 @@ params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "d
   error: environment is modal, but Modal's client is not installed: run uv sync
   --extra modal
   ```
+- `concurrency` is passed to `harbor run` as `-n`: how many trials run at once.
+  When `environment` is `docker`, `concurrency` times the largest
+  `[environment] cpus` among the lane's tasks, and `concurrency` times their
+  largest `memory_mb`, must fit in the CPUs and memory that
+  `docker info --format '{{.NCPU}} {{.MemTotal}}'` reports. An
+  `--override-cpus` or `--override-memory-mb` passed after `--` counts in place
+  of the tasks' own where it is larger. Memory is counted in MiB, as
+  `memory_mb` is, and Docker's is rounded down. When either does not
+  fit, `suss run` exits with an error before it builds any lane, pulls any
+  image or runs any job, and does so under `DRY_RUN=1` too. A task that names
+  no `cpus` or no `memory_mb` is an error that names it. A `--check` counts
+  only its one task, and one trial at a time.
+
+  ```
+  $ suss run peer-review pro-go
+  error: concurrency = 16 needs 16 CPUs and 65536 MiB for the tasks in pro-go,
+  but Docker has 10 CPUs and 7934 MiB; set concurrency to 1 or less, or give
+  Docker more
+  ```
+
+  When a single trial does not fit, the error says so and offers no
+  `concurrency`.
 - `max_cost_usd` and `max_seconds` cap each trial: the harness keeps its
   models' spend under `max_cost_usd`, and suss stops `run` after `max_seconds`.
   Set at the top, they apply to every arm, and an arm may set its own.

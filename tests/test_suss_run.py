@@ -17,6 +17,12 @@ STANDINS = Path(__file__).resolve().parent / "stand_ins"
 REPO = Path(__file__).resolve().parent.parent
 STARTED = datetime(2026, 10, 31, 14, 25, tzinfo=timezone.utc)
 STAMP = "20261031T142500Z"
+GIB = 2**30
+# A Docker engine with room for every run the fixture's suss.toml asks for.
+ROOMY = f"16 {64 * GIB}"
+# What a Docker Desktop VM given 8 GB of memory and 10 CPUs reports: a little
+# under 8 GiB, so that it fits one 4096 MiB trial and not two.
+DOCKER_DESKTOP_8GB = "10 8319504384"
 
 # Each task by lane, with the image its task.toml names. Two pro-go tasks share
 # an image, so that a lane's pulls can be seen to be de-duplicated.
@@ -99,13 +105,21 @@ def stand_in(source: Path, target: Path) -> Path:
     return target
 
 
-def write_task(checkout: Path, name: str, image: str | None, timeout: float = 3000.0) -> None:
+def write_task(
+    checkout: Path,
+    name: str,
+    image: str | None,
+    timeout: float = 3000.0,
+    cpus: int | None = 1,
+    memory_mb: int | None = 4096,
+) -> None:
+    """A task.toml with each of `image`, `cpus` and `memory_mb` left out where it is None."""
     task = checkout / "v2" / "tasks" / name
     task.mkdir(parents=True)
     environment = f'docker_image = "{image}"\n' if image else ""
-    (task / "task.toml").write_text(
-        f"[agent]\ntimeout_sec = {timeout}\n\n[environment]\ncpus = 1\n{environment}"
-    )
+    environment += f"cpus = {cpus}\n" if cpus is not None else ""
+    environment += f"memory_mb = {memory_mb}\n" if memory_mb is not None else ""
+    (task / "task.toml").write_text(f"[agent]\ntimeout_sec = {timeout}\n\n[environment]\n{environment}")
 
 
 @pytest.fixture
@@ -142,6 +156,8 @@ def project(tmp_path, monkeypatch) -> Project:
     monkeypatch.setenv("STAND_IN_LOG", str(created.log))
     monkeypatch.setenv("STAND_IN_HARBOR_PLAN", str(created.plan))
     monkeypatch.setenv("STAND_IN_DOCKER_ARCH", "x86_64")
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", ROOMY)
+    monkeypatch.delenv("STAND_IN_DOCKER_INFO_FAIL", raising=False)
     monkeypatch.delenv("DRY_RUN", raising=False)
     monkeypatch.delenv("PYTHONPATH", raising=False)
     # Installed, whether or not this environment has the extra. A test that
@@ -563,6 +579,270 @@ def test_docker_runs_without_modals_client(project, monkeypatch):
     assert len(project.records("harbor")) == 4
 
 
+# Docker's CPUs and memory
+
+
+def assert_refused_before_any_lane(project: Project) -> None:
+    """Nothing but `docker info` ran, and no lane was built."""
+    assert [record["argv"][0] for record in project.records()] == ["info"]
+    assert not (project.directory / "lanes").exists()
+    assert not (project.directory / "results").exists()
+
+
+def test_a_concurrency_that_needs_more_cpus_than_docker_has_is_refused_naming_what_fits(
+    project, capfd, monkeypatch
+):
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", f"3 {64 * GIB}")
+
+    code = project.run("peer-review", "pro-go")
+
+    assert code != 0
+    assert capfd.readouterr().err == (
+        "error: concurrency = 4 needs 4 CPUs and 16384 MiB for the tasks in pro-go, but Docker "
+        "has 3 CPUs and 65536 MiB; set concurrency to 3 or less, or give Docker more\n"
+    )
+    assert_refused_before_any_lane(project)
+
+
+def test_docker_desktops_8gb_fits_one_trial_of_4096_mib_when_memory_binds_before_cpus(
+    project, capfd, monkeypatch
+):
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", DOCKER_DESKTOP_8GB)
+
+    code = project.run("peer-review", "pro-go")
+
+    assert code != 0
+    assert capfd.readouterr().err == (
+        "error: concurrency = 4 needs 4 CPUs and 16384 MiB for the tasks in pro-go, but Docker "
+        "has 10 CPUs and 7934 MiB; set concurrency to 1 or less, or give Docker more\n"
+    )
+    assert_refused_before_any_lane(project)
+
+
+@pytest.mark.parametrize(
+    "capacity, fits",
+    [
+        (f"4 {16 * GIB}", None),
+        (f"4 {16 * GIB - 1}", 3),
+        (f"3 {16 * GIB}", 3),
+    ],
+    ids=["exactly-enough", "one-byte-short", "one-cpu-short"],
+)
+def test_four_trials_of_one_cpu_and_4096_mib_need_exactly_4_cpus_and_16_gib(
+    project, capfd, monkeypatch, capacity, fits
+):
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", capacity)
+
+    code = project.run("peer-review", "pro-go")
+
+    err = capfd.readouterr().err
+    if fits is None:
+        assert code == 0, err
+    else:
+        assert code != 0
+        assert f"set concurrency to {fits} or less" in err, err
+
+
+def test_the_lanes_largest_task_sets_its_need_and_a_later_lane_is_refused_before_any_lane_runs(
+    project, capfd, monkeypatch
+):
+    write_task(project.checkout, "instance_ansible__ansible-big", "ghcr.io/x/v2:ansible", cpus=2, memory_mb=1024)
+    write_task(project.checkout, "instance_ansible__ansible-fat", "ghcr.io/x/v2:ansible", cpus=1, memory_mb=8192)
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", f"6 {48 * GIB}")
+
+    code = project.run("peer-review", "pro-go", "pro-python")
+
+    assert code != 0
+    assert capfd.readouterr().err == (
+        "error: concurrency = 4 needs 8 CPUs and 32768 MiB for the tasks in pro-python, but Docker "
+        "has 6 CPUs and 49152 MiB; set concurrency to 3 or less, or give Docker more\n"
+    )
+    assert_refused_before_any_lane(project)
+
+
+def test_a_task_too_large_for_docker_alone_is_refused_with_no_concurrency_offered(
+    project, capfd, monkeypatch
+):
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", f"10 {3 * GIB}")
+
+    code = project.run("peer-review", "pro-go")
+
+    assert code != 0
+    assert capfd.readouterr().err == (
+        "error: one trial of the tasks in pro-go needs 1 CPU and 4096 MiB, but Docker has "
+        "10 CPUs and 3072 MiB; give Docker more\n"
+    )
+    assert_refused_before_any_lane(project)
+
+
+def test_a_check_counts_only_its_one_task_and_one_trial_at_a_time(project, monkeypatch):
+    # Sorts after the lane's first task, which is all a check runs.
+    write_task(project.checkout, "instance_navidrome__navidrome-zzz", "ghcr.io/x/v2:navidrome", cpus=64)
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", f"1 {4 * GIB}")
+
+    assert project.run("peer-review", "pro-go", "--check") == 0
+
+    assert len(project.records("harbor")) == 2
+
+
+def test_a_check_whose_task_does_not_fit_in_docker_is_refused_before_anything_runs(
+    project, capfd, monkeypatch
+):
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", f"10 {4 * GIB - 1}")
+
+    code = project.run("peer-review", "pro-go", "--check")
+
+    assert code != 0
+    assert capfd.readouterr().err == (
+        "error: one trial of the first task in pro-go needs 1 CPU and 4096 MiB, but Docker has "
+        "10 CPUs and 4095 MiB; give Docker more\n"
+    )
+    assert_refused_before_any_lane(project)
+
+
+def test_an_override_of_the_agent_jobs_cpus_counts_toward_what_it_needs(project, capfd, monkeypatch):
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", f"6 {64 * GIB}")
+
+    code = project.run("peer-review", "pro-go", "--", "--override-cpus", "2")
+
+    assert code != 0
+    assert capfd.readouterr().err == (
+        "error: concurrency = 4 needs 8 CPUs and 16384 MiB for the tasks in pro-go under "
+        "--override-cpus 2, but Docker has 6 CPUs and 65536 MiB; set concurrency to 3 or "
+        "less, or give Docker more\n"
+    )
+    assert_refused_before_any_lane(project)
+
+
+def test_a_checks_override_of_the_agent_jobs_memory_counts_toward_its_one_trial(
+    project, capfd, monkeypatch
+):
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", DOCKER_DESKTOP_8GB)
+
+    code = project.run("peer-review", "pro-go", "--check", "--", "--override-memory-mb=8192")
+
+    assert code != 0
+    assert capfd.readouterr().err == (
+        "error: one trial of the first task in pro-go under --override-memory-mb 8192 needs "
+        "1 CPU and 8192 MiB, but Docker has 10 CPUs and 7934 MiB; give Docker more\n"
+    )
+    assert_refused_before_any_lane(project)
+
+
+def test_an_override_below_the_tasks_own_need_still_leaves_the_regrade_needing_it(
+    project, capfd, monkeypatch
+):
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", f"10 {3 * GIB}")
+
+    code = project.run("peer-review", "pro-go", "--check", "--", "--override-memory-mb", "1024")
+
+    assert code != 0
+    assert "needs 1 CPU and 4096 MiB" in capfd.readouterr().err
+    assert_refused_before_any_lane(project)
+
+
+def test_an_override_that_is_not_a_whole_number_is_an_error_before_anything_runs(project, capfd):
+    code = project.run("peer-review", "pro-go", "--", "--override-cpus", "two")
+
+    err = capfd.readouterr().err
+    assert code != 0
+    assert err.startswith("error: ") and "--override-cpus" in err and "'two'" in err, err
+    assert project.records() == []
+
+
+def test_on_modal_docker_is_never_asked_and_no_task_needs_cpus_or_memory(project, monkeypatch):
+    write_task(project.checkout, "instance_ansible__ansible-bare", "ghcr.io/x/v2:ansible", cpus=None, memory_mb=None)
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", "1 1024")
+    project.write_toml(environment="modal")
+
+    assert project.run("peer-review", "pro-python") == 0
+
+    assert project.records("docker") == []
+
+
+def test_a_dry_run_still_refuses_a_concurrency_that_does_not_fit(project, capfd, monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "1")
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", DOCKER_DESKTOP_8GB)
+
+    code = project.run("peer-review", "pro-go")
+
+    out, err = capfd.readouterr()
+    assert code != 0
+    assert out == ""
+    assert "set concurrency to 1 or less" in err, err
+    assert_refused_before_any_lane(project)
+
+
+@pytest.mark.parametrize("missing", ["cpus", "memory_mb"])
+def test_a_task_with_no_cpus_or_memory_mb_is_an_error_naming_it(project, capfd, missing):
+    needs = {"cpus": 1, "memory_mb": 4096, missing: None}
+    write_task(project.checkout, "instance_ansible__ansible-bare", "ghcr.io/x/v2:ansible", **needs)
+
+    code = project.run("peer-review", "pro-go", "pro-python")
+
+    err = capfd.readouterr().err
+    assert code != 0
+    assert err.startswith("error: ")
+    assert f"instance_ansible__ansible-bare/task.toml: no [environment] {missing}" in err, err
+    assert not (project.directory / "lanes").exists()
+    assert project.records("harbor") == []
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "1.5", '"1"', "true"])
+def test_a_task_whose_cpus_is_not_a_positive_whole_number_is_an_error_naming_it(project, capfd, value):
+    task = project.checkout / "v2" / "tasks" / "instance_ansible__ansible-odd"
+    task.mkdir()
+    (task / "task.toml").write_text(
+        f'[agent]\ntimeout_sec = 3000\n\n[environment]\ndocker_image = "x"\ncpus = {value}\nmemory_mb = 4096\n'
+    )
+
+    code = project.run("peer-review", "pro-python")
+
+    err = capfd.readouterr().err
+    assert code != 0
+    assert "instance_ansible__ansible-odd/task.toml: [environment] cpus" in err, err
+    assert project.records("harbor") == []
+
+
+def test_a_docker_engine_that_is_not_running_is_an_error_before_any_lane_is_built(
+    project, capfd, monkeypatch
+):
+    monkeypatch.setenv("STAND_IN_DOCKER_INFO_FAIL", "Cannot connect to the Docker daemon")
+
+    code = project.run("peer-review", "pro-go")
+
+    assert code != 0
+    assert capfd.readouterr().err == "error: docker info exited 1: Cannot connect to the Docker daemon\n"
+    assert_refused_before_any_lane(project)
+
+
+def test_docker_info_output_suss_cannot_read_is_an_error_quoting_it(project, capfd, monkeypatch):
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", "<no value> <no value>")
+
+    code = project.run("peer-review", "pro-go")
+
+    err = capfd.readouterr().err
+    assert code != 0
+    assert err.startswith("error: ") and "'<no value> <no value>'" in err, err
+    assert_refused_before_any_lane(project)
+
+
+def test_no_docker_program_is_an_error_before_any_lane_is_built(project, capfd, tmp_path):
+    code = cli.main(
+        ["run", "peer-review", "pro-go"],
+        directory=project.directory,
+        harbor=project.harbor,
+        docker=tmp_path / "no-such-docker",
+        clock=lambda: STARTED,
+    )
+
+    err = capfd.readouterr().err
+    assert code != 0
+    assert "no-such-docker: no such program" in err, err
+    assert not (project.directory / "lanes").exists()
+    assert project.records() == []
+
+
 # Pulling images
 
 
@@ -669,7 +949,7 @@ def test_a_dry_run_prints_each_pair_in_run_order_and_runs_nothing(project, capfd
 
     out, err = capfd.readouterr()
     assert code == 0, err
-    assert project.records() == []
+    assert [record["argv"][0] for record in project.records()] == ["info"]
     assert not (project.directory / "lanes").exists()
     root = project.directory.resolve()
     expected = []
