@@ -700,6 +700,56 @@ def test_a_check_whose_task_does_not_fit_in_docker_is_refused_before_anything_ru
     assert_refused_before_any_lane(project)
 
 
+def test_an_override_of_the_agent_jobs_cpus_counts_toward_what_it_needs(project, capfd, monkeypatch):
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", f"6 {64 * GIB}")
+
+    code = project.run("peer-review", "pro-go", "--", "--override-cpus", "2")
+
+    assert code != 0
+    assert capfd.readouterr().err == (
+        "error: concurrency = 4 needs 8 CPUs and 16384 MiB for the tasks in pro-go under "
+        "--override-cpus 2, but Docker has 6 CPUs and 65536 MiB; set concurrency to 3 or "
+        "less, or give Docker more\n"
+    )
+    assert_refused_before_any_lane(project)
+
+
+def test_a_checks_override_of_the_agent_jobs_memory_counts_toward_its_one_trial(
+    project, capfd, monkeypatch
+):
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", DOCKER_DESKTOP_8GB)
+
+    code = project.run("peer-review", "pro-go", "--check", "--", "--override-memory-mb=8192")
+
+    assert code != 0
+    assert capfd.readouterr().err == (
+        "error: one trial of the first task in pro-go under --override-memory-mb 8192 needs "
+        "1 CPU and 8192 MiB, but Docker has 10 CPUs and 7934 MiB; give Docker more\n"
+    )
+    assert_refused_before_any_lane(project)
+
+
+def test_an_override_below_the_tasks_own_need_still_leaves_the_regrade_needing_it(
+    project, capfd, monkeypatch
+):
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", f"10 {3 * GIB}")
+
+    code = project.run("peer-review", "pro-go", "--check", "--", "--override-memory-mb", "1024")
+
+    assert code != 0
+    assert "needs 1 CPU and 4096 MiB" in capfd.readouterr().err
+    assert_refused_before_any_lane(project)
+
+
+def test_an_override_that_is_not_a_whole_number_is_an_error_before_anything_runs(project, capfd):
+    code = project.run("peer-review", "pro-go", "--", "--override-cpus", "two")
+
+    err = capfd.readouterr().err
+    assert code != 0
+    assert err.startswith("error: ") and "--override-cpus" in err and "'two'" in err, err
+    assert project.records() == []
+
+
 def test_on_modal_docker_is_never_asked_and_no_task_needs_cpus_or_memory(project, monkeypatch):
     write_task(project.checkout, "instance_ansible__ansible-bare", "ghcr.io/x/v2:ansible", cpus=None, memory_mb=None)
     monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", "1 1024")

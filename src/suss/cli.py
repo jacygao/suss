@@ -204,6 +204,35 @@ def _refuse(harbor_args: Sequence[str]) -> None:
             )
 
 
+# The agent job's options that change what each of its trials takes from Docker.
+_OVERRIDES = ("override_cpus", "override_memory_mb")
+
+
+def _overrides(harbor_args: Sequence[str]) -> dict[str, int]:
+    """
+    The CPUs and memory the agent job's trials take in place of their tasks',
+    from `harbor_args`, keyed by the option that sets each.
+
+    `harbor_args` must have passed `_refuse`. Raises _Stop for a value that is
+    not a whole number, which harbor run would refuse.
+    """
+    run = _harbor_run()
+    parser = run.make_parser(run.context_class(run, info_name="run"))
+    given, _, _ = parser.parse_args(list(harbor_args))
+    found = {}
+    for param in run.params:
+        if param.name in _OVERRIDES and given.get(param.name) is not None:
+            option = param.opts[0]
+            try:
+                found[option] = int(given[param.name])
+            except ValueError:
+                raise _Stop(
+                    f"harbor run would refuse {option} {given[param.name]!r}: "
+                    "it takes a whole number"
+                ) from None
+    return found
+
+
 class _Stop(Exception):
     """An error suss prints as `error: <message>` before it exits non-zero."""
 
@@ -218,8 +247,10 @@ class _Lane:
     name: str
     # Empty when the sandboxes do not run on this machine's Docker.
     images: list[str]
-    # The most CPUs and MiB any one task needs, or None off this machine's Docker.
+    # The most CPUs and MiB any one trial takes, or None off this machine's Docker.
     needs: tuple[int, int] | None
+    # Which trials those are, as the capacity error names them.
+    trials: str
     pairs: list[tuple[Command, Command]]
 
 
@@ -322,7 +353,7 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
         # A check runs one trial, whatever concurrency is.
         concurrency = 1 if args.check else settings.concurrency
         for lane in planned:
-            lanes.check_capacity(lane.name, lane.needs, concurrency, capacity, args.check)
+            lanes.check_capacity(lane.trials, lane.needs, concurrency, capacity)
     # A dry run builds no lane: a build removes the links a running job may be reading.
     if dry_run:
         for lane in planned:
@@ -396,7 +427,6 @@ def _plan(
     used = dict(list(found.items())[:1]) if check else found
     on_docker = settings.environment == "docker"
     images = lanes.images(used) if on_docker else []
-    needs = lanes.needs(used) if on_docker else None
     pairs = []
     for trial in range(1, 2 if check else settings.k + 1):
         try:
@@ -406,7 +436,17 @@ def _plan(
         pairs.append(
             tuple(Command([str(harbor), *command.argv[1:]], command.env) for command in commands)
         )
-    return _Lane(lane, images, needs, pairs)
+    needs = None
+    trials = f"the first task in {lane}" if check else f"the tasks in {lane}"
+    if on_docker:
+        cpus, memory_mb = lanes.needs(used)
+        overrides = _overrides(harbor_args)
+        # The regrade runs each trial at its task's own size, after the agent job.
+        cpus = max(cpus, overrides.get("--override-cpus", 0))
+        memory_mb = max(memory_mb, overrides.get("--override-memory-mb", 0))
+        needs = (cpus, memory_mb)
+        trials += "".join(f" under {option} {value}" for option, value in overrides.items())
+    return _Lane(lane, images, needs, trials, pairs)
 
 
 def _environment(extra: dict[str, str]) -> dict[str, str]:

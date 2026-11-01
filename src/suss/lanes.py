@@ -159,21 +159,22 @@ def needs(tasks: Mapping[Path, dict]) -> tuple[int, int]:
 
 
 def check_capacity(
-    lane: str,
-    lane_needs: tuple[int, int],
+    trials: str,
+    trial_needs: tuple[int, int],
     concurrency: int,
     docker: tuple[int, int],
-    check: bool = False,
 ) -> None:
     """
     Refuse a lane whose `concurrency` trials at once need more than Docker has.
 
-    `lane_needs` is as `needs` gives it, and `docker` is the engine's CPUs and
-    its memory in bytes. Each trial is counted at the lane's largest need, since
-    any trial may be running its largest task. The error gives the largest
-    concurrency that fits, or says that a single trial does not.
+    `trial_needs` is the most CPUs and MiB any one trial takes, as `needs`
+    gives it for the tasks alone, and `trials` names those trials in the
+    error. Each trial is counted at the largest need, since any trial may be
+    running the largest task. `docker` is the engine's CPUs and its memory in
+    bytes. The error gives the largest concurrency that fits, or says that a
+    single trial does not.
     """
-    cpus, memory_mb = lane_needs
+    cpus, memory_mb = trial_needs
     docker_cpus, docker_bytes = docker
     fits = min(docker_cpus // cpus, docker_bytes // (memory_mb * MIB))
     if concurrency <= fits:
@@ -181,14 +182,13 @@ def check_capacity(
     # Rounded down, so that it never claims more memory than Docker has.
     has = f"Docker has {_cpus(docker_cpus)} and {docker_bytes // MIB} MiB"
     if fits == 0:
-        tasks = f"the first task in {lane}" if check else f"the tasks in {lane}"
         raise LaneError(
-            f"one trial of {tasks} needs {_cpus(cpus)} and {memory_mb} MiB, but {has}; "
+            f"one trial of {trials} needs {_cpus(cpus)} and {memory_mb} MiB, but {has}; "
             "give Docker more"
         )
     raise LaneError(
         f"concurrency = {concurrency} needs {_cpus(concurrency * cpus)} and "
-        f"{concurrency * memory_mb} MiB for the tasks in {lane}, but {has}; "
+        f"{concurrency * memory_mb} MiB for {trials}, but {has}; "
         f"set concurrency to {fits} or less, or give Docker more"
     )
 
