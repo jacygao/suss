@@ -83,7 +83,24 @@ its regrade. It writes both under `results/<lane>/<arm>/`.
       the trial's result
 - [ ] `uv run pytest` passes
 
-## M3 — `suss compare`
+## M3 — Modal
+
+With `environment = "modal"` in `suss.toml`, `suss run` runs a lane's agent jobs
+and regrades on Modal, as many trials at once as `concurrency` sets. Trials and
+their records are the same as under Docker.
+
+### Acceptance criteria
+
+- [ ] `suss run claude-code pro-go --check` with `environment = "modal"` leaves
+      an agent job and its regrade under `checks/pro-go/claude-code/`, and the
+      regrade's reward is the trial's result
+- [ ] A `run` still going after `max_seconds` on Modal is stopped, the trial is
+      marked `timed-out`, and its patch is captured
+- [ ] In the agent phase of a `no-network` task on Modal, the harness reaches
+      each host in its `allowed_hosts` and no other host
+- [ ] `uv run pytest` passes
+
+## M4 — `suss compare`
 
 `suss compare` reads every graded trial of the arms it is given, and prints how
 each arm did and how it differs from its baseline.
