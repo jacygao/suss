@@ -4,3 +4,5 @@ __pycache__/
 results/
 jobs/
 .claude/worktrees/
+checks/
+lanes/

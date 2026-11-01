@@ -9,7 +9,7 @@ from harbor.cli.main import app as harbor_app
 from harbor.cli.utils import parse_kwargs
 
 from suss import config
-from suss.cli import harbor_commands, stamp
+from suss.cli import harbor_commands, harbor_executable, stamp
 from suss.config import Arm, Config
 from suss.harness import Manifest
 
@@ -66,17 +66,23 @@ def harbor_parses(argv: list[str]) -> dict:
     return parse_kwargs([token for flag, token in zip(argv, argv[1:]) if flag == "--ak"])
 
 
-def spec_commands(root: Path) -> tuple[list[str], list[str]]:
+def spec_commands(root: Path, checkout: Path, env: Path) -> tuple[list[str], list[str]]:
     """
     The two `harbor run` commands from the spec's `suss run`, split into tokens,
-    with `root` as the directory holding suss.toml.
+    with `root` as the directory holding suss.toml, `checkout` as the SWE-bench
+    Pro checkout, and `env` as the environment suss is installed in.
     """
     blocks = re.findall(r"```bash\n(.*?)```", SPEC.read_text(), re.DOTALL)
     found = [block for block in blocks if "-a suss.agent:SussAgent" in block]
     assert len(found) == 1, f"expected one block with the agent job in {SPEC}, found {len(found)}"
     agent, regrade = found[0].replace("\\\n", " ").strip().split("\n\n")
     return tuple(
-        shlex.split(command.replace("<stamp>", STAMP).replace("<dir>", shlex.quote(str(root))))
+        shlex.split(
+            command.replace("<stamp>", STAMP)
+            .replace("<dir>", shlex.quote(str(root)))
+            .replace("<checkout>", shlex.quote(str(checkout)))
+            .replace("<env>", shlex.quote(str(env)))
+        )
         for command in (agent, regrade)
     )
 
@@ -93,16 +99,19 @@ def spec_config(tmp_path: Path) -> Config:
 
 def test_both_commands_match_the_spec_token_for_token(tmp_path):
     loaded = spec_config(tmp_path)
-    expected_agent, expected_regrade = spec_commands(loaded.path.parent)
+    harbor = harbor_executable()
+    expected_agent, expected_regrade = spec_commands(
+        loaded.path.parent, loaded.swe_bench_pro, harbor.parent.parent
+    )
     pythonpath = expected_regrade.pop(0)
 
     agent, regrade = harbor_commands(loaded, make_manifest(), "pro-go", STAMP, 1)
 
-    assert agent.argv == expected_agent
-    assert regrade.argv == expected_regrade
-    # The spec writes the checkout's path as suss.toml does, relative to suss.toml.
+    # suss runs each command with its own harbor in place of the first token.
+    assert [str(harbor), *agent.argv[1:]] == expected_agent
+    assert [str(harbor), *regrade.argv[1:]] == expected_regrade
     name, _, value = pythonpath.partition("=")
-    assert regrade.env == {name: str((loaded.path.parent / value).resolve())}
+    assert regrade.env == {name: value}
 
 
 def test_the_stamp_is_utc_in_basic_iso_form():

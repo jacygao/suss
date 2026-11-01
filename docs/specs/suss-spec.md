@@ -272,21 +272,27 @@ docker pull --platform linux/amd64 <docker_image>
 Then, K times, it runs an agent job and its regrade:
 
 ```bash
-harbor run -p lanes/pro-go -e docker -n 16 -k 1 \
+<env>/bin/harbor run -p lanes/pro-go -e docker -n 16 -k 1 \
   -a suss.agent:SussAgent --ak arm=peer-review --ak config=suss.toml \
   --allow-agent-host api.anthropic.com --allow-agent-host api.deepseek.com \
   --jobs-dir results/pro-go/peer-review --job-name <stamp>-1
 
-PYTHONPATH=../SWE-bench_Pro-os/v2/tooling harbor run -p lanes/pro-go -e docker -n 16 -k 1 \
+PYTHONPATH=<checkout>/v2/tooling <env>/bin/harbor run -p lanes/pro-go -e docker -n 16 -k 1 \
   -a patch_replay:PatchReplayAgent -m replay \
   --ak source_job=<dir>/results/pro-go/peer-review/<stamp>-1 \
   --jobs-dir results/pro-go/peer-review --job-name <stamp>-1-regrade
 ```
 
 `<stamp>` is the time `suss run` started, in UTC, as `20261031T142500Z`. Every
-job of the run shares it, and `-1` to `-K` tell its agent jobs apart. `<dir>` is
-the directory holding `suss.toml`, so the regrade's `source_job` is the agent
-job's directory as an absolute path, which suss forms itself.
+job of the run shares it, and `-1` to `-K` tell its agent jobs apart. Suss
+forms three absolute paths itself:
+
+- `<env>` is the Python environment suss is installed in. Its `harbor` is the
+  one that can import `suss.agent`, which a `harbor` elsewhere on `PATH` may
+  not be.
+- `<checkout>` is the SWE-bench Pro checkout that `swe_bench_pro` names.
+- `<dir>` is the directory holding `suss.toml`, so the regrade's `source_job`
+  is the agent job's directory.
 
 Options after `--` go to every agent job. Passing any of these, under any name
 or spelling Harbor accepts, is an error that names it and says why, and runs
