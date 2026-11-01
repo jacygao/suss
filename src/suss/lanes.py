@@ -15,6 +15,8 @@ class LaneError(Exception):
     """A lane cannot be built from the checkout given, or cannot run the arm given."""
 
 
+MIB = 2**20
+
 # Each lane's owners, or None for the lane listed in v2/hard51_ids.txt.
 LANES: dict[str, tuple[str, ...] | None] = {
     "pro-go": ("flipt-io", "gravitational", "future-architect", "navidrome"),
@@ -141,6 +143,73 @@ def images(tasks: Mapping[Path, dict]) -> list[str]:
             )
         found[image] = None
     return list(found)
+
+
+def needs(tasks: Mapping[Path, dict]) -> tuple[int, int]:
+    """
+    The most CPUs, and the most MiB of memory, that any one of the tasks names
+    in `[environment] cpus` and `memory_mb`.
+
+    `tasks` are as `read_tasks` gives them. Raises LaneError naming a
+    task.toml where either is missing or is not a positive whole number.
+    """
+    cpus = max(_need(task, toml, "cpus") for task, toml in tasks.items())
+    memory_mb = max(_need(task, toml, "memory_mb") for task, toml in tasks.items())
+    return cpus, memory_mb
+
+
+def check_capacity(
+    lane: str,
+    lane_needs: tuple[int, int],
+    concurrency: int,
+    docker: tuple[int, int],
+    check: bool = False,
+) -> None:
+    """
+    Refuse a lane whose `concurrency` trials at once need more than Docker has.
+
+    `lane_needs` is as `needs` gives it, and `docker` is the engine's CPUs and
+    its memory in bytes. Each trial is counted at the lane's largest need, since
+    any trial may be running its largest task. The error gives the largest
+    concurrency that fits, or says that a single trial does not.
+    """
+    cpus, memory_mb = lane_needs
+    docker_cpus, docker_bytes = docker
+    fits = min(docker_cpus // cpus, docker_bytes // (memory_mb * MIB))
+    if concurrency <= fits:
+        return
+    # Rounded down, so that it never claims more memory than Docker has.
+    has = f"Docker has {_cpus(docker_cpus)} and {docker_bytes // MIB} MiB"
+    if fits == 0:
+        tasks = f"the first task in {lane}" if check else f"the tasks in {lane}"
+        raise LaneError(
+            f"one trial of {tasks} needs {_cpus(cpus)} and {memory_mb} MiB, but {has}; "
+            "give Docker more"
+        )
+    raise LaneError(
+        f"concurrency = {concurrency} needs {_cpus(concurrency * cpus)} and "
+        f"{concurrency * memory_mb} MiB for the tasks in {lane}, but {has}; "
+        f"set concurrency to {fits} or less, or give Docker more"
+    )
+
+
+def _cpus(count: int) -> str:
+    return f"{count} CPU" if count == 1 else f"{count} CPUs"
+
+
+def _need(task: Path, toml: dict, key: str) -> int:
+    value = _field(toml, "environment", key)
+    if value is None:
+        raise LaneError(
+            f"{task / 'task.toml'}: no [environment] {key}, so suss cannot tell how many "
+            "of its trials fit in Docker at once"
+        )
+    # A bool is an int to Python, and true would count as 1.
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise LaneError(
+            f"{task / 'task.toml'}: [environment] {key} is {value!r}, not a positive whole number"
+        )
+    return value
 
 
 def _agent_timeout(task: Path, toml: dict) -> float:

@@ -3,8 +3,10 @@ A stand-in for `docker info` and `docker pull`, which records how it was run.
 
 It appends its argv, working directory and environment to the JSON lines file
 STAND_IN_LOG names. `info` prints STAND_IN_DOCKER_ARCH as the engine's
-architecture. `pull` exits 1 for the image STAND_IN_DOCKER_FAIL names, and 0
-for any other.
+architecture, or, for a format naming `.NCPU`, STAND_IN_DOCKER_CAPACITY as its
+CPUs and memory. With STAND_IN_DOCKER_INFO_FAIL set, `info` prints that to
+stderr and exits 1, as it does when the engine is not running. `pull` exits 1
+for the image STAND_IN_DOCKER_FAIL names, and 0 for any other.
 """
 
 import json
@@ -16,7 +18,13 @@ with open(os.environ["STAND_IN_LOG"], "a") as log:
     log.write(json.dumps({"program": "docker", "argv": argv, "cwd": os.getcwd(), "env": dict(os.environ)}) + "\n")
 
 if argv[0] == "info":
-    print(os.environ["STAND_IN_DOCKER_ARCH"])
+    if os.environ.get("STAND_IN_DOCKER_INFO_FAIL"):
+        print(os.environ["STAND_IN_DOCKER_INFO_FAIL"], file=sys.stderr)
+        sys.exit(1)
+    if ".NCPU" in argv[-1]:
+        print(os.environ["STAND_IN_DOCKER_CAPACITY"])
+    else:
+        print(os.environ["STAND_IN_DOCKER_ARCH"])
 elif argv[0] == "pull":
     if argv[-1] == os.environ.get("STAND_IN_DOCKER_FAIL"):
         print(f"stand-in docker cannot pull {argv[-1]}", file=sys.stderr)
