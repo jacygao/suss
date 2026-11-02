@@ -6,3 +6,4 @@ jobs/
 .claude/worktrees/
 checks/
 lanes/
+.squiz.json
