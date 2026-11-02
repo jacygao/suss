@@ -205,3 +205,88 @@ def container_environment(tmp_path_factory):
     environment.container = started.stdout.strip()
     yield environment
     asyncio.run(environment.stop(delete=True))
+
+
+class ModalEnvironment(LocalEnvironment):
+    """
+    The stand-in, returning and failing where Harbor's modal environment does.
+
+    Modal keeps stderr apart from stdout, and gives "" rather than None for
+    empty output. At the timeout, exec returns rather than raises: Modal kills
+    the `bash -c` it started, and nothing else, and reports a return code of
+    -1. A process killed by a signal reports 128 plus the signal's number.
+    """
+
+    async def exec(
+        self,
+        command: str,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_sec: int | None = None,
+        user: str | int | None = None,
+    ) -> ExecResult:
+        if user is not None:
+            raise NotImplementedError(f"cannot run a command as user {user!r} locally")
+        process = subprocess.Popen(
+            ["bash", "-c", command],
+            cwd=cwd or self.task_env_config.workdir,
+            env={**os.environ, **(self._merge_env(env) or {})},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        self._sessions = [*getattr(self, "_sessions", []), process.pid]
+        stdout: list[bytes] = []
+        stderr: list[bytes] = []
+        readers = [_read_into(process.stdout, stdout), _read_into(process.stderr, stderr)]
+
+        def finished() -> None:
+            for reader in readers:
+                reader.join()
+            process.wait()
+
+        # A thread rather than the event loop, since a command left running at
+        # a timeout outlives the loop.
+        done: Future[None] = Future()
+        threading.Thread(target=lambda: done.set_result(finished()), daemon=True).start()
+        waited, _ = await asyncio.wait({asyncio.wrap_future(done)}, timeout=timeout_sec or None)
+        if not waited:
+            process.kill()
+            process.wait()
+            # What the command printed before the timeout, and no stderr at all.
+            return ExecResult(
+                stdout=b"".join(stdout).decode(errors="replace"), stderr="", return_code=-1
+            )
+        code = process.returncode
+        return ExecResult(
+            stdout=b"".join(stdout).decode(errors="replace"),
+            stderr=b"".join(stderr).decode(errors="replace"),
+            return_code=128 - code if code < 0 else code,
+        )
+
+
+def _read_into(pipe, chunks: list[bytes]) -> threading.Thread:
+    """Start a thread that appends what `pipe` gives to `chunks` until it closes."""
+
+    def read() -> None:
+        while chunk := os.read(pipe.fileno(), 65536):
+            chunks.append(chunk)
+
+    thread = threading.Thread(target=read, daemon=True)
+    thread.start()
+    return thread
+
+
+@pytest.fixture
+def modal_environment(tmp_path_factory):
+    root = tmp_path_factory.mktemp("modal-environment")
+    environment = ModalEnvironment(
+        environment_dir=root,
+        environment_name="modal",
+        session_id="modal",
+        trial_paths=TrialPaths(root / "trial"),
+        task_env_config=EnvironmentConfig(),
+    )
+    yield environment
+    asyncio.run(environment.stop(delete=True))

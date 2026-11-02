@@ -28,6 +28,9 @@ TIMED_OUT = "suss: stopped at the time limit"
 # exec's own timeout sits this far past the limit, as a backstop for a sandbox
 # where the limit cannot run.
 EXEC_TIMEOUT_GRACE_SECONDS = 30
+# The return code Harbor's modal environment reports when exec's timeout fires.
+# No command's exit code can be negative, so it is never the command's own.
+MODAL_EXEC_TIMED_OUT = -1
 # How long stopping a cancelled command may take. Harbor waits on a cancelled
 # agent with no limit, so a stuck exec here would hang the trial.
 STOP_SECONDS = 10
@@ -282,6 +285,10 @@ async def _start(
     except asyncio.CancelledError:
         await _stop(env, group_file, token)
         raise
+    if result.return_code == MODAL_EXEC_TIMED_OUT:
+        # Modal killed the wrapper alone, and left the command running.
+        await _stop(env, group_file, token)
+        return None
     if TIMED_OUT in (result.stdout or "").splitlines():
         return None
     return result.return_code
@@ -292,14 +299,16 @@ def _limited(command: str, seconds: float | None, group_file: str, token: str) -
     Wrap a command so that the sandbox itself can kill it, and every process
     it started: after `seconds`, when given, and through `_stop` at any time.
 
-    exec's own timeout cannot be relied on for this: Docker's stops only the
-    client on the host and leaves the command running in the container. The
-    wrapper needs only bash, which Harbor runs every command with, and `sleep`.
+    exec's own timeout cannot be relied on for this. Docker's stops only the
+    client on the host, and Modal's kills only the wrapper, so either leaves
+    the command running in the sandbox. The wrapper needs only bash, which
+    Harbor runs every command with, and `sleep`.
 
     It exits with the command's exit code. At the limit it prints TIMED_OUT,
     then kills the command and every process carrying `token`, and exits only
-    once they are dead. While the command runs, `group_file` holds the id of
-    its process group, and the wrapper deletes it once the command exits.
+    once they are dead. While the command runs, `group_file` holds the ids of
+    its process group and of the timer's, one per line, and the wrapper
+    deletes it once the command exits.
     """
     group = shlex.quote(group_file)
     lines = [
@@ -328,6 +337,9 @@ def _limited(command: str, seconds: float | None, group_file: str, token: str) -
             "trap on_timeout USR1",
             f"{{ sleep {seconds} > /dev/null 2>&1 && kill -USR1 $$; }} &",
             "timer=$!",
+            # So that a stop also ends the timer where the wrapper is gone,
+            # which would otherwise signal a process id that may be reused.
+            f'echo "$timer" >> {group}',
         ]
     lines += ['wait "$run"', "code=$?"]
     if seconds is not None:
@@ -363,7 +375,7 @@ _KILL_MARKED = f"""suss_kill_marked() {{
 
 async def _stop(env: BaseEnvironment, group_file: str, token: str) -> None:
     """
-    Kill the process group that `group_file` names, if the command is still
+    Kill the process groups that `group_file` names, if the command is still
     running, and every process that carries `token`.
 
     Never raises an Exception, and gives up after STOP_SECONDS. A stop that
@@ -373,7 +385,8 @@ async def _stop(env: BaseEnvironment, group_file: str, token: str) -> None:
     group = shlex.quote(group_file)
     command = (
         f"{_KILL_MARKED}\n"
-        f'[ -f {group} ] && kill -KILL -- "-$(cat {group})" 2> /dev/null; rm -f {group}\n'
+        f"[ -f {group} ] && while read -r g; do kill -KILL -- \"-$g\"; done"
+        f" < {group} 2> /dev/null; rm -f {group}\n"
         f"suss_kill_marked {token}"
     )
     try:
@@ -387,8 +400,7 @@ def _is_exec_timeout(error: RuntimeError) -> bool:
     Whether exec raised because the command was still running at `timeout_sec`.
 
     This is the form Harbor's docker environment raises, after it has stopped
-    its client on the host. The command itself may still be running. Other
-    environments may report a timeout differently.
+    its client on the host. The command itself may still be running.
     """
     return str(error).startswith("Command timed out after ")
 
