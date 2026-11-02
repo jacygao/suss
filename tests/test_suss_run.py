@@ -79,8 +79,10 @@ class Project:
         environment: str = "docker",
         k: str = "2",
         max_seconds: str | None = "2700",
+        max_cost_usd: str | None = None,
     ) -> None:
         cap = f"max_seconds = {max_seconds}\n" if max_seconds else ""
+        cap += f"max_cost_usd = {max_cost_usd}\n" if max_cost_usd else ""
         (self.directory / "suss.toml").write_text(
             f'swe_bench_pro = "{self.checkout}"\n'
             'dataset = "swe-bench-pro-v2"\n'
@@ -463,6 +465,52 @@ def test_the_max_seconds_error_is_printed_as_the_spec_shows(project, capfd):
         "3000-second agent timeout of the tasks in pro-go\n"
     )
     assert_nothing_ran(project)
+
+
+def takes_no_budget(project: Project) -> None:
+    """Give the arm a harness whose manifest sets max_cost_usd = false, named apart from the arm."""
+    (project.directory / "adapter" / "suss-harness.toml").write_text(
+        '[harness]\nname = "copilot-cli"\nversion = "0.1.0"\nrun = "run.sh"\n'
+        "max_cost_usd = false\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "dry_run, check", [(False, False), (True, False), (False, True)], ids=["run", "dry-run", "check"]
+)
+def test_an_arms_own_budget_on_a_harness_that_takes_none_is_refused_as_the_spec_shows(
+    project, capfd, monkeypatch, dry_run, check
+):
+    if dry_run:
+        monkeypatch.setenv("DRY_RUN", "1")
+    takes_no_budget(project)
+    project.write_toml(arm_extra="max_cost_usd = 5")
+
+    code = project.run("peer-review", "pro-go", *(["--check"] if check else []))
+
+    out, err = capfd.readouterr()
+    assert code != 0
+    assert err == (
+        "error: arm peer-review sets max_cost_usd = 5, but copilot-cli takes no budget in "
+        "dollars; remove it, and max_seconds alone caps each trial\n"
+    )
+    assert out == ""
+    assert_nothing_ran(project)
+
+
+def test_a_top_level_budget_does_not_stop_a_harness_that_takes_none(project):
+    takes_no_budget(project)
+    project.write_toml(max_cost_usd="20")
+
+    assert project.run("peer-review", "pro-go") == 0
+    assert len(project.job_names()) == 4
+
+
+def test_an_arms_own_budget_runs_on_a_harness_that_takes_one(project):
+    project.write_toml(arm_extra="max_cost_usd = 5")
+
+    assert project.run("peer-review", "pro-go") == 0
+    assert len(project.job_names()) == 4
 
 
 def test_a_refused_argument_after_the_separator_is_printed_as_the_spec_shows(project, capfd):

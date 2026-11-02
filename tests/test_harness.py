@@ -5,7 +5,8 @@ import pytest
 
 from suss.harness import Manifest, ManifestError, load_manifest
 
-SPEC = Path(__file__).resolve().parent.parent / "docs" / "specs" / "suss-spec.md"
+REPO = Path(__file__).resolve().parent.parent
+SPEC = REPO / "docs" / "specs" / "suss-spec.md"
 
 
 def spec_example_manifest() -> str:
@@ -37,6 +38,7 @@ def test_reads_the_spec_example(adapter):
         run="run.sh",
         allowed_hosts=("api.anthropic.com", "api.deepseek.com"),
         env=("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY"),
+        max_cost_usd=True,
     )
 
 
@@ -60,6 +62,24 @@ def test_absent_allowed_hosts_and_env_are_empty(adapter):
 
     assert manifest.allowed_hosts == ()
     assert manifest.env == ()
+
+
+def test_an_absent_max_cost_usd_is_true(adapter):
+    manifest = load_manifest(adapter("[harness]\n" + REQUIRED))
+
+    assert manifest.max_cost_usd is True
+
+
+def test_max_cost_usd_false_is_read(adapter):
+    manifest = load_manifest(adapter("[harness]\n" + REQUIRED + "max_cost_usd = false\n"))
+
+    assert manifest.max_cost_usd is False
+
+
+def test_the_claude_code_adapter_takes_a_budget_in_dollars():
+    manifest = load_manifest(REPO / "adapters" / "claude-code")
+
+    assert manifest.max_cost_usd is True
 
 
 @pytest.mark.parametrize("field", ["name", "version", "run"])
@@ -138,3 +158,16 @@ def test_a_field_of_the_wrong_type_is_named_with_the_path(adapter, field, value)
 
     assert f"'{field}'" in str(error.value)
     assert str(directory / "suss-harness.toml") in str(error.value)
+
+
+# Python reads each of these as true or false, and none of them says which the harness means.
+@pytest.mark.parametrize("value", ["0", "1", '"false"'])
+def test_a_max_cost_usd_that_is_not_a_boolean_is_named_with_the_path(adapter, value):
+    directory = adapter("[harness]\n" + REQUIRED + f"max_cost_usd = {value}\n")
+
+    with pytest.raises(ManifestError) as error:
+        load_manifest(directory)
+
+    assert str(error.value) == (
+        f"{directory / 'suss-harness.toml'}: 'max_cost_usd' must be true or false"
+    )

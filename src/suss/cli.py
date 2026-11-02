@@ -23,7 +23,7 @@ from harbor.cli.main import app as harbor_app
 from harbor.cli.utils import parse_kwargs
 
 from suss import config, lanes
-from suss.config import Config, ConfigError
+from suss.config import Arm, Config, ConfigError
 from suss.harness import Manifest, ManifestError, load_manifest
 from suss.lanes import LaneError
 
@@ -345,6 +345,7 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
         _require_modal()
     root = settings.path.parent
     manifest = load_manifest(settings.arm.harness)
+    _refuse_budget(settings.arm, manifest)
     for at, lane in enumerate(args.lanes):
         if lane in args.lanes[:at]:
             raise _Stop(f"{lane} is named twice: each lane runs once in a suss run")
@@ -408,6 +409,21 @@ def _require_modal() -> None:
     if importlib.util.find_spec("modal") is None:
         raise _Stop(
             "environment is modal, but Modal's client is not installed: run uv sync --extra modal"
+        )
+
+
+def _refuse_budget(arm: Arm, manifest: Manifest) -> None:
+    """
+    Raise _Stop when the arm sets its own max_cost_usd and its harness takes no
+    budget in dollars.
+
+    A max_cost_usd from the top of suss.toml is not refused: it applies to the
+    arms whose harness takes one, and the others run without it.
+    """
+    if arm.sets_max_cost_usd and not manifest.max_cost_usd:
+        raise _Stop(
+            f"arm {arm.name} sets max_cost_usd = {arm.max_cost_usd}, but {manifest.name} takes "
+            "no budget in dollars; remove it, and max_seconds alone caps each trial"
         )
 
 
