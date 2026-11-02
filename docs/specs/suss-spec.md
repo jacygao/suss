@@ -214,18 +214,14 @@ patch, and the regrade grades it.
 The repository publishes adapters under `adapters/`. An arm names one by its
 path, as it names any other adapter, and suss runs it the same way.
 
-Each adapter's params are a flat JSON object. `version` and `model` are strings
-and required. `effort` is an optional string, passed only when set. The spending
-limit is an optional number, and without it the coding agent runs with no limit.
-`run` exits 1 naming the param, before the coding agent starts, when a required
-param is missing, or when a param holds a value it cannot take, such as a string
-or a negative number for the limit. `install` and `run` exit 1 when the params
-hold an object inside their own.
+Both take flat params: `version` and `model` are required, `effort` and the
+spending limit optional. `run` exits 1 naming any param it cannot take, before
+the coding agent starts.
 
 | Adapter | Params | Spending limit | What it does |
 |---|---|---|---|
-| `adapters/claude-code/` | `version`, `model`, `effort`, `max_budget_usd` | `max_budget_usd`, in dollars, passed as `--max-budget-usd`. Claude Code checks it after each turn, so one model call can pass it: a first turn spent $0.153664 against a $0.01 limit. `run` exits 0 when Claude Code stops at the limit. | `install` installs Claude Code at `version` with its native installer. `run` runs it headless, with the instruction as its prompt, `model` as `--model`, `effort` as `--effort`, and every tool allowed except `WebSearch` and `WebFetch`. It prints Claude Code's messages as they arrive, so `run.log` holds the token usage of every model call that finished, even when suss stops `run` at `max_seconds`. When Claude Code exits by itself, the last line is its result, which gives its cost in dollars. |
-| `adapters/copilot-cli/` | `version`, `model`, `effort`, `max_ai_credits` | `max_ai_credits`, in AI credits, passed as `--max-ai-credits`. Copilot CLI takes no limit under 30, so `run` exits 1 naming the param for one, before Copilot CLI starts. Copilot CLI checks the limit after each model call, so one call can pass it: one took a session from 24.7 to 64.82 credits against a limit of 30. At the limit, it skips the tool calls the model asks for and exits 0. It shows the limit to the model, which plans around it. | `install` installs GitHub Copilot CLI at `version` with its install script, which downloads the release's standalone binary, so the image needs no Node. `run` runs `copilot -p` with the instruction as its prompt, `model` as `--model`, `effort` as `--reasoning-effort`, every tool allowed except `web_fetch` and `web_search`, and no built-in MCP servers, auto-update or client telemetry. Copilot CLI refuses `--reasoning-effort` for a model that takes none, such as `claude-haiku-4.5`, so an arm on such a model sets no `effort`. `run` prints Copilot CLI's `--output-format json` lines as they arrive. It exits 1 naming `COPILOT_GITHUB_TOKEN` when that variable is empty. Copilot CLI sees no other token, no stored login and no `gh` login. |
+| `adapters/claude-code/` | `version`, `model`, `effort`, `max_budget_usd` | `max_budget_usd`, in dollars, as `--max-budget-usd`. One model call can pass it. `run` exits 0 at the limit. | `install` installs Claude Code at `version` with its native installer. `run` runs it headless, with the instruction as its prompt, `model` as `--model`, `effort` as `--effort`, and every tool allowed except `WebSearch` and `WebFetch`. It prints Claude Code's messages as they arrive, so `run.log` holds the token usage of every model call that finished, even when suss stops `run` at `max_seconds`. When Claude Code exits by itself, the last line is its result, which gives its cost in dollars. |
+| `adapters/copilot-cli/` | `version`, `model`, `effort`, `max_ai_credits` | `max_ai_credits`, in AI credits, as `--max-ai-credits`, at least 30. One model call can pass it. `run` exits 0 at the limit, and the model sees the limit. | `install` installs GitHub Copilot CLI at `version` with its install script, which downloads the release's standalone binary, so the image needs no Node. `run` runs `copilot -p` with the instruction as its prompt, `model` as `--model`, `effort` as `--reasoning-effort`, every tool allowed except `web_fetch` and `web_search`, and no built-in MCP servers, auto-update or client telemetry. `run` prints Copilot CLI's `--output-format json` lines as they arrive. It exits 1 naming `COPILOT_GITHUB_TOKEN` when that variable is empty. Copilot CLI sees no other token, no stored login and no `gh` login. |
 
 ## 5. Lanes
 
