@@ -166,8 +166,9 @@ env = ["ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY"]
 ```
 
 Suss runs both commands as the agent's user, with the workspace as the current
-directory. Their environment holds only the variables named in `env`, taken from
-the `.env` file beside `suss.toml`.
+directory. Their environment holds the variables named in `env`, taken from the
+`.env` file beside `suss.toml`, and `SUSS_START_TOKEN`, by which suss finds every
+process the command started when it stops it. A harness leaves it in place.
 
 Suss writes the two files the commands are given to `/opt/suss/`, outside the
 workspace, so neither becomes part of the patch:
