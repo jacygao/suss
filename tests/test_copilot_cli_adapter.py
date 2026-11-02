@@ -337,6 +337,38 @@ def test_run_refuses_an_effort_that_is_not_a_string(box, effort):
     assert not (box / "records" / "copilot").exists()
 
 
+# A key inside another's object must not be read as the arm's own.
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"max_ai_credits": {"max_ai_credits": 40}},
+        {"effort": {"effort": "high"}},
+        {"effort": None, "extra": {"effort": "high"}},
+        {"extra": [{"max_ai_credits": 40}]},
+    ],
+    ids=["limit-in-itself", "effort-in-itself", "effort-in-another", "limit-in-a-list"],
+)
+def test_run_refuses_params_holding_an_object(box, changes):
+    stand_in_copilot(box)
+    write_params(box, **changes)
+
+    result = run(box)
+
+    assert result.returncode != 0
+    assert "flat object" in result.stderr
+    assert not (box / "records" / "copilot").exists()
+
+
+# A brace inside a string is text, not an object.
+def test_run_reads_params_whose_strings_hold_braces(box):
+    stand_in_copilot(box)
+    write_params(box, note='{"effort": "low"} \\ { "q\\"" }')
+
+    result = run(box)
+
+    assert result.returncode == 0, result.stderr
+
+
 # A key whose name begins with another's must not be read as that one.
 @pytest.mark.parametrize(
     "params, effort, credits",

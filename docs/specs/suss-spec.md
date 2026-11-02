@@ -218,7 +218,8 @@ and required. `effort` is an optional string, passed only when set. The spending
 limit is an optional number, and without it the coding agent runs with no limit.
 `run` exits 1 naming the param, before the coding agent starts, when a required
 param is missing, or when a param holds a value it cannot take, such as a string
-or a negative number for the limit.
+or a negative number for the limit. `install` and `run` exit 1 when the params
+hold an object inside their own.
 
 | Adapter | Params | Spending limit | What it does |
 |---|---|---|---|

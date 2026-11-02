@@ -6,20 +6,32 @@ fail() {
     exit 1
 }
 
+# Print the params JSON $1 on one line, or fail when it holds an object inside
+# its own, where a key could be read from another key's value.
+_flat() {
+    json=$(tr '\n\r\t' '   ' < "$1") || fail "cannot read $1"
+    # Escapes first, then every string, so a brace inside a string is not counted.
+    case $(printf '%s' "$json" | sed -e 's/\\\\//g' -e 's/\\"//g' -e 's/"[^"]*"/""/g') in
+        *'{'*'{'*) fail "$1 must be a flat object, with no object inside it" ;;
+    esac
+    printf '%s\n' "$json"
+}
+
 # Print the value of key $1 in the params JSON $2 where it matches the sed
 # pattern $3, whose first group is the value. Print nothing where it does not.
 #
-# It reads a flat object, as the adapter's params are. The key is matched with
-# both its quotes, so `effort` is never read from `effort_x`. A string value
-# holding a quote or a backslash is not read.
+# The key is matched with both its quotes, so `effort` is never read from
+# `effort_x`. A string value holding a quote or a backslash is not read.
 _match() {
-    tr '\n\r\t' '   ' < "$2" | sed -n \
+    json=$(_flat "$2") || exit 1
+    printf '%s\n' "$json" | sed -n \
         "s/.*[{,][[:space:]]*\"$1\"[[:space:]]*:[[:space:]]*$3.*/\1/p"
 }
 
 # Whether the params JSON $2 has the key $1, whatever its value.
 _has() {
-    [ -n "$(_match "$1" "$2" '\(.\)')" ]
+    found=$(_match "$1" "$2" '\(.\)') || exit 1
+    [ -n "$found" ]
 }
 
 STRING='"\([^"\\]*\)"'
@@ -28,7 +40,7 @@ NUMBER='\([0-9][0-9]*\(\.[0-9][0-9]*\)\{0,1\}\)[[:space:]]*[,}]'
 
 # Print a string-valued key of the params JSON, or fail naming the key.
 param() {
-    value=$(_match "$1" "$2" "$STRING")
+    value=$(_match "$1" "$2" "$STRING") || exit 1
     [ -n "$value" ] || fail "$2 has no string \"$1\""
     printf '%s\n' "$value"
 }
@@ -44,7 +56,7 @@ optional_param() {
 # Fails naming the key when it holds anything but a number of at least 0.
 optional_number() {
     _has "$1" "$2" || return 0
-    value=$(_match "$1" "$2" "$NUMBER")
+    value=$(_match "$1" "$2" "$NUMBER") || exit 1
     [ -n "$value" ] || fail "$2: \"$1\" must be a number of at least 0"
     printf '%s\n' "$value"
 }
