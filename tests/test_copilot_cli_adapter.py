@@ -136,7 +136,7 @@ def test_the_manifest_loads_and_names_scripts_that_exist():
     manifest = load_manifest(ADAPTER)
 
     assert manifest.name == "copilot-cli"
-    assert manifest.allowed_hosts == ("api.github.com", "api.individual.githubcopilot.com")
+    assert manifest.allowed_hosts == ("api.github.com", "api.enterprise.githubcopilot.com")
     assert manifest.env == ("COPILOT_GITHUB_TOKEN",)
     for script in (manifest.install, manifest.run):
         assert script is not None
