@@ -163,6 +163,10 @@ allowed_hosts = ["api.anthropic.com", "api.deepseek.com"]
 
 # Environment variables the harness reads, passed through from the run's .env.
 env = ["ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY"]
+
+# Whether the harness keeps its spend under --max-cost-usd. Optional, and true
+# when absent.
+max_cost_usd = true
 ```
 
 Suss runs both commands as the agent's user, with the workspace as the current
@@ -201,9 +205,12 @@ workspace, committed or not. Anything it writes inside
 the workspace is part of the patch.
 
 `--max-cost-usd` is the arm's `max_cost_usd`, given when `suss.toml` sets one,
-for the arm or at the top. The harness stops before its models' spend passes it, across every model
-it calls. Suss stops `run` after the arm's `max_seconds`, marks the trial
-`timed-out`, and captures the patch as the harness left it.
+for the arm or at the top, and the manifest does not set `max_cost_usd = false`.
+The harness stops before its models' spend passes it, across every model it
+calls. A harness that cannot keep to a budget in dollars sets
+`max_cost_usd = false`, and is never given one. Suss stops `run` after the arm's
+`max_seconds`, marks the trial `timed-out`, and captures the patch as the
+harness left it.
 
 A non-zero exit marks the trial `harness-failed`. Either way, suss captures the
 patch, and the regrade grades it.
@@ -411,6 +418,17 @@ params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "d
 - `max_cost_usd` and `max_seconds` cap each trial: the harness keeps its
   models' spend under `max_cost_usd`, and suss stops `run` after `max_seconds`.
   Set at the top, they apply to every arm, and an arm may set its own.
+  `max_cost_usd` set at the top applies only to arms whose harness's manifest
+  does not set `max_cost_usd = false`. An arm that sets `max_cost_usd` itself on
+  such a harness makes `suss run` exit with an error before it builds any lane
+  or runs any job:
+
+  ```
+  $ suss run copilot pro-go
+  error: arm copilot sets max_cost_usd = 5, but copilot-cli takes no budget in
+  dollars; remove it, and max_seconds alone caps each trial
+  ```
+
   `max_seconds` must be under the task's agent timeout, 3000 seconds in every
   V2 task, so that suss captures the patch before Harbor stops the trial. When
   it is not under the agent timeout of every task in a lane, `suss run` exits
