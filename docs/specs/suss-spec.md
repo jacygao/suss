@@ -223,6 +223,7 @@ path, as it names any other adapter, and suss runs it the same way.
 | Adapter | Params | What it does |
 |---|---|---|
 | `adapters/claude-code/` | `version`, `model`, `effort` | `install` installs Claude Code at `version` with its native installer. `run` runs it headless, with the instruction as its prompt, every tool allowed except `WebSearch` and `WebFetch`, and `--max-cost-usd` as its `--max-budget-usd`. `run` exits 0 when Claude Code stops at that budget. It prints Claude Code's messages as they arrive, so `run.log` holds the token usage of every model call that finished, even when suss stops `run` at `max_seconds`. When Claude Code exits by itself, the last line is its result, which gives its cost in dollars. |
+| `adapters/copilot-cli/` | `version`, `model`, `effort` | `install` installs GitHub Copilot CLI at `version` with its install script, which downloads the release's standalone binary, so the image needs no Node. `run` runs `copilot -p` with the instruction as its prompt, `model` as `--model`, `effort` as `--reasoning-effort`, every tool allowed except `web_fetch` and `web_search`, and no built-in MCP servers, auto-update or client telemetry. It prints Copilot CLI's `--output-format json` lines as they arrive. Its manifest sets `max_cost_usd = false`, so `max_seconds` alone caps its trials. `run` exits 1 if it is given `--max-cost-usd`, and exits 1 naming `COPILOT_GITHUB_TOKEN` when that variable is empty. Copilot CLI sees no other token, no stored login and no `gh` login. |
 
 ## 5. Lanes
 
@@ -492,6 +493,7 @@ src/suss/
   cli.py          the suss command
 adapters/
   claude-code/
+  copilot-cli/
 tests/
 docs/specs/
 ```
