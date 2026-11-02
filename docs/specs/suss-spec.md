@@ -170,12 +170,9 @@ max_cost_usd = true
 ```
 
 Suss runs both commands as the agent's user, with the workspace as the current
-directory. Of the variables in the `.env` file beside `suss.toml`, their
-environment holds only those named in `env`. Suss also sets `SUSS_START_TOKEN`, a
-random value new for each command it starts. To stop a command, suss kills
-every process whose environment holds that value, so a harness leaves
-`SUSS_START_TOKEN` in the environment of every process it starts. A process
-started without it keeps running after suss stops the harness.
+directory. Their environment holds the variables named in `env`, taken from the
+`.env` file beside `suss.toml`, and `SUSS_START_TOKEN`, by which suss finds every
+process the command started when it stops it. A harness leaves it in place.
 
 Suss writes the two files the commands are given to `/opt/suss/`, outside the
 workspace, so neither becomes part of the patch:
