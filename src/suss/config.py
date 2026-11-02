@@ -19,6 +19,8 @@ class Arm:
     params: dict[str, Any]
     # None where neither the arm nor the top of the file sets one.
     max_cost_usd: float | None
+    # Whether the arm's own table sets max_cost_usd, and not only the top of the file.
+    sets_max_cost_usd: bool
     max_seconds: float | None
 
 
@@ -83,6 +85,7 @@ def load(path: Path, arm: str) -> Config:
             baseline=table.get("baseline"),
             params=table.get("params", {}),
             max_cost_usd=_cap("max_cost_usd", table, data),
+            sets_max_cost_usd="max_cost_usd" in table,
             max_seconds=_cap("max_seconds", table, data),
         ),
         env=_read_env(directory / ".env"),

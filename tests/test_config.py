@@ -148,6 +148,25 @@ def test_a_cap_set_nowhere_is_none(tmp_path: Path):
     assert (arm.max_cost_usd, arm.max_seconds) == (None, None)
 
 
+# A harness that takes no budget in dollars refuses the arm's own and ignores the top's.
+@pytest.mark.parametrize(
+    "top, arm_table, sets",
+    [
+        ("max_cost_usd = 20\n", "", False),
+        ("", "", False),
+        ("", "max_cost_usd = 5\n", True),
+        ("max_cost_usd = 20\n", "max_cost_usd = 0\n", True),
+    ],
+    ids=["top-only", "nowhere", "arm-only", "arm-zero-over-top"],
+)
+def test_the_arm_records_whether_it_set_max_cost_usd_itself(
+    tmp_path: Path, top: str, arm_table: str, sets: bool
+):
+    path = write_config(tmp_path, TOP + top + '[arms.a]\nharness = "h"\n' + arm_table)
+
+    assert config.load(path, "a").arm.sets_max_cost_usd is sets
+
+
 def test_paths_resolve_from_the_directory_holding_suss_toml(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

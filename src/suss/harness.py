@@ -57,11 +57,13 @@ class Manifest:
     run: str
     allowed_hosts: tuple[str, ...]
     env: tuple[str, ...]
+    # False for a harness that cannot keep to a budget in dollars, which is never given one.
+    max_cost_usd: bool
 
 
 REQUIRED = ("name", "version", "run")
 LISTS = ("allowed_hosts", "env")
-FIELDS = (*REQUIRED, "install", *LISTS)
+FIELDS = (*REQUIRED, "install", *LISTS, "max_cost_usd")
 
 
 def load_manifest(adapter_dir: Path) -> Manifest:
@@ -70,7 +72,8 @@ def load_manifest(adapter_dir: Path) -> Manifest:
 
     Raises ManifestError when the file is missing or is not TOML, when it has
     no `[harness]` table, or when a field is missing, unknown or of the wrong
-    type. An absent `allowed_hosts` or `env` is empty.
+    type. An absent `allowed_hosts` or `env` is empty, and an absent
+    `max_cost_usd` is true.
     """
     path = adapter_dir / MANIFEST_NAME
     try:
@@ -99,6 +102,8 @@ def load_manifest(adapter_dir: Path) -> Manifest:
         value = table.get(field, [])
         if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
             raise ManifestError(f"{path}: {field!r} must be a list of strings")
+    if not isinstance(table.get("max_cost_usd", True), bool):
+        raise ManifestError(f"{path}: 'max_cost_usd' must be true or false")
 
     return Manifest(
         name=table["name"],
@@ -107,6 +112,7 @@ def load_manifest(adapter_dir: Path) -> Manifest:
         run=table["run"],
         allowed_hosts=tuple(table.get("allowed_hosts", [])),
         env=tuple(table.get("env", [])),
+        max_cost_usd=table.get("max_cost_usd", True),
     )
 
 
@@ -195,7 +201,7 @@ async def run(
 
     args = ["--workspace", workspace, "--instruction", paths.instruction, "--params", paths.params]
     # 0 is a cap the arm set, so the test is against None.
-    if arm.max_cost_usd is not None:
+    if manifest.max_cost_usd and arm.max_cost_usd is not None:
         args += ["--max-cost-usd", str(arm.max_cost_usd)]
 
     await _make_logs(env, paths)

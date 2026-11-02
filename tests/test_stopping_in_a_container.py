@@ -43,6 +43,7 @@ def arm(max_seconds=None) -> Arm:
         baseline=None,
         params={},
         max_cost_usd=None,
+        sets_max_cost_usd=False,
         max_seconds=max_seconds,
     )
 
