@@ -18,9 +18,6 @@ class Arm:
     # Passed to the harness as it stands; suss reads none of it.
     params: dict[str, Any]
     # None where neither the arm nor the top of the file sets one.
-    max_cost_usd: float | None
-    # Whether the arm's own table sets max_cost_usd, and not only the top of the file.
-    sets_max_cost_usd: bool
     max_seconds: float | None
 
 
@@ -45,10 +42,11 @@ def load(path: Path, arm: str) -> Config:
     Read the settings `arm` runs with from the suss.toml at `path`.
 
     Paths in the file resolve from the directory holding it, whatever the
-    current directory is. The caps are optional. Raises ConfigError, naming
-    the file, when it is missing or is not TOML, when a required key is
+    current directory is. `max_seconds` is optional. Raises ConfigError,
+    naming the file, when it is missing or is not TOML, when a required key is
     missing, when `k` is not a whole number of at least 1, when the file does
-    not define `arm`, or when a .env line is not NAME=VALUE.
+    not define `arm`, when the top or `arm` sets `max_cost_usd`, or when a .env
+    line is not NAME=VALUE.
     """
     path = Path(path).resolve()
     directory = path.parent
@@ -72,6 +70,17 @@ def load(path: Path, arm: str) -> Config:
     for key in REQUIRED_IN_ARM:
         if key not in table:
             raise ConfigError(f"{path}: [arms.{arm}] has no {key!r}")
+    # Ignored, it would leave a run its author believes is capped running uncapped.
+    for where, keys in (
+        ("max_cost_usd is set at the top", data),
+        (f"[arms.{arm}] sets max_cost_usd", table),
+    ):
+        if "max_cost_usd" in keys:
+            raise ConfigError(
+                f"{path}: {where}, but suss does not read it; set the arm's spending limit in "
+                "its params, under the name its adapter takes, such as max_budget_usd for "
+                "adapters/claude-code"
+            )
     return Config(
         path=path,
         swe_bench_pro=(directory / data["swe_bench_pro"]).resolve(),
@@ -84,8 +93,6 @@ def load(path: Path, arm: str) -> Config:
             harness=(directory / table["harness"]).resolve(),
             baseline=table.get("baseline"),
             params=table.get("params", {}),
-            max_cost_usd=_cap("max_cost_usd", table, data),
-            sets_max_cost_usd="max_cost_usd" in table,
             max_seconds=_cap("max_seconds", table, data),
         ),
         env=_read_env(directory / ".env"),

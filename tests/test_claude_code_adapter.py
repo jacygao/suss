@@ -71,6 +71,17 @@ def box(tmp_path):
     return root
 
 
+PARAMS = {"version": "2.1.293", "model": "claude-sonnet-5", "effort": "high"}
+
+
+def write_params(box: Path, **changes) -> None:
+    """Write params.json as the fixture's, with each change made, and a None removing its key."""
+    params = {**PARAMS, **changes}
+    (box / "opt" / "params.json").write_text(
+        json.dumps({key: value for key, value in params.items() if value is not None})
+    )
+
+
 def stand_in(box: Path, name: str, body: str) -> None:
     """Write an executable stand-in for `name` that records its arguments first."""
     record = box / "records" / name
@@ -128,7 +139,7 @@ def start_run(box: Path, log: Path) -> subprocess.Popen:
     """Start run.sh with its output in `log`, in a process group of its own, as suss does."""
     with open(log, "wb") as out:
         return subprocess.Popen(
-            [str(ADAPTER / "run.sh"), *run_args(box), "--max-cost-usd", "0.001"],
+            [str(ADAPTER / "run.sh"), *run_args(box)],
             cwd=box / "workspace",
             env=environment(box),
             stdout=out,
@@ -266,8 +277,6 @@ def test_run_reads_its_flags_by_name_in_any_order(box):
     result = execute(
         box,
         "run.sh",
-        "--max-cost-usd",
-        "2.5",
         "--params",
         str(box / "opt" / "params.json"),
         "--instruction",
@@ -277,20 +286,102 @@ def test_run_reads_its_flags_by_name_in_any_order(box):
     )
 
     assert result.returncode == 0, result.stderr
-    assert recorded(box / "records" / "claude") == [*EXPECTED_CLAUDE_ARGV, "--max-budget-usd", "2.5"]
+    assert recorded(box / "records" / "claude") == EXPECTED_CLAUDE_ARGV
 
 
-def test_run_passes_the_budget_only_when_it_is_given(box):
+@pytest.mark.parametrize("budget, given", [(0.75, "0.75"), (20, "20"), (0, "0")])
+def test_run_passes_max_budget_usd_from_the_params_as_its_budget(box, budget, given):
+    stand_in_claude(box, '{"type":"result","subtype":"success"}', 0)
+    write_params(box, max_budget_usd=budget)
+
+    result = run(box)
+
+    assert result.returncode == 0, result.stderr
+    assert recorded(box / "records" / "claude") == [*EXPECTED_CLAUDE_ARGV, "--max-budget-usd", given]
+
+
+def test_run_passes_no_budget_when_the_params_set_none(box):
     stand_in_claude(box, '{"type":"result","subtype":"success"}', 0)
 
-    run(box, "--max-cost-usd", "0.75")
-    with_budget = recorded(box / "records" / "claude")
-    run(box)
-    without_budget = recorded(box / "records" / "claude")
+    result = run(box)
 
-    assert with_budget == [*EXPECTED_CLAUDE_ARGV, "--max-budget-usd", "0.75"]
-    assert "--max-budget-usd" not in without_budget
-    assert without_budget == EXPECTED_CLAUDE_ARGV
+    assert result.returncode == 0, result.stderr
+    assert recorded(box / "records" / "claude") == EXPECTED_CLAUDE_ARGV
+
+
+@pytest.mark.parametrize("budget", ["0.75", True, -1, None, [1]], ids=["string", "bool", "negative", "null", "list"])
+def test_run_refuses_a_max_budget_usd_that_is_not_a_number(box, budget):
+    stand_in_claude(box, '{"type":"result","subtype":"success"}', 0)
+    (box / "opt" / "params.json").write_text(json.dumps({**PARAMS, "max_budget_usd": budget}))
+
+    result = run(box)
+
+    assert result.returncode != 0
+    assert '"max_budget_usd"' in result.stderr
+    assert not (box / "records" / "claude").exists()
+
+
+def test_run_refuses_a_budget_given_as_an_argument(box):
+    stand_in_claude(box, '{"type":"result","subtype":"success"}', 0)
+
+    result = run(box, "--max-cost-usd", "5")
+
+    assert result.returncode != 0
+    assert "unknown argument --max-cost-usd" in result.stderr
+    assert not (box / "records" / "claude").exists()
+
+
+def test_run_passes_no_effort_when_the_params_set_none(box):
+    stand_in_claude(box, '{"type":"result","subtype":"success"}', 0)
+    write_params(box, effort=None)
+
+    result = run(box)
+
+    assert result.returncode == 0, result.stderr
+    argv = recorded(box / "records" / "claude")
+    assert "--effort" not in argv
+    assert argv == [arg for arg in EXPECTED_CLAUDE_ARGV if arg not in ("--effort", "high")]
+
+
+@pytest.mark.parametrize("effort", [3, "", True], ids=["number", "empty", "bool"])
+def test_run_refuses_an_effort_that_is_not_a_string(box, effort):
+    stand_in_claude(box, '{"type":"result","subtype":"success"}', 0)
+    write_params(box, effort=effort)
+
+    result = run(box)
+
+    assert result.returncode != 0
+    assert '"effort"' in result.stderr
+    assert not (box / "records" / "claude").exists()
+
+
+# A key whose name begins with another's must not be read as that one.
+@pytest.mark.parametrize(
+    "params, effort, budget",
+    [
+        ({"effort_x": "low"}, None, None),
+        ({"effort_x": "low", "effort": "high"}, "high", None),
+        ({"effort": "high", "effort_x": "low"}, "high", None),
+        ({"max_budget_usd_x": 9}, None, None),
+        ({"max_budget_usd": 2, "max_budget_usd_x": 9}, None, "2"),
+        ({"max_budget_usd_x": 9, "max_budget_usd": 2}, None, "2"),
+    ],
+)
+def test_run_reads_a_param_apart_from_one_its_name_is_a_prefix_of(box, params, effort, budget):
+    stand_in_claude(box, '{"type":"result","subtype":"success"}', 0)
+    (box / "opt" / "params.json").write_text(
+        json.dumps({"version": "2.1.293", "model": "claude-sonnet-5", **params})
+    )
+
+    result = run(box)
+
+    assert result.returncode == 0, result.stderr
+    argv = recorded(box / "records" / "claude")
+    for flag, value in (("--effort", effort), ("--max-budget-usd", budget)):
+        if value is None:
+            assert flag not in argv
+        else:
+            assert argv[argv.index(flag) + 1] == value
 
 
 def test_run_fails_without_a_model(box):
@@ -314,8 +405,9 @@ def test_run_fails_without_a_model(box):
 )
 def test_run_exits_0_when_claude_stops_at_its_budget(box, stdout):
     stand_in_claude(box, stdout, 1)
+    write_params(box, max_budget_usd=0.01)
 
-    result = run(box, "--max-cost-usd", "0.01")
+    result = run(box)
 
     assert result.returncode == 0, "a budget stop is not a harness failure"
     recorded(box / "records" / "claude")
@@ -357,8 +449,9 @@ def test_run_exits_0_when_claude_stops_at_its_budget(box, stdout):
 )
 def test_run_fails_when_claude_fails_for_any_other_reason(box, stdout):
     stand_in_claude(box, stdout, 1)
+    write_params(box, max_budget_usd=0.01)
 
-    result = run(box, "--max-cost-usd", "0.01")
+    result = run(box)
 
     assert result.returncode != 0, "a crash must not pass for a budget stop"
     recorded(box / "records" / "claude")
@@ -372,9 +465,10 @@ def test_run_keeps_claudes_own_exit_code(box):
 
 def test_run_writes_nothing_inside_the_workspace(box):
     stand_in_claude(box, BUDGET_STOP, 1)
+    write_params(box, max_budget_usd=0.01)
     before = snapshot(box / "workspace")
 
-    run(box, "--max-cost-usd", "0.01")
+    run(box)
 
     recorded(box / "records" / "claude")
     assert snapshot(box / "workspace") == before
@@ -388,6 +482,7 @@ def test_run_streams_claudes_messages_as_they_arrive_and_keeps_them_when_killed(
     stand_in(box, "claude", f"cat > /dev/null\ncat '{box / 'claude-stdout'}'\nexec sleep 60\n")
     log = box / "run.log"
 
+    write_params(box, max_budget_usd=0.001)
     process = start_run(box, log)
     try:
         arrived = wait_for(lambda: USAGE_LINE in log.read_text())
@@ -413,6 +508,7 @@ def test_run_streams_claudes_messages_and_exits_0_when_the_stream_ends_at_the_bu
     )
     log = box / "run.log"
 
+    write_params(box, max_budget_usd=0.001)
     process = start_run(box, log)
     try:
         arrived = wait_for(lambda: USAGE_LINE in log.read_text())

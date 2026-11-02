@@ -59,6 +59,17 @@ def box(tmp_path):
     return root
 
 
+PARAMS = {"version": "1.0.105", "model": "claude-sonnet-5", "effort": "high"}
+
+
+def write_params(box: Path, **changes) -> None:
+    """Write params.json as the fixture's, with each change made, and a None removing its key."""
+    params = {**PARAMS, **changes}
+    (box / "opt" / "params.json").write_text(
+        json.dumps({key: value for key, value in params.items() if value is not None})
+    )
+
+
 def stand_in(box: Path, name: str, body: str) -> None:
     """Write an executable stand-in for `name` that records its arguments first."""
     record = box / "records" / name
@@ -141,10 +152,6 @@ def test_the_manifest_loads_and_names_scripts_that_exist():
     for script in (manifest.install, manifest.run):
         assert script is not None
         assert os.access(ADAPTER / script, os.X_OK), f"{script} is not an executable file"
-
-
-def test_the_manifest_says_the_harness_takes_no_budget_in_dollars():
-    assert load_manifest(ADAPTER).max_cost_usd is False
 
 
 def install(box: Path) -> subprocess.CompletedProcess:
@@ -246,16 +253,117 @@ def test_run_reads_its_flags_by_name_in_any_order(box):
     assert flag_value(recorded(box / "records" / "copilot"), "--model") == "claude-sonnet-5"
 
 
-@pytest.mark.parametrize("budget", ["5", "0.01"])
-def test_run_refuses_a_budget_in_dollars_before_running_copilot(box, budget):
+def test_run_refuses_a_budget_given_as_an_argument(box):
     stand_in_copilot(box)
 
-    result = run(box, "--max-cost-usd", budget)
+    result = run(box, "--max-cost-usd", "5")
 
     assert result.returncode != 0
-    assert "budget in dollars" in result.stderr
-    assert "max_cost_usd" in result.stderr
+    assert "unknown argument --max-cost-usd" in result.stderr
     assert not (box / "records" / "copilot").exists()
+
+
+@pytest.mark.parametrize("credits, given", [(30, "30"), (30.0, "30.0"), (250, "250"), (45.5, "45.5")])
+def test_run_passes_max_ai_credits_from_the_params_as_its_limit(box, credits, given):
+    stand_in_copilot(box)
+    write_params(box, max_ai_credits=credits)
+
+    result = run(box)
+
+    assert result.returncode == 0, result.stderr
+    assert flag_value(recorded(box / "records" / "copilot"), "--max-ai-credits") == given
+
+
+def test_run_passes_no_limit_when_the_params_set_none(box):
+    stand_in_copilot(box)
+
+    result = run(box)
+
+    assert result.returncode == 0, result.stderr
+    assert "--max-ai-credits" not in recorded(box / "records" / "copilot")
+
+
+# Copilot CLI refuses a limit under 30.
+@pytest.mark.parametrize("credits", [29, 29.99, 0, 5])
+def test_run_refuses_max_ai_credits_under_30_before_running_copilot(box, credits):
+    stand_in_copilot(box)
+    write_params(box, max_ai_credits=credits)
+
+    result = run(box)
+
+    assert result.returncode != 0
+    assert '"max_ai_credits"' in result.stderr
+    assert "30" in result.stderr
+    assert not (box / "records" / "copilot").exists()
+
+
+@pytest.mark.parametrize(
+    "credits", ["50", True, -40, None, [50]], ids=["string", "bool", "negative", "null", "list"]
+)
+def test_run_refuses_max_ai_credits_that_is_not_a_number(box, credits):
+    stand_in_copilot(box)
+    (box / "opt" / "params.json").write_text(json.dumps({**PARAMS, "max_ai_credits": credits}))
+
+    result = run(box)
+
+    assert result.returncode != 0
+    assert '"max_ai_credits"' in result.stderr
+    assert not (box / "records" / "copilot").exists()
+
+
+# Copilot CLI refuses a model that takes no reasoning effort, such as
+# claude-haiku-4.5, when --reasoning-effort is passed.
+def test_run_passes_no_reasoning_effort_when_the_params_set_none(box):
+    stand_in_copilot(box)
+    write_params(box, effort=None, model="claude-haiku-4.5")
+
+    result = run(box)
+
+    assert result.returncode == 0, result.stderr
+    argv = recorded(box / "records" / "copilot")
+    assert "--reasoning-effort" not in argv
+    assert flag_value(argv, "--model") == "claude-haiku-4.5"
+
+
+@pytest.mark.parametrize("effort", [3, "", True], ids=["number", "empty", "bool"])
+def test_run_refuses_an_effort_that_is_not_a_string(box, effort):
+    stand_in_copilot(box)
+    write_params(box, effort=effort)
+
+    result = run(box)
+
+    assert result.returncode != 0
+    assert '"effort"' in result.stderr
+    assert not (box / "records" / "copilot").exists()
+
+
+# A key whose name begins with another's must not be read as that one.
+@pytest.mark.parametrize(
+    "params, effort, credits",
+    [
+        ({"effort_x": "low"}, None, None),
+        ({"effort_x": "low", "effort": "high"}, "high", None),
+        ({"effort": "high", "effort_x": "low"}, "high", None),
+        ({"max_ai_credits_x": 5}, None, None),
+        ({"max_ai_credits": 40, "max_ai_credits_x": 5}, None, "40"),
+        ({"max_ai_credits_x": 5, "max_ai_credits": 40}, None, "40"),
+    ],
+)
+def test_run_reads_a_param_apart_from_one_its_name_is_a_prefix_of(box, params, effort, credits):
+    stand_in_copilot(box)
+    (box / "opt" / "params.json").write_text(
+        json.dumps({"version": "1.0.105", "model": "claude-sonnet-5", **params})
+    )
+
+    result = run(box)
+
+    assert result.returncode == 0, result.stderr
+    argv = recorded(box / "records" / "copilot")
+    for flag, value in (("--reasoning-effort", effort), ("--max-ai-credits", credits)):
+        if value is None:
+            assert flag not in argv
+        else:
+            assert flag_value(argv, flag) == value
 
 
 @pytest.mark.parametrize("token", [None, ""], ids=["unset", "empty"])
@@ -307,17 +415,14 @@ def test_run_gives_copilot_only_its_own_token_and_a_fresh_home(box):
     assert [line for line in listed if line and not line.endswith(":")] == [], "copilot's homes were not empty"
 
 
-@pytest.mark.parametrize("param", ["model", "effort"])
-def test_run_fails_without_a_param(box, param):
+def test_run_fails_without_a_model(box):
     stand_in_copilot(box)
-    params = {"version": "1.0.105", "model": "claude-sonnet-5", "effort": "high"}
-    del params[param]
-    (box / "opt" / "params.json").write_text(json.dumps(params))
+    write_params(box, model=None)
 
     result = run(box)
 
     assert result.returncode != 0
-    assert param in result.stderr
+    assert "model" in result.stderr
     assert not (box / "records" / "copilot").exists()
 
 

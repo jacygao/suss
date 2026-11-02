@@ -45,7 +45,7 @@ real one. The arm is read from `suss.toml`.
 - [ ] In `adapters/claude-code/`, `install` installs Claude Code at `version`
       with its native installer, and `run` runs Claude Code headless with the
       instruction as its prompt, every tool allowed except `WebSearch` and
-      `WebFetch`, and `--max-cost-usd` passed as `--max-budget-usd`
+      `WebFetch`, and the params' `max_budget_usd` passed as `--max-budget-usd`
 
 ## M2 — `suss run`
 
@@ -72,8 +72,8 @@ Docker on this machine with `environment = "docker"`, or on Modal with
 - [ ] Options after `--` reach every agent job, except an option suss sets
       itself or one that changes the tasks or the agent the job runs, which is
       an error naming it
-- [ ] `max_cost_usd` and `max_seconds` set on an arm take precedence over the
-      ones set at the top of `suss.toml`
+- [ ] `max_seconds` set on an arm takes precedence over the one set at the top
+      of `suss.toml`
 - [ ] An arm whose `max_seconds` is not under the agent timeout of every task in
       a lane makes `suss run` exit with an error before it runs any job
 - [ ] Under Docker, a `concurrency` whose trials need more CPUs or memory than

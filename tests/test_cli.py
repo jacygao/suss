@@ -33,8 +33,6 @@ def make_config(
             harness=Path("/work/peer-review"),
             baseline=None,
             params={},
-            max_cost_usd=None,
-            sets_max_cost_usd=False,
             max_seconds=None,
         ),
         env={},
@@ -49,7 +47,6 @@ def make_manifest(allowed_hosts: tuple[str, ...] = ("api.anthropic.com", "api.de
         run="run.sh",
         allowed_hosts=allowed_hosts,
         env=(),
-        max_cost_usd=True,
     )
 
 

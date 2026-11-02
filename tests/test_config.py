@@ -46,7 +46,6 @@ def test_reads_the_top_level_keys_of_the_spec_example(spec_config: Path):
     assert settings.environment == "docker"
     assert settings.k == 1
     assert settings.concurrency == 16
-    assert settings.arm.max_cost_usd == 20
     assert settings.arm.max_seconds == 2700
 
 
@@ -60,6 +59,7 @@ def test_reads_each_arm_of_the_spec_example(spec_config: Path):
         "version": "2.1.293",
         "model": "claude-opus-4-6",
         "effort": "high",
+        "max_budget_usd": 20,
     }
     assert peer_review.name == "peer-review"
     assert peer_review.baseline == "claude-code"
@@ -71,100 +71,33 @@ def test_reads_each_arm_of_the_spec_example(spec_config: Path):
     }
 
 
-def test_an_arm_that_sets_neither_cap_takes_both_from_the_top(tmp_path: Path):
+def test_an_arm_that_sets_no_max_seconds_takes_the_tops(tmp_path: Path):
+    path = write_config(tmp_path, TOP + 'max_seconds = 2700\n[arms.a]\nharness = "h"\n')
+
+    assert config.load(path, "a").arm.max_seconds == 2700
+
+
+# 0 is a cap the arm set, so it overrides the top's rather than falling through to it.
+@pytest.mark.parametrize("seconds", [600, 0])
+def test_an_arms_own_max_seconds_overrides_the_tops(tmp_path: Path, seconds: int):
     path = write_config(
         tmp_path,
-        TOP + 'max_cost_usd = 20\nmax_seconds = 2700\n[arms.a]\nharness = "h"\n',
+        TOP + f'max_seconds = 2700\n[arms.a]\nharness = "h"\nmax_seconds = {seconds}\n',
     )
 
-    arm = config.load(path, "a").arm
-
-    assert (arm.max_cost_usd, arm.max_seconds) == (20, 2700)
+    assert config.load(path, "a").arm.max_seconds == seconds
 
 
-def test_an_arm_that_sets_both_caps_overrides_the_top(tmp_path: Path):
-    path = write_config(
-        tmp_path,
-        TOP
-        + "max_cost_usd = 20\nmax_seconds = 2700\n"
-        + '[arms.a]\nharness = "h"\nmax_cost_usd = 5\nmax_seconds = 600\n',
-    )
+def test_an_arms_max_seconds_applies_where_the_top_sets_none(tmp_path: Path):
+    path = write_config(tmp_path, TOP + '[arms.a]\nharness = "h"\nmax_seconds = 600\n')
 
-    arm = config.load(path, "a").arm
-
-    assert (arm.max_cost_usd, arm.max_seconds) == (5, 600)
+    assert config.load(path, "a").arm.max_seconds == 600
 
 
-def test_an_arm_that_sets_only_max_cost_usd_keeps_the_top_max_seconds(tmp_path: Path):
-    path = write_config(
-        tmp_path,
-        TOP + 'max_cost_usd = 20\nmax_seconds = 2700\n[arms.a]\nharness = "h"\nmax_cost_usd = 5\n',
-    )
-
-    arm = config.load(path, "a").arm
-
-    assert (arm.max_cost_usd, arm.max_seconds) == (5, 2700)
-
-
-def test_an_arm_that_sets_only_max_seconds_keeps_the_top_max_cost_usd(tmp_path: Path):
-    path = write_config(
-        tmp_path,
-        TOP + 'max_cost_usd = 20\nmax_seconds = 2700\n[arms.a]\nharness = "h"\nmax_seconds = 600\n',
-    )
-
-    arm = config.load(path, "a").arm
-
-    assert (arm.max_cost_usd, arm.max_seconds) == (20, 600)
-
-
-def test_an_arm_cap_of_zero_still_overrides_the_top(tmp_path: Path):
-    path = write_config(
-        tmp_path,
-        TOP
-        + "max_cost_usd = 20\nmax_seconds = 2700\n"
-        + '[arms.a]\nharness = "h"\nmax_cost_usd = 0\nmax_seconds = 0\n',
-    )
-
-    arm = config.load(path, "a").arm
-
-    assert (arm.max_cost_usd, arm.max_seconds) == (0, 0)
-
-
-def test_an_arm_cap_applies_where_the_top_sets_none(tmp_path: Path):
-    path = write_config(
-        tmp_path, TOP + '[arms.a]\nharness = "h"\nmax_cost_usd = 5\nmax_seconds = 600\n'
-    )
-
-    arm = config.load(path, "a").arm
-
-    assert (arm.max_cost_usd, arm.max_seconds) == (5, 600)
-
-
-def test_a_cap_set_nowhere_is_none(tmp_path: Path):
+def test_a_max_seconds_set_nowhere_is_none(tmp_path: Path):
     path = write_config(tmp_path, TOP + '[arms.a]\nharness = "h"\n')
 
-    arm = config.load(path, "a").arm
-
-    assert (arm.max_cost_usd, arm.max_seconds) == (None, None)
-
-
-# A harness that takes no budget in dollars refuses the arm's own and ignores the top's.
-@pytest.mark.parametrize(
-    "top, arm_table, sets",
-    [
-        ("max_cost_usd = 20\n", "", False),
-        ("", "", False),
-        ("", "max_cost_usd = 5\n", True),
-        ("max_cost_usd = 20\n", "max_cost_usd = 0\n", True),
-    ],
-    ids=["top-only", "nowhere", "arm-only", "arm-zero-over-top"],
-)
-def test_the_arm_records_whether_it_set_max_cost_usd_itself(
-    tmp_path: Path, top: str, arm_table: str, sets: bool
-):
-    path = write_config(tmp_path, TOP + top + '[arms.a]\nharness = "h"\n' + arm_table)
-
-    assert config.load(path, "a").arm.sets_max_cost_usd is sets
+    assert config.load(path, "a").arm.max_seconds is None
 
 
 def test_paths_resolve_from_the_directory_holding_suss_toml(
@@ -302,3 +235,28 @@ def test_an_arm_without_a_harness_is_an_error_naming_the_key_the_arm_and_the_fil
     assert "'harness'" in str(error.value)
     assert "lonely" in str(error.value)
     assert str(path) in str(error.value)
+
+
+# Read and ignored, it would leave a run its author believes is capped running uncapped.
+@pytest.mark.parametrize(
+    "top, arm_table, where",
+    [
+        ("max_cost_usd = 20\n", "", "max_cost_usd is set at the top"),
+        ("", "max_cost_usd = 5\n", "[arms.a] sets max_cost_usd"),
+        ("max_cost_usd = 20\n", "max_cost_usd = 0\n", "max_cost_usd is set at the top"),
+    ],
+    ids=["top", "arm", "both"],
+)
+def test_max_cost_usd_is_refused_naming_the_param_that_replaces_it(
+    tmp_path: Path, top: str, arm_table: str, where: str
+):
+    path = write_config(tmp_path, TOP + top + '[arms.a]\nharness = "h"\n' + arm_table)
+
+    with pytest.raises(config.ConfigError) as error:
+        config.load(path, "a")
+
+    assert str(error.value) == (
+        f"{path}: {where}, but suss does not read it; set the arm's spending limit in its "
+        "params, under the name its adapter takes, such as max_budget_usd for "
+        "adapters/claude-code"
+    )
