@@ -163,10 +163,6 @@ allowed_hosts = ["api.anthropic.com", "api.deepseek.com"]
 
 # Environment variables the harness reads, passed through from the run's .env.
 env = ["ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY"]
-
-# Whether the harness keeps its spend under --max-cost-usd. Optional, and true
-# when absent.
-max_cost_usd = true
 ```
 
 Suss runs both commands as the agent's user, with the workspace as the current
@@ -198,20 +194,17 @@ patch is then empty, and the trial resolves nothing.
 ### Running
 
 ```
-run --workspace <path> --instruction <file> --params <file> [--max-cost-usd <n>]
+run --workspace <path> --instruction <file> --params <file>
 ```
 
 The harness does the task however it does it, and leaves its change in the
-workspace, committed or not. Anything it writes inside
-the workspace is part of the patch.
+workspace, committed or not. Anything it writes inside the workspace is part of
+the patch.
 
-`--max-cost-usd` is the arm's `max_cost_usd`, given when `suss.toml` sets one,
-for the arm or at the top, and the manifest does not set `max_cost_usd = false`.
-The harness stops before its models' spend passes it, across every model it
-calls. A harness that cannot keep to a budget in dollars sets
-`max_cost_usd = false`, and is never given one. Suss stops `run` after the arm's
-`max_seconds`, marks the trial `timed-out`, and captures the patch as the
-harness left it.
+Suss stops `run` after the arm's `max_seconds`, marks the trial `timed-out`, and
+captures the patch as the harness left it. Suss gives the harness no spending
+limit. A harness that takes one reads it from its params, under the name and in
+the unit its adapter chooses.
 
 A non-zero exit marks the trial `harness-failed`. Either way, suss captures the
 patch, and the regrade grades it.
@@ -221,10 +214,14 @@ patch, and the regrade grades it.
 The repository publishes adapters under `adapters/`. An arm names one by its
 path, as it names any other adapter, and suss runs it the same way.
 
-| Adapter | Params | What it does |
-|---|---|---|
-| `adapters/claude-code/` | `version`, `model`, `effort` | `install` installs Claude Code at `version` with its native installer. `run` runs it headless, with the instruction as its prompt, every tool allowed except `WebSearch` and `WebFetch`, and `--max-cost-usd` as its `--max-budget-usd`. `run` exits 0 when Claude Code stops at that budget. It prints Claude Code's messages as they arrive, so `run.log` holds the token usage of every model call that finished, even when suss stops `run` at `max_seconds`. When Claude Code exits by itself, the last line is its result, which gives its cost in dollars. |
-| `adapters/copilot-cli/` | `version`, `model`, `effort` | `install` installs GitHub Copilot CLI at `version` with its install script, which downloads the release's standalone binary, so the image needs no Node. `run` runs `copilot -p` with the instruction as its prompt, `model` as `--model`, `effort` as `--reasoning-effort`, every tool allowed except `web_fetch` and `web_search`, and no built-in MCP servers, auto-update or client telemetry. It prints Copilot CLI's `--output-format json` lines as they arrive. Its manifest sets `max_cost_usd = false`, so `max_seconds` alone caps its trials. `run` exits 1 if it is given `--max-cost-usd`, and exits 1 naming `COPILOT_GITHUB_TOKEN` when that variable is empty. Copilot CLI sees no other token, no stored login and no `gh` login. |
+Both take flat params: `version` and `model` are required, `effort` and the
+spending limit optional. `run` exits 1 naming any param it cannot take, before
+the coding agent starts.
+
+| Adapter | Params | Spending limit | What it does |
+|---|---|---|---|
+| `adapters/claude-code/` | `version`, `model`, `effort`, `max_budget_usd` | `max_budget_usd`, in dollars, as `--max-budget-usd`. One model call can pass it. `run` exits 0 at the limit. | `install` installs Claude Code at `version` with its native installer. `run` runs it headless, with the instruction as its prompt, `model` as `--model`, `effort` as `--effort`, and every tool allowed except `WebSearch` and `WebFetch`. It prints Claude Code's messages as they arrive, so `run.log` holds the token usage of every model call that finished, even when suss stops `run` at `max_seconds`. When Claude Code exits by itself, the last line is its result, which gives its cost in dollars. |
+| `adapters/copilot-cli/` | `version`, `model`, `effort`, `max_ai_credits` | `max_ai_credits`, in AI credits, as `--max-ai-credits`, at least 30. One model call can pass it. `run` exits 0 at the limit, and the model sees the limit. | `install` installs GitHub Copilot CLI at `version` with its install script, which downloads the release's standalone binary, so the image needs no Node. `run` runs `copilot -p` with the instruction as its prompt, `model` as `--model`, `effort` as `--reasoning-effort`, every tool allowed except `web_fetch` and `web_search`, and no built-in MCP servers, auto-update or client telemetry. `run` prints Copilot CLI's `--output-format json` lines as they arrive. It exits 1 naming `COPILOT_GITHUB_TOKEN` when that variable is empty. Copilot CLI sees no other token, no stored login and no `gh` login. |
 
 ## 5. Lanes
 
@@ -353,7 +350,7 @@ suss run peer-review pro-go --check
 ```
 
 `suss.toml` names the SWE-bench Pro checkout and its dataset, where the
-sandboxes run, the caps on each trial, and the arms:
+sandboxes run, the cap on each trial, and the arms:
 
 ```toml
 swe_bench_pro = "../SWE-bench_Pro-os"
@@ -361,12 +358,11 @@ dataset = "swe-bench-pro-v2"
 environment = "docker"
 k = 1
 concurrency = 16
-max_cost_usd = 20
 max_seconds = 2700
 
 [arms.claude-code]
 harness = "adapters/claude-code"
-params = { version = "2.1.293", model = "claude-opus-4-6", effort = "high" }
+params = { version = "2.1.293", model = "claude-opus-4-6", effort = "high", max_budget_usd = 20 }
 
 [arms.self-review]
 harness = "../self-review"
@@ -384,7 +380,8 @@ params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "d
 - `harness` is the path to an adapter, relative to the directory holding
   `suss.toml`.
 - `params` is passed to the harness as it stands, as the JSON file `--params`
-  names. Suss reads none of it.
+  names. Suss reads none of it. An arm's spending limit goes here, under the
+  name its adapter takes, such as `max_budget_usd` for `adapters/claude-code/`.
 - `environment` is passed to `harbor run` as `-e`: `docker` runs the sandboxes
   on this machine, and `modal` runs them on Modal. With `modal`, when Modal's
   client is not installed in suss's environment, `suss run` exits with an error
@@ -417,29 +414,25 @@ params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "d
 
   When a single trial does not fit, the error says so and offers no
   `concurrency`.
-- `max_cost_usd` and `max_seconds` cap each trial: the harness keeps its
-  models' spend under `max_cost_usd`, and suss stops `run` after `max_seconds`.
-  Set at the top, they apply to every arm, and an arm may set its own.
-  `max_cost_usd` set at the top applies only to arms whose harness's manifest
-  does not set `max_cost_usd = false`. An arm that sets `max_cost_usd` itself on
-  such a harness makes `suss run` exit with an error before it builds any lane
-  or runs any job:
-
-  ```
-  $ suss run copilot pro-go
-  error: arm copilot sets max_cost_usd = 5, but copilot-cli takes no budget in
-  dollars; remove it, and max_seconds alone caps each trial
-  ```
-
-  `max_seconds` must be under the task's agent timeout, 3000 seconds in every
-  V2 task, so that suss captures the patch before Harbor stops the trial. When
-  it is not under the agent timeout of every task in a lane, `suss run` exits
-  with an error before running any job:
+- `max_seconds` caps each trial: suss stops `run` after it. Set at the top, it
+  applies to every arm, and an arm may set its own. It must be under the task's
+  agent timeout, 3000 seconds in every V2 task, so that suss captures the patch
+  before Harbor stops the trial. When it is not under the agent timeout of every
+  task in a lane, `suss run` exits with an error before running any job:
 
   ```
   $ suss run peer-review pro-go
   error: arm peer-review sets max_seconds = 3000, which must be under the
   3000-second agent timeout of the tasks in pro-go
+  ```
+- `max_cost_usd`, at the top or on the arm, makes `suss run` exit with an error
+  before it builds any lane or runs any job, with `DRY_RUN=1` and `--check` too:
+
+  ```
+  $ suss run peer-review pro-go
+  error: /home/me/evals/suss.toml: [arms.peer-review] sets max_cost_usd, but suss
+  does not read it; set the arm's spending limit in its params, under the name
+  its adapter takes, such as max_budget_usd for adapters/claude-code
   ```
 
 ### `suss compare`

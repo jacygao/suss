@@ -3,14 +3,13 @@
 
 . "$(dirname "$0")/lib.sh"
 
-workspace= instruction= params= budget_given= budget=
+workspace= instruction= params=
 while [ $# -gt 0 ]; do
     [ $# -ge 2 ] || fail "$1 needs a value"
     case $1 in
         --workspace) workspace=$2 ;;
         --instruction) instruction=$2 ;;
         --params) params=$2 ;;
-        --max-cost-usd) budget_given=1 budget=$2 ;;
         *) fail "unknown argument $1" ;;
     esac
     shift 2
@@ -20,7 +19,8 @@ for flag in workspace instruction params; do
 done
 
 model=$(param model "$params") || exit 1
-effort=$(param effort "$params") || exit 1
+effort=$(optional_param effort "$params") || exit 1
+budget=$(optional_number max_budget_usd "$params") || exit 1
 cd "$workspace" || fail "cannot enter $workspace"
 
 # Where the native installer puts the launcher.
@@ -30,9 +30,10 @@ cd "$workspace" || fail "cannot enter $workspace"
 # max_seconds never reaches. Each API call's token usage comes in a message as
 # that call ends, and only partial messages carry its final output tokens.
 set -- -p --output-format stream-json --verbose --include-partial-messages \
-    --model "$model" --effort "$effort" \
-    --dangerously-skip-permissions --disallowedTools WebSearch WebFetch
-[ -n "$budget_given" ] && set -- "$@" --max-budget-usd "$budget"
+    --model "$model"
+[ -n "$effort" ] && set -- "$@" --effort "$effort"
+set -- "$@" --dangerously-skip-permissions --disallowedTools WebSearch WebFetch
+[ -n "$budget" ] && set -- "$@" --max-budget-usd "$budget"
 
 # Claude Code refuses --dangerously-skip-permissions as root unless told it
 # is in a sandbox, and task images commonly run the agent as root.

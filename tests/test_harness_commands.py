@@ -20,21 +20,18 @@ from suss.config import Arm
 from suss.harness import HarnessResult, SandboxPaths, install, load_manifest, run
 
 FAKE_ADAPTER = Path(__file__).resolve().parent / "fake_adapter"
-CLAUDE_CODE = Path(__file__).resolve().parent.parent / "adapters" / "claude-code"
 
 
 def go(coroutine):
     return asyncio.run(coroutine)
 
 
-def arm(max_cost_usd=None, max_seconds=None) -> Arm:
+def arm(max_seconds=None) -> Arm:
     return Arm(
         name="fake",
         harness=FAKE_ADAPTER,
         baseline=None,
         params={},
-        max_cost_usd=max_cost_usd,
-        sets_max_cost_usd=False,
         max_seconds=max_seconds,
     )
 
@@ -146,39 +143,6 @@ def test_run_gets_the_contracts_arguments_in_the_workspace(local_environment, bo
         "--params", box.paths.params,
     ]
     assert box.recorded("run", "cwd") == [str(box.workspace)]
-
-
-def test_max_cost_usd_is_absent_when_the_arm_sets_none(local_environment, box):
-    run_in(local_environment, box, arm(max_cost_usd=None))
-
-    assert "--max-cost-usd" not in box.recorded("run", "args")
-
-
-# 0 is a cap the arm set, not the absence of one.
-@pytest.mark.parametrize("cap, given", [(0, "0"), (0.5, "0.5"), (12, "12")])
-def test_max_cost_usd_is_given_when_the_arm_sets_it(local_environment, box, cap, given):
-    run_in(local_environment, box, arm(max_cost_usd=cap))
-
-    assert box.recorded("run", "args")[-2:] == ["--max-cost-usd", given]
-
-
-# Only the top of suss.toml can give such a harness's arm a budget, since suss run refuses the arm's own.
-def test_max_cost_usd_is_absent_when_the_manifest_takes_no_budget(local_environment, box):
-    manifest = box.adapter / "suss-harness.toml"
-    manifest.write_text(manifest.read_text() + "max_cost_usd = false\n")
-
-    run_in(local_environment, box, arm(max_cost_usd=20))
-
-    assert "--max-cost-usd" not in box.recorded("run", "args")
-
-
-def test_max_cost_usd_is_given_under_the_claude_code_adapters_manifest(local_environment, box):
-    # Its manifest, over the fake's scripts, which share its scripts' names.
-    shutil.copy(CLAUDE_CODE / "suss-harness.toml", box.adapter / "suss-harness.toml")
-
-    run_in(local_environment, box, arm(max_cost_usd=20))
-
-    assert box.recorded("run", "args")[-2:] == ["--max-cost-usd", "20"]
 
 
 @pytest.mark.parametrize("command", ["install", "run"])
