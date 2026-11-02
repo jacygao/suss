@@ -11,6 +11,7 @@ import asyncio
 import dataclasses
 import os
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -265,6 +266,80 @@ def test_a_run_that_only_execs_own_timeout_stops_is_still_stopped(
 
     assert result.status == "timed-out"
     assert_all_dead(box)
+
+
+def early_exec_timeout(env, monkeypatch) -> None:
+    """Have exec give up on the harness's command after 1s, whatever timeout suss asks for."""
+    exec_as_given = env.exec
+
+    async def early(command, **kwargs):
+        if kwargs.get("timeout_sec") is not None:
+            kwargs["timeout_sec"] = 1
+        return await exec_as_given(command, **kwargs)
+
+    monkeypatch.setattr(env, "exec", early)
+
+
+def left_running(env) -> list[str]:
+    """Every live process in a session that one of env's commands started, allowing 2s to die."""
+    deadline = time.monotonic() + 2
+    while True:
+        listed = subprocess.run(
+            ["ps", "-A", "-o", "pid=,stat=,command="], capture_output=True, text=True
+        ).stdout
+        alive = []
+        for line in listed.splitlines():
+            pid, stat, command = line.split(None, 2)
+            try:
+                in_session = os.getsid(int(pid)) in env._sessions
+            except ProcessLookupError:
+                continue
+            if in_session and not stat.startswith("Z"):
+                alive.append(f"{pid} {command}")
+        if not alive or time.monotonic() > deadline:
+            return alive
+        time.sleep(0.05)
+
+
+def test_a_run_past_max_seconds_under_modal_is_stopped_and_timed_out(modal_environment, box):
+    box.then("run", f"echo before the limit\necho on stderr >&2\n{RECORD_PIDS}\nsleep 30")
+
+    result = run_in(modal_environment, box, arm(max_seconds=1))
+
+    assert result.status == "timed-out"
+    assert result.exit_codes["run"] is None
+    assert (box.logs / "run.log").read_text() == "before the limit\non stderr\n", (
+        "run.log lost what run printed, though Modal keeps stderr apart"
+    )
+    assert_all_dead(box)
+    assert left_running(modal_environment) == []
+
+
+def test_a_run_that_only_execs_own_timeout_stops_under_modal_is_timed_out(
+    modal_environment, box, monkeypatch
+):
+    # Modal returns -1 at exec's timeout rather than raising, and kills only suss's wrapper.
+    box.then("run", f"{RECORD_PIDS}\nsleep 30")
+    early_exec_timeout(modal_environment, monkeypatch)
+
+    result = run_in(modal_environment, box, arm(max_seconds=60))
+
+    assert result.status == "timed-out", "exec's -1 at its timeout was taken for run's exit code"
+    assert result.exit_codes["run"] is None
+    assert_all_dead(box)
+
+
+def test_nothing_suss_started_outlives_execs_own_timeout_under_modal(
+    modal_environment, box, monkeypatch
+):
+    box.then("run", "sleep 30")
+    early_exec_timeout(modal_environment, monkeypatch)
+
+    run_in(modal_environment, box, arm(max_seconds=60))
+
+    assert left_running(modal_environment) == [], (
+        "the wrapper's timer outlived the wrapper Modal killed"
+    )
 
 
 def test_a_run_under_max_seconds_keeps_its_exit_code(local_environment, box):

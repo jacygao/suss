@@ -168,3 +168,33 @@ def test_stop_kills_a_job_its_command_left_behind_when_it_exited(local_environme
 
     for pid in map(int, (tmp_path / "pids").read_text().split()):
         assert dies(pid), f"process {pid} outlived stop, as no container's would"
+
+
+def test_modal_exec_returns_output_as_modal_does(modal_environment):
+    result = run(modal_environment.exec("echo out; echo err >&2; exit 3"))
+
+    assert result.stdout == "out\n"
+    assert result.stderr == "err\n", "Modal keeps stderr apart from stdout"
+    assert result.return_code == 3
+    assert run(modal_environment.exec("true")) == ExecResult(stdout="", stderr="", return_code=0)
+
+
+def test_modal_exec_reports_a_signal_as_128_plus_its_number(modal_environment):
+    assert run(modal_environment.exec("kill -KILL $$")).return_code == 137
+
+
+def test_modal_exec_at_timeout_returns_minus_one_and_kills_only_the_shell(
+    modal_environment, tmp_path
+):
+    pids = shlex.quote(str(tmp_path / "pids"))
+    command = f"sleep 30 & echo $! > {pids}; echo $$ >> {pids}; echo before; sleep 30"
+
+    started = time.monotonic()
+    result = run(modal_environment.exec(command, timeout_sec=1))
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 3, f"exec took {elapsed:.1f}s to give up on a 1s timeout"
+    assert result == ExecResult(stdout="before\n", stderr="", return_code=-1)
+    child, shell = map(int, (tmp_path / "pids").read_text().split())
+    assert dies(shell), "Modal kills the shell it started at the timeout"
+    assert is_running(child), "Modal leaves the shell's children running at the timeout"
