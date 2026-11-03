@@ -469,7 +469,8 @@ baseline, with an interval.
 
 It exits with an error, and prints nothing else, when:
 
-- An arm it is given has no `results/<lane>/<arm>/`, or is not in `suss.toml`.
+- An arm it is given has no trials under `results/<lane>/<arm>/`, or is not in
+  `suss.toml`.
 - The arms' trials that have a `suss.json` do not all carry the same `grader`.
   A trial with no `suss.json` has no `grader` to compare, and still counts as
   `harness-failed`.
