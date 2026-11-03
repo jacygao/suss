@@ -701,3 +701,108 @@ def test_a_patch_whose_regrade_says_nothing_of_it_counts_as_unresolved(results, 
 
     assert (code, err) == (0, "")
     assert "beta      13       54%      0%         0%\n" in out
+
+
+def add_trial(root: Path, arm: str, job: str, task: str, grader) -> None:
+    """One more trial of the arm, in an agent job of its own, resolved by its regrade."""
+    jobs = root / "results" / LANE / arm
+    write_agent_trial(jobs / job, task, "agentX", grader=grader)
+    write_regrade_trial(jobs / f"{job}{compare.REGRADE}", task, "regrdX")
+
+
+# GRADER, as the error names it.
+SHORT = "swe-bench-pro-v2 at 66f92766"
+
+
+def graders_differ(one: str, one_in: str, other: str, other_in: str) -> str:
+    """The error for two graders, each with the arm and job of the trial carrying it."""
+    return (
+        f"error: trials carry different graders: {one} in results/{LANE}/{one_in}, "
+        f"{other} in results/{LANE}/{other_in}\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "other, named",
+    [
+        ({**GRADER, "dataset": "swe-bench-pro-v3"}, "swe-bench-pro-v3 at 66f92766"),
+        ({**GRADER, "commit": "4e7a1c90d2b3f5a6"}, "swe-bench-pro-v2 at 4e7a1c90"),
+    ],
+    ids=["dataset", "commit"],
+)
+def test_arms_whose_graders_differ_are_an_error_naming_both(results, capsys, other, named):
+    add_trial(results, "beta", "S-9", "t1", other)
+
+    code, out, err = run_compare(results, capsys, LANE, "base", "beta")
+
+    assert code != 0
+    assert (out, err) == (
+        "",
+        graders_differ(SHORT, "base/S-1", named, "beta/S-9"),
+    )
+
+
+def test_graders_that_differ_within_one_arm_are_an_error(results, capsys):
+    add_trial(results, "base", "S-9", "t1", {**GRADER, "commit": "4e7a1c90"})
+
+    code, out, err = run_compare(results, capsys, LANE, "base", "beta")
+
+    assert code != 0
+    assert (out, err) == (
+        "",
+        graders_differ(SHORT, "base/S-1", "swe-bench-pro-v2 at 4e7a1c90", "base/S-9"),
+    )
+
+
+def test_a_grader_that_differs_on_a_task_not_every_arm_has_is_still_an_error(results, capsys):
+    # t5 is alpha's alone, so it counts in neither table, and is still read.
+    add_trial(results, "alpha", "S-9", "t5", {**GRADER, "dataset": "swe-bench-pro-v3"})
+
+    code, out, err = run_compare(results, capsys, LANE, "base", "alpha")
+
+    assert code != 0
+    assert (out, err) == (
+        "",
+        graders_differ(SHORT, "base/S-1", "swe-bench-pro-v3 at 66f92766", "alpha/S-9"),
+    )
+
+
+def test_graders_whose_commits_share_a_short_form_print_in_full(results, capsys):
+    add_trial(results, "beta", "S-9", "t1", {**GRADER, "commit": "66f92766ffff"})
+
+    code, out, err = run_compare(results, capsys, LANE, "base", "beta")
+
+    assert code != 0
+    assert (out, err) == (
+        "",
+        graders_differ(
+            '{"commit": "66f92766", "dataset": "swe-bench-pro-v2"}',
+            "base/S-1",
+            '{"commit": "66f92766ffff", "dataset": "swe-bench-pro-v2"}',
+            "beta/S-9",
+        ),
+    )
+
+
+def test_a_trial_with_no_suss_json_takes_no_part_in_the_grader_check(tmp_path, capsys):
+    (tmp_path / "suss.toml").write_text(SUSS_TOML)
+    write_arm(tmp_path, "base", {"t1": [True, (UNRECORDED, False)]})
+    write_arm(tmp_path, "beta", {"t1": [(UNRECORDED, False), True]})
+
+    code, out, err = run_compare(tmp_path, capsys, LANE, "base", "beta")
+
+    assert (code, err) == (0, "")
+    assert out.splitlines()[:3] == [
+        "arm   trials  resolved  failed  timed out",
+        "base       2       50%     50%         0%",
+        "beta       2       50%     50%         0%",
+    ]
+
+
+def test_graders_whose_keys_come_in_another_order_are_the_same_grader(results, capsys):
+    add_trial(results, "beta", "S-9", "t1", {"commit": GRADER["commit"], "dataset": GRADER["dataset"]})
+
+    code, out, err = run_compare(results, capsys, LANE, "base", "beta")
+
+    assert (code, err) == (0, "")
+    assert out.startswith("arm ")
