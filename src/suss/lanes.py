@@ -182,6 +182,33 @@ def rebench_tasks(swe_rebench: Path) -> list[Path]:
     return sorted(found, key=lambda task: task.name)
 
 
+# Their builds need Maven or Gradle artifacts that no longer exist, so no fix passes their tests.
+UNGRADEABLE = (
+    "langchain4j__langchain4j-5315",
+    "langchain4j__langchain4j-5367",
+    "openrewrite__rewrite-7784",
+)
+
+
+def lane_tasks(swe_rebench: Path) -> list[Path]:
+    """
+    The tasks of the download that the rebench lane takes, sorted by name:
+    each but those in UNGRADEABLE. A download lacking any of those is not an
+    error.
+
+    Raises LaneError as `rebench_tasks` does, and when the download holds no
+    other task.
+    """
+    found = [task for task in rebench_tasks(swe_rebench) if task.name not in UNGRADEABLE]
+    if not found:
+        source = Path(swe_rebench).resolve()
+        raise LaneError(
+            f"{source}: every task in it is one the rebench lane leaves out, so the lane "
+            "would be empty"
+        )
+    return found
+
+
 # Names the encoding below, so a change to it cannot give an old digest.
 DIGEST_PREFIX = b"suss grader digest 1\0"
 FILE = b"f"
@@ -193,8 +220,9 @@ def digest(swe_rebench: Path) -> str:
     The sha256, in hex, of every file of every task in the download, by path
     and content.
 
-    The tasks are the directories `rebench_tasks` finds, so anything else at
-    the top of the download takes no part. Each entry's path runs from the
+    The tasks are the directories `rebench_tasks` finds, those the lane
+    leaves out included, so anything else at the top of the download takes
+    no part. Each entry's path runs from the
     download, with `/` between its parts, and the entries go in order of
     those paths' bytes, which is code point order. Each entry adds:
 
@@ -259,13 +287,13 @@ def check_buildable(swe_rebench: Path, lanes: Path, check: bool = False) -> None
 
 def build_rebench(swe_rebench: Path, lanes: Path, check: bool = False) -> Path:
     """
-    Make `lanes/rebench/` hold a copy of each task in the download, whose
+    Make `lanes/rebench/` hold a copy of each task `lane_tasks` gives, whose
     task.toml adds `[agent] network_mode = "no-network"`.
 
     With `check`, it makes `lanes/rebench-check/` instead, holding only the
     first task by name. Every other file is copied as it is, mode included.
     Whatever an earlier build left is removed. Raises LaneError as
-    `rebench_tasks` does, naming a task.toml that already sets the agent's
+    `lane_tasks` does, naming a task.toml that already sets the agent's
     network mode or that the key cannot be added to, and when the lane's path
     is a link or anything else but a directory. Every task.toml is read before
     the lane is touched, so an error leaves an earlier build as it was.
@@ -298,7 +326,7 @@ def _plan_build(swe_rebench: Path, lanes: Path, check: bool) -> tuple[Path, dict
 
     Raises LaneError as `build_rebench` does.
     """
-    found = rebench_tasks(swe_rebench)
+    found = lane_tasks(swe_rebench)
     if check:
         found = found[:1]
     directory = _directory(lanes, REBENCH, check)

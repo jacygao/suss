@@ -18,9 +18,9 @@ output like this:
 $ suss compare rebench claude-code self-review peer-review
 
 arm          trials  resolved  failed  timed out
-claude-code     111       58%      0%         1%
-self-review     111       62%      1%         1%
-peer-review     111       66%      1%         2%
+claude-code     108       58%      0%         1%
+self-review     108       62%      1%         1%
+peer-review     108       66%      1%         2%
 
 vs. baseline                resolved
 self-review - claude-code   +4% [-4%, +12%]
@@ -257,10 +257,13 @@ resolves when the tests the real change made pass now pass, and the tests that
 passed before still pass. The share of trials that resolve is the measure suss
 compares arms on.
 
-Suss has one lane, `rebench`: the 111 tasks of SWE-rebench's July 2026
-snapshot, from 65 repositories in Go (21), Java (21), Python (20), Rust (25) and
-TypeScript (24). They are made from pull requests merged between 15 May and
-15 June 2026. Each instruction is the issue the pull request closed, and an
+Suss has one lane, `rebench`: 108 of the 111 tasks of SWE-rebench's July 2026
+snapshot, from 64 repositories in Go (21), Java (18), Python (20), Rust (25) and
+TypeScript (24). It leaves out `langchain4j__langchain4j-5315`,
+`langchain4j__langchain4j-5367` and `openrewrite__rewrite-7784`, whose builds
+need Maven or Gradle artifacts that no longer exist, so no fix can pass their
+tests. A download that lacks any of the three still builds the lane. The tasks
+are made from pull requests merged between 15 May and 15 June 2026. Each instruction is the issue the pull request closed, and an
 `Interface` section naming any interface it adds.
 
 Each task's image is built from the `Dockerfile` in its `environment/`, and the
