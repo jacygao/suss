@@ -1,9 +1,12 @@
 import json
+import random
+import time
 from pathlib import Path
 
 import pytest
 
-from suss.compare import Trial, read_trials
+from suss import compare
+from suss.compare import Difference, Trial, read_trials, resolved_difference
 
 LANE = "pro-go"
 ARM = "claude-code"
@@ -284,3 +287,113 @@ def test_an_arm_with_no_results_has_no_trials(tmp_path):
     write_agent_trial(tmp_path / "checks" / LANE / ARM / "S-1", FLIPT, "kY8wt23")
 
     assert read_trials(tmp_path, LANE, ARM) == []
+
+
+def outcomes(resolved: int, unresolved: int, k: int = 1) -> list[list[bool]]:
+    return [[True] * k] * resolved + [[False] * k] * unresolved
+
+
+def tasks(per_task: list[list[bool]]) -> dict[str, list[bool]]:
+    return {f"task-{i}": trials for i, trials in enumerate(per_task)}
+
+
+def test_the_estimate_is_the_difference_in_resolved_shares():
+    arm = tasks(outcomes(30, 10))
+    baseline = tasks(outcomes(20, 20))
+    assert resolved_difference(arm, baseline).estimate == pytest.approx(0.25)
+
+
+def test_a_task_counts_with_the_trials_it_has():
+    # Task a has 3 trials and b has 1: the share over trials is 3/4, a mean over tasks 1/2.
+    arm = {"a": [True, True, True], "b": [False]}
+    baseline = {"a": [False, False, False], "b": [False]}
+    assert resolved_difference(arm, baseline).estimate == pytest.approx(0.75)
+
+
+def test_a_known_difference_lands_inside_the_interval():
+    draw = random.Random(7)
+    arm = {f"task-{i}": [draw.random() < 0.6 for _ in range(3)] for i in range(400)}
+    baseline = {f"task-{i}": [draw.random() < 0.4 for _ in range(3)] for i in range(400)}
+    result = resolved_difference(arm, baseline)
+    assert result.low < 0.2 < result.high
+    assert result.low <= result.estimate <= result.high
+
+
+def test_identical_arms_differ_by_exactly_zero():
+    arm = tasks(outcomes(12, 8, k=3))
+    assert resolved_difference(arm, dict(arm)) == Difference(0.0, 0.0, 0.0)
+
+
+def test_one_draw_of_tasks_is_shared_by_both_arms():
+    # Paired, the difference is only how often the one task that differs is drawn.
+    baseline = tasks(outcomes(50, 50))
+    arm = dict(baseline, **{"task-99": [True]})
+    result = resolved_difference(arm, baseline)
+    assert result.estimate == pytest.approx(0.01)
+    assert 0.0 <= result.low and result.high <= 0.05, (
+        f"[{result.low}, {result.high}] is too wide for arms that differ on one "
+        "task in 100: are the arms drawn apart?"
+    )
+
+
+def test_a_drawn_task_brings_all_its_trials():
+    # Trials agree within each task, so the interval is as wide as 20 draws allow, not 100.
+    arm = tasks(outcomes(10, 10, k=5))
+    baseline = tasks(outcomes(0, 20, k=5))
+    result = resolved_difference(arm, baseline)
+    assert result.high - result.low > 0.35, (
+        f"[{result.low}, {result.high}] is as narrow as a draw of single trials gives"
+    )
+
+
+def test_the_ends_are_the_2_5th_and_97_5th_percentiles():
+    # Arms differ on 2 tasks of 40, so a resampled difference is X/40 with
+    # X ~ Binomial(40, 0.05): its 2.5th percentile is 0, its 97.5th 5 and its 95th 4.
+    baseline = tasks(outcomes(0, 40))
+    arm = dict(baseline, **{"task-0": [True], "task-1": [True]})
+    result = resolved_difference(arm, baseline)
+    assert (result.low, result.high) == pytest.approx((0.0, 5 / 40))
+
+
+def test_the_same_input_gives_the_same_interval():
+    # Trial counts vary by task, so a different stream of draws moves the ends.
+    draw = random.Random(11)
+    arm, baseline = {}, {}
+    for i in range(60):
+        k = draw.randint(1, 5)
+        arm[f"task-{i}"] = [draw.random() < 0.5 for _ in range(k)]
+        baseline[f"task-{i}"] = [draw.random() < 0.4 for _ in range(draw.randint(1, 5))]
+    random.seed(1)
+    state = random.getstate()
+    first = resolved_difference(arm, baseline)
+    assert random.getstate() == state, "it drew from the module-level random state"
+    random.seed(2)
+    assert resolved_difference(arm, baseline) == first
+
+
+def test_it_draws_ten_thousand_resamples():
+    assert compare.RESAMPLES == 10_000
+
+
+def test_ten_thousand_resamples_over_256_tasks_take_under_a_second():
+    draw = random.Random(3)
+    arm = {f"task-{i}": [draw.random() < 0.5 for _ in range(3)] for i in range(256)}
+    baseline = {f"task-{i}": [draw.random() < 0.5 for _ in range(3)] for i in range(256)}
+    start = time.perf_counter()
+    resolved_difference(arm, baseline)
+    assert time.perf_counter() - start < 1.0
+
+
+def test_arms_over_different_tasks_are_refused():
+    with pytest.raises(ValueError, match="same tasks"):
+        resolved_difference({"a": [True]}, {"b": [True]})
+
+
+def test_a_task_with_no_trials_is_refused():
+    with pytest.raises(ValueError, match="no trials"):
+        resolved_difference({"a": [True], "b": []}, {"a": [True], "b": [False]})
+
+
+def test_arms_with_no_tasks_are_refused():
+    with pytest.raises(ValueError, match="no tasks"):
+        resolved_difference({}, {})
