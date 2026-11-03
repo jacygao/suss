@@ -59,6 +59,7 @@ docker run --rm alpine:3.19 sh -c 'zcat /proc/config.gz | grep NFT_FIB_INET'
 | **Baseline** | The arm another arm is measured against, named by that arm's `baseline` in `suss.toml`. Any arm can be one. |
 | **Trial** | Harbor's unit of work: one attempt at one task by one arm, in a fresh sandbox. |
 | **Base** | The commit the workspace's `HEAD` names when the trial starts. |
+| **Starting tree** | What the workspace holds when the trial starts: the base, with every change the image left uncommitted, staged or not, and every untracked file git does not ignore. |
 
 ### What a trial does
 
@@ -68,17 +69,19 @@ reaches only the hosts the harness's manifest lists in `allowed_hosts`.
 
 In the setup phase, suss:
 
-1. **finds the workspace and records the base.** The workspace is the directory
-   the sandbox starts in, which is the image's `WORKDIR`, such as `/gleam`. It
-   must be the top level of a git repository, or the trial fails naming it. The
-   base is `git rev-parse HEAD`.
+1. **finds the workspace, and records the base and the starting tree.** The
+   workspace is the directory the sandbox starts in, which is the image's
+   `WORKDIR`, such as `/gleam`. It must be the top level of a git repository,
+   or the trial fails naming it. The base is `git rev-parse HEAD`. Recording the
+   starting tree leaves the index, `HEAD`, the refs and `git status` as the
+   image left them.
 2. **uploads the harness's adapter** to `/opt/suss/adapter/`.
 3. **installs the harness**, if the adapter's manifest names an `install` command.
 
 In the agent phase, suss:
 
 4. **runs the harness's `run` command** on the task's instruction, unchanged;
-5. **captures the patch**, the whole change from the base;
+5. **captures the patch**, the whole change from the starting tree;
 6. **writes the trial record**, `suss.json`, and returns.
 
 Harbor then ends the trial without running the task's verifier, because suss
@@ -89,11 +92,14 @@ from a regrade in a fresh sandbox.
 
 ```bash
 git add -A
-git diff --cached --binary <base> > /logs/agent/model.patch
+git diff --cached --binary <starting tree> > /logs/agent/model.patch
 ```
 
-The diff runs from the base, so it holds the whole change, whether the harness
-committed it or not.
+The diff runs from the starting tree, so it holds the whole change the harness
+made, whether it committed it or not, and none of the changes the image already
+had. A regrade starts from the same image, so the patch applies there with
+`git apply`. A file of the starting tree that the harness made git ignore, but
+left in place, stays out of the patch.
 
 ### Regrading
 
@@ -174,7 +180,7 @@ directory as `agent/` in the trial's directory under `results/`.
 | `suss.json` | the trial record, below |
 | `install.log` | the stdout and stderr of `install`, when the manifest names one |
 | `run.log` | the stdout and stderr of `run` |
-| `model.patch` | the patch, the whole change from the base |
+| `model.patch` | the patch, the whole change from the starting tree |
 
 ```json
 {
@@ -197,6 +203,8 @@ directory as `agent/` in the trial's directory under `results/`.
   empty directories, and files outside every task, such as the download's
   `README.md`, leave the digest unchanged, so two downloads of the same tasks
   have the same digest.
+- `base` is the commit. `model.patch` applies to the starting tree, which is
+  the base only when the image left no change in the workspace.
 - `status` is `ok`, `harness-failed` or `timed-out`. A trial is `timed-out`
   when suss stops `run` at `max_seconds`, and when Harbor's agent timeout stops
   the trial while `run` is going. Either way, suss stops the harness inside the
@@ -507,10 +515,20 @@ job, `<stamp>-<i>`, with the trial for the same task in `<stamp>-<i>-regrade`.
 It compares the arms over the tasks every one of them has trials for. It prints
 two tables. The first gives each arm's trials and its resolved, failed and
 timed-out shares. The second gives each arm's resolved difference from its
-baseline, with an interval.
+baseline, with an interval. After the tables, it names each trial whose regrade
+recorded no test result, by arm, job and task:
+
+```
+These trials' regrades recorded no test result, so their grading may have broken:
+  claude-code  20261103T204423Z-2  marimo-team__marimo-9766
+```
 
 - Every trial counts as its regrade graded it, `harness-failed` and `timed-out`
   ones included.
+- A regrade records no test result when its trial has no
+  `verifier/report.json`, as the verifier of every `rebench` task writes it, or
+  when that report's `parsed_counts` counts no test as `PASSED`, `FAILED`,
+  `SKIPPED` or `ERROR`. A trial with no regrade trial records none either.
 - A trial whose regrade has no reward counts as unresolved. A trial with no
   `suss.json`, which a sandbox that never started or a Harbor exception leaves,
   counts as `harness-failed`.

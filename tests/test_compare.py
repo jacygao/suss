@@ -28,6 +28,25 @@ RESOLVED = {"rewards": {"reward": 1.0}}
 UNRESOLVED = {"rewards": {"reward": 0.0}}
 
 
+def verifier_report(passed: int, failed: int, fail_to_pass: str = "PASSED") -> dict:
+    """The verifier/report.json a rebench verifier writes, here over pytest."""
+    return {
+        "log_parser": "parse_log_pytest",
+        "parsed_counts": {"PASSED": passed, "FAILED": failed, "SKIPPED": 0, "ERROR": 0},
+        "fail_to_pass": {"tests/test_threads.py::test_print_is_builtin": fail_to_pass},
+        "pass_to_pass": {"tests/test_threads.py::test_thread_print": "PASSED"},
+        "fail_to_pass_ok": fail_to_pass == "PASSED",
+        "pass_to_pass_ok": True,
+        "resolved": fail_to_pass == "PASSED" and failed == 0,
+    }
+
+
+TESTED = verifier_report(passed=144, failed=4)
+# What a verifier writes when grading broke before any test ran, as when a
+# package it installs has no wheel for its Python.
+NO_TEST_RESULT = verifier_report(passed=0, failed=0, fail_to_pass="NOT_FOUND")
+
+
 def write_json(path: Path, value) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value))
@@ -82,11 +101,18 @@ def write_agent_trial(
 
 
 def write_regrade_trial(
-    job: Path, task: str, suffix: str, verifier_result=RESOLVED, *, applied: bool = True
+    job: Path,
+    task: str,
+    suffix: str,
+    verifier_result=RESOLVED,
+    *,
+    applied: bool = True,
+    report=TESTED,
 ) -> Path:
     """
     The regrade's trial of the task, with the replay.json ReplayAgent writes
-    when it applied the trial's patch, or when it found none.
+    when it applied the trial's patch, or when it found none, and the
+    verifier's report. A report of None leaves the verifier no report.json.
     """
     trial = trial_directory(write_job(job), task, suffix)
     write_json(trial / "config.json", {"task": {"path": f"lanes/{LANE}/{task}"}})
@@ -109,6 +135,8 @@ def write_regrade_trial(
             "apply_out": "$ git apply --verbose\nApplied patch cleanly.\n",
         }
     write_json(trial / "agent" / "replay.json", replay)
+    if report is not None:
+        write_json(trial / "verifier" / "report.json", report)
     return trial
 
 
@@ -129,9 +157,10 @@ def regrade_raised(trial: Path) -> None:
     """
     Make the regrade's trial one whose ReplayAgent raised before writing
     replay.json, as a real `harbor run` left it: no `agent/` at all, and the
-    exception in result.json.
+    exception in result.json, and no verifier run.
     """
     shutil.rmtree(trial / "agent")
+    shutil.rmtree(trial / "verifier", ignore_errors=True)
     record_exception(trial, replay.ReplayError("source_job must hold one trial of the task"))
 
 
@@ -364,6 +393,82 @@ def test_a_regrade_whose_verifier_timed_out_after_replay_json_applied_its_patch(
     [trial] = read_trials(tmp_path, LANE, ARM)
 
     assert (trial.resolved, trial.regrade_applied) == (False, True)
+
+
+def counts(**given) -> dict:
+    """NO_TEST_RESULT, with the given counts in its parsed_counts."""
+    return dict(NO_TEST_RESULT, parsed_counts=dict(NO_TEST_RESULT["parsed_counts"], **given))
+
+
+@pytest.mark.parametrize(
+    "report, tested",
+    [
+        (TESTED, True),
+        (counts(PASSED=1), True),
+        (counts(FAILED=1), True),
+        (counts(SKIPPED=1), True),
+        (counts(ERROR=1), True),
+        (NO_TEST_RESULT, False),
+        (
+            dict(NO_TEST_RESULT, fail_to_pass={"tests/test_threads.py::test_print_is_builtin": "PASSED"}),
+            False,
+        ),
+        (None, False),
+        ({key: value for key, value in TESTED.items() if key != "parsed_counts"}, False),
+        (dict(TESTED, parsed_counts=None), False),
+        (dict(TESTED, parsed_counts=[144, 4, 0, 0]), False),
+        (counts(PASSED="144"), False),
+        (counts(PASSED=True), False),
+        (counts(PASSED=-1), False),
+        (counts(OTHER=3), False),
+        ([TESTED], False),
+    ],
+    ids=[
+        "tests-ran",
+        "one-passed",
+        "one-failed",
+        "one-skipped",
+        "one-errored",
+        "all-zero",
+        "all-zero-but-fail-to-pass-passed",
+        "no-report",
+        "no-parsed-counts",
+        "null-parsed-counts",
+        "parsed-counts-a-list",
+        "a-count-a-string",
+        "a-count-a-bool",
+        "a-count-below-zero",
+        "only-another-key",
+        "report-not-an-object",
+    ],
+)
+def test_a_regrade_records_a_test_result_only_when_parsed_counts_counts_a_test(
+    tmp_path, arm, report, tested
+):
+    write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
+    write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK", UNRESOLVED, report=report)
+
+    [trial] = read_trials(tmp_path, LANE, ARM)
+
+    assert trial.regrade_tested is tested
+
+
+def test_a_trial_with_no_regrade_trial_records_no_test_result(tmp_path, arm):
+    write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
+
+    [trial] = read_trials(tmp_path, LANE, ARM)
+
+    assert trial.regrade_tested is False
+
+
+def test_a_report_that_is_not_json_records_no_test_result(tmp_path, arm):
+    write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
+    regrade = write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK", UNRESOLVED)
+    (regrade / "verifier" / "report.json").write_text('{"parsed_counts": {"PASSED": 14')
+
+    [trial] = read_trials(tmp_path, LANE, ARM)
+
+    assert trial.regrade_tested is False
 
 
 def test_nothing_under_checks_is_read(tmp_path, arm):
@@ -961,3 +1066,47 @@ def test_graders_whose_keys_come_in_another_order_are_the_same_grader(results, c
 
     assert (code, err) == (0, "")
     assert out.startswith("arm ")
+
+
+NAMED = "These trials' regrades recorded no test result, so their grading may have broken:\n"
+
+
+def report_records_no_test_result(root: Path, arm: str, task: str, i: int) -> None:
+    """Give write_arm's i-th regrade of the task the report of a verifier whose grading broke."""
+    write_json(regrade_of(root, arm, task, i) / "verifier" / "report.json", NO_TEST_RESULT)
+
+
+def test_compare_names_each_trial_whose_regrade_recorded_no_test_result(results, capsys):
+    _, before, _ = run_compare(results, capsys, LANE, "base", "gamma", "beta", "alpha")
+    # beta's trial resolved and base's did not; base's regrade has no report at all.
+    report_records_no_test_result(results, "beta", "t2", 3)
+    (regrade_of(results, "base", "t4", 2) / "verifier" / "report.json").unlink()
+    report_records_no_test_result(results, "alpha", "t1", 2)
+
+    code, out, err = run_compare(results, capsys, LANE, "base", "gamma", "beta", "alpha")
+
+    assert (code, err) == (0, "")
+    assert out == before + "\n" + NAMED + (
+        "  base   S-2  t4\n"
+        "  beta   S-3  t2\n"
+        "  alpha  S-2  t1\n"
+    ), "a trial with no test result must count in both tables as its regrade graded it"
+
+
+def test_a_trial_with_no_regrade_trial_is_named(results, capsys):
+    shutil.rmtree(regrade_of(results, "beta", "t3", 2))
+
+    code, out, err = run_compare(results, capsys, LANE, "beta", "base")
+
+    assert (code, err) == (0, "")
+    assert out.endswith("\n" + NAMED + "  beta  S-2  t3\n")
+
+
+def test_a_trial_on_a_task_not_every_arm_has_is_not_named(results, capsys):
+    # t5 is alpha's alone, so it counts in neither table.
+    report_records_no_test_result(results, "alpha", "t5", 1)
+
+    code, out, err = run_compare(results, capsys, LANE, "alpha", "base")
+
+    assert (code, err) == (0, "")
+    assert NAMED not in out
