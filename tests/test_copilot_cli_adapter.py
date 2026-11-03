@@ -1,11 +1,12 @@
 """
-Run `adapters/copilot-cli/` against stand-ins for `copilot`, `curl` and the
-install script, which record the arguments they receive.
+Run `adapters/copilot-cli/` against stand-ins for `copilot`, `curl`, `wget`
+and `uname`, which record the arguments they receive.
 
 PATH holds the stand-ins and the system directories only, so the scripts are
 tested without `jq` or Python, as a task image may lack both.
 """
 
+import hashlib
 import json
 import os
 import signal
@@ -154,7 +155,7 @@ def test_the_manifest_loads_and_names_scripts_that_exist():
         assert os.access(ADAPTER / script, os.X_OK), f"{script} is not an executable file"
 
 
-def install(box: Path) -> subprocess.CompletedProcess:
+def install(box: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     return execute(
         box,
         "install.sh",
@@ -162,52 +163,239 @@ def install(box: Path) -> subprocess.CompletedProcess:
         str(box / "opt" / "params.json"),
         "--workspace",
         str(box / "workspace"),
+        env=env or install_environment(box),
     )
 
 
-def stand_in_curl(box: Path, exit_code: int = 0) -> None:
-    """A curl that serves a stand-in install script to the file named by `-o`."""
-    installer = (
-        "#!/bin/sh\n"
-        f"printf '%s\\n' \"$VERSION\" \"$PREFIX\" > '{box / 'records' / 'installer'}'\n"
-        # The real script downloads into its working directory.
-        ": > downloaded-by-the-installer\n"
+RELEASE = "https://github.com/github/copilot-cli/releases/download/v1.0.105"
+COPILOT = "#!/bin/sh\necho 'GitHub Copilot CLI 1.0.105'\n"
+
+
+def install_environment(box: Path) -> dict[str, str]:
+    """
+    The stand-ins, then the system's tools without `curl` or `wget`, so each
+    test stands in exactly the downloaders it means the image to have.
+    """
+    tools = box / "tools"
+    if not tools.exists():
+        tools.mkdir()
+        for directory in ("/usr/bin", "/bin", "/usr/sbin", "/sbin"):
+            for tool in Path(directory).iterdir():
+                if tool.name not in ("curl", "wget") and not (tools / tool.name).exists():
+                    (tools / tool.name).symlink_to(tool)
+        # macOS before 15 has only shasum, which prints the same line.
+        if not (tools / "sha256sum").exists():
+            (tools / "sha256sum").write_text('#!/bin/sh\nexec shasum -a 256 "$@"\n')
+            (tools / "sha256sum").chmod(0o755)
+    return {**environment(box), "PATH": f"{box / 'bin'}:{tools}"}
+
+
+def publish(box: Path, build: str = "copilot-linux-x64.tar.gz", listed: str | None = None) -> Path:
+    """
+    Put a release in `box/release`: the build, a tarball holding a `copilot`
+    that prints its version, and SHA256SUMS.txt, which gives the build's true
+    sum under the name `listed`, the build's own by default.
+    """
+    release = box / "release"
+    release.mkdir(exist_ok=True)
+    staging = box / "staging"
+    staging.mkdir(exist_ok=True)
+    (staging / "copilot").write_text(COPILOT)
+    (staging / "copilot").chmod(0o755)
+    subprocess.run(["tar", "-czf", str(release / build), "-C", str(staging), "copilot"], check=True)
+    digest = hashlib.sha256((release / build).read_bytes()).hexdigest()
+    (release / "SHA256SUMS.txt").write_text(
+        f"{'0' * 64}  copilot-win32-x64.zip\n{digest}  {listed or build}\n"
     )
-    (box / "installer-script").write_text(installer)
+    return release
+
+
+def stand_in_uname(box: Path, machine: str = "x86_64") -> None:
+    stand_in(box, "uname", f"echo {machine}\n")
+
+
+def stand_in_downloader(box: Path, name: str, exit_code: int = 0) -> None:
+    """
+    A `curl` or `wget` that serves the file of `box/release` named by the URL's
+    last part to the file named by `-o` or `-O`, and logs each URL to
+    `records/<name>-urls`. It refuses any option busybox `wget` lacks, since
+    Alpine's `wget` is busybox's.
+    """
+    known = "-fsSL" if name == "curl" else "-q"
+    urls = box / "records" / f"{name}-urls"
     stand_in(
         box,
-        "curl",
-        'while [ $# -gt 0 ]; do [ "$1" = -o ] && out=$2; shift; done\n'
-        f"cp '{box / 'installer-script'}' \"$out\"\n"
-        f"exit {exit_code}\n",
+        name,
+        "while [ $# -gt 0 ]; do\n"
+        "  case $1 in\n"
+        "    -o|-O) out=$2; shift ;;\n"
+        f"    {known}) ;;\n"
+        '    -*) echo "unknown option $1" >&2; exit 2 ;;\n'
+        f"    *) url=$1; echo \"$1\" >> '{urls}' ;;\n"
+        "  esac\n"
+        "  shift\n"
+        "done\n"
+        f"[ {exit_code} = 0 ] || exit {exit_code}\n"
+        f"cp '{box / 'release'}'/\"${{url##*/}}\" \"$out\" || exit 8\n",
     )
 
 
-def test_install_runs_the_install_script_at_the_version_and_leaves_the_workspace_alone(box):
-    stand_in_curl(box)
+def installed(box: Path) -> Path:
+    return box / "home" / ".local" / "bin" / "copilot"
+
+
+@pytest.mark.parametrize("downloader", ["curl", "wget"])
+def test_install_unpacks_the_checked_build_and_leaves_the_workspace_alone(box, downloader):
+    publish(box)
+    stand_in_uname(box)
+    stand_in_downloader(box, downloader)
     before = snapshot(box / "workspace")
 
     result = install(box)
 
     assert result.returncode == 0, result.stderr
-    curl = recorded(box / "records" / "curl")
-    assert curl[:2] == ["-fsSL", "https://gh.io/copilot-install"]
-    assert curl[2] == "-o"
-    assert recorded(box / "records" / "installer") == ["1.0.105", str(box / "home" / ".local")]
+    assert sorted(recorded(box / "records" / f"{downloader}-urls")) == [
+        f"{RELEASE}/SHA256SUMS.txt",
+        f"{RELEASE}/copilot-linux-x64.tar.gz",
+    ]
+    assert installed(box).read_text() == COPILOT
+    assert os.access(installed(box), os.X_OK)
     assert snapshot(box / "workspace") == before
 
 
-def test_install_fails_when_the_install_script_cannot_be_downloaded(box):
-    stand_in_curl(box, exit_code=22)
+def test_install_prefers_curl_when_both_are_there(box):
+    publish(box)
+    stand_in_uname(box)
+    stand_in_downloader(box, "curl")
+    stand_in_downloader(box, "wget")
+
+    result = install(box)
+
+    assert result.returncode == 0, result.stderr
+    assert (box / "records" / "curl").exists()
+    assert not (box / "records" / "wget").exists()
+
+
+def test_install_fails_naming_curl_and_wget_when_the_image_has_neither(box):
+    publish(box)
+    stand_in_uname(box)
 
     result = install(box)
 
     assert result.returncode != 0
-    assert not (box / "records" / "installer").exists()
+    assert "curl" in result.stderr and "wget" in result.stderr
+    assert not installed(box).exists()
+
+
+def build_for(box: Path, root: Path, machine: str) -> subprocess.CompletedProcess:
+    """lib.sh's choice of build for a filesystem rooted at `root` and a `uname -m` of `machine`."""
+    return subprocess.run(
+        ["sh", "-c", f'. "{ADAPTER / "lib.sh"}" && copilot_build "$1" "$2"', "sh", str(root), machine],
+        env=install_environment(box),
+        capture_output=True,
+        text=True,
+    )
+
+
+# The glibc build on musl installs cleanly, and `run` then exits 127 with
+# `fcntl64: symbol not found`.
+@pytest.mark.parametrize(
+    "loader, machine, build",
+    [
+        ("ld-musl-x86_64.so.1", "x86_64", "copilot-linuxmusl-x64.tar.gz"),
+        ("ld-musl-aarch64.so.1", "aarch64", "copilot-linuxmusl-arm64.tar.gz"),
+        ("ld-linux-x86-64.so.2", "x86_64", "copilot-linux-x64.tar.gz"),
+        ("ld-linux-x86-64.so.2", "amd64", "copilot-linux-x64.tar.gz"),
+        ("ld-linux-aarch64.so.1", "aarch64", "copilot-linux-arm64.tar.gz"),
+        ("ld-linux-aarch64.so.1", "arm64", "copilot-linux-arm64.tar.gz"),
+    ],
+)
+def test_install_chooses_the_musl_build_only_where_musls_loader_is_111(box, loader, machine, build):
+    root = box / "root"
+    (root / "lib").mkdir(parents=True)
+    (root / "lib" / loader).write_text("")
+
+    result = build_for(box, root, machine)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == build
+
+
+def test_install_downloads_the_build_uname_names(box):
+    publish(box, build="copilot-linux-arm64.tar.gz")
+    stand_in_uname(box, "aarch64")
+    stand_in_downloader(box, "curl")
+
+    result = install(box)
+
+    assert result.returncode == 0, result.stderr
+    assert f"{RELEASE}/copilot-linux-arm64.tar.gz" in recorded(box / "records" / "curl-urls")
+    assert installed(box).read_text() == COPILOT
+
+
+def test_install_fails_naming_a_machine_copilot_has_no_build_for(box):
+    publish(box)
+    stand_in_uname(box, "riscv64")
+    stand_in_downloader(box, "curl")
+
+    result = install(box)
+
+    assert result.returncode != 0
+    assert "riscv64" in result.stderr
+    assert not installed(box).exists()
+
+
+def test_install_refuses_a_build_whose_sum_does_not_match(box):
+    release = publish(box)
+    # A tarball that unpacks, so only the check can refuse it.
+    (box / "staging" / "copilot").write_text("#!/bin/sh\necho tampered\n")
+    subprocess.run(
+        ["tar", "-czf", str(release / "copilot-linux-x64.tar.gz"), "-C", str(box / "staging"), "copilot"],
+        check=True,
+    )
+    stand_in_uname(box)
+    stand_in_downloader(box, "curl")
+
+    result = install(box)
+
+    assert result.returncode != 0
+    assert "copilot-linux-x64.tar.gz does not match" in result.stderr
+    assert not installed(box).exists()
+
+
+# A name the build's only contains, or one that contains the build's, gives no sum for it.
+@pytest.mark.parametrize(
+    "listed", ["copilot-linuxmusl-x64.tar.gz", "copilot-linux-x64.tar.gz.sig", "linux-x64.tar.gz"]
+)
+def test_install_refuses_a_build_missing_from_the_sums(box, listed):
+    publish(box, listed=listed)
+    stand_in_uname(box)
+    stand_in_downloader(box, "curl")
+
+    result = install(box)
+
+    assert result.returncode != 0
+    assert "SHA256SUMS.txt" in result.stderr
+    assert not installed(box).exists()
+
+
+@pytest.mark.parametrize("downloader", ["curl", "wget"])
+def test_install_fails_when_a_download_fails(box, downloader):
+    publish(box)
+    stand_in_uname(box)
+    stand_in_downloader(box, downloader, exit_code=22)
+
+    result = install(box)
+
+    assert result.returncode != 0
+    assert f"cannot download {RELEASE}/SHA256SUMS.txt" in result.stderr
+    assert not installed(box).exists()
 
 
 def test_install_fails_without_a_version(box):
-    stand_in_curl(box)
+    publish(box)
+    stand_in_uname(box)
+    stand_in_downloader(box, "curl")
     (box / "opt" / "params.json").write_text('{"model": "claude-sonnet-5", "effort": "high"}')
 
     result = install(box)

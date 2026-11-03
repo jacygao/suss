@@ -30,7 +30,7 @@ fi
 prompt=$(cat "$instruction") || fail "cannot read $instruction"
 cd "$workspace" || fail "cannot enter $workspace"
 
-# Where the install script puts the binary.
+# Where install.sh puts the binary.
 [ -n "$HOME" ] && PATH="$HOME/.local/bin:$PATH"
 
 # Copilot CLI's config home and logs, kept outside the workspace, where
