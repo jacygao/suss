@@ -202,8 +202,9 @@ def digest(swe_rebench: Path) -> str:
     - the length of its path as 8 bytes, big-endian, then the path;
     - the length of its content as 8 bytes, big-endian, then the content.
 
-    A link's content is its target as written, and it is never followed. A
-    directory adds nothing but the paths of what it holds, so an empty one
+    A link inside a task adds its target as written, and is never followed.
+    A task directory that is itself a link adds the files of the task it
+    names, as `build_rebench` copies them. A directory adds nothing but the paths of what it holds, so an empty one
     adds nothing. Modes and times add nothing. Raises LaneError as
     `rebench_tasks` does, and naming an entry that cannot be read or is
     neither a file, a directory nor a link.

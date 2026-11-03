@@ -695,6 +695,22 @@ def test_a_linked_directory_inside_a_task_is_not_walked(tmp_path: Path):
     assert lanes.digest(source) == before
 
 
+def test_a_task_directory_that_is_a_link_counts_as_the_task_it_names(tmp_path: Path):
+    # The build copies such a task's files, not the link, so the digest is of them too.
+    real = make_rebench(tmp_path / "download", ["owner__repo-1"])
+    linked = tmp_path / "linked"
+    linked.mkdir()
+    make_rebench(tmp_path / "elsewhere", ["owner__repo-1"])
+    (linked / "owner__repo-1").symlink_to(tmp_path / "elsewhere" / "owner__repo-1")
+    assert lanes.digest(linked) == lanes.digest(real)
+
+    (tmp_path / "elsewhere" / "owner__repo-1" / "instruction.md").write_text("Changed.\n")
+
+    assert lanes.digest(linked) != lanes.digest(real)
+    built = lanes.build_rebench(linked, tmp_path / "lanes") / "owner__repo-1"
+    assert (built / "instruction.md").read_text() == "Changed.\n"
+
+
 def test_a_task_entry_that_is_neither_file_directory_nor_link_is_an_error_naming_it(
     tmp_path: Path,
 ):
