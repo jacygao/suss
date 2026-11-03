@@ -442,7 +442,7 @@ def _plan(
     """
     lanes.check_lane(lane)
     # The whole lane even for a check, which tests that the arm can run it.
-    found = lanes.read_tasks(lanes.rebench_tasks(settings.swe_rebench))
+    found = lanes.read_tasks(lanes.lane_tasks(settings.swe_rebench))
     lanes.check_max_seconds(settings.arm, lane, found)
     lanes.check_buildable(settings.swe_rebench, settings.path.parent / "lanes", check)
     used = dict(list(found.items())[:1]) if check else found

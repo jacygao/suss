@@ -152,8 +152,9 @@ regrading agent are gone.
 
 ### Acceptance criteria
 
-- [ ] `lanes/rebench/` holds a copy of each of the 111 tasks, whose `task.toml`
-      differs from the download's only by `[agent] network_mode = "no-network"`
+- [ ] `lanes/rebench/` holds a copy of each of the lane's 108 tasks, whose
+      `task.toml` differs from the download's only by
+      `[agent] network_mode = "no-network"`
 - [ ] `suss.toml` names the tasks with `swe_rebench`, and `swe_bench_pro` and
       `dataset` are gone
 - [ ] With `DRY_RUN=1`, `suss run` prints a regrade of

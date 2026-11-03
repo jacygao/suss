@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from suss import cli
+from suss import cli, lanes
 
 STANDINS = Path(__file__).resolve().parent / "stand_ins"
 REPO = Path(__file__).resolve().parent.parent
@@ -372,6 +372,19 @@ def test_a_max_seconds_over_any_tasks_timeout_is_refused_before_anything_runs(pr
     assert code != 0
     assert_nothing_ran(project)
     assert "2000-second agent timeout of the tasks in rebench" in capfd.readouterr().err
+
+
+@pytest.mark.parametrize("check", [False, True], ids=["full", "check"])
+def test_the_lane_checks_pass_over_a_task_the_lane_leaves_out(project, monkeypatch, check):
+    # Too short a timeout for max_seconds, too large for Docker, and first by
+    # name, so that a check would take it.
+    write_task(project.tasks, "AAA__never-1", timeout=2000, cpus=64)
+    monkeypatch.setattr(lanes, "UNGRADEABLE", ("AAA__never-1",))
+
+    assert project.run("peer-review", "rebench", *(["--check"] if check else [])) == 0
+
+    lane = project.directory / "lanes" / ("rebench-check" if check else "rebench")
+    assert sorted(task.name for task in lane.iterdir()) == (TASKS[:1] if check else sorted(TASKS))
 
 
 @pytest.mark.parametrize("k", ["0", "-1", "1.5", '"2"'])

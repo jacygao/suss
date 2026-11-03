@@ -415,6 +415,66 @@ def test_building_the_rebench_check_lane_leaves_the_full_lane_as_it_was(tmp_path
     assert sorted(entry.name for entry in full.iterdir()) == names
 
 
+# The tasks no fix can pass, as the snapshot names them.
+UNGRADEABLE = ["langchain4j__langchain4j-5315", "langchain4j__langchain4j-5367", "openrewrite__rewrite-7784"]
+
+
+def test_the_tasks_the_lane_leaves_out_are_the_specs():
+    sentences = re.findall(r"It leaves out ([^.]*?), whose", SPEC.read_text().replace("\n", " "))
+
+    assert len(sentences) == 1, f"expected one sentence naming the tasks left out in {SPEC}"
+    assert sorted(re.findall(r"`([^`]+)`", sentences[0])) == sorted(lanes.UNGRADEABLE)
+
+
+def test_the_rebench_lane_leaves_out_the_tasks_no_fix_can_pass(tmp_path: Path):
+    source = make_rebench(tmp_path / "source", ["owner__repo-1", *UNGRADEABLE, "zzz__repo-2"])
+
+    built = lanes.build_rebench(source, tmp_path / "lanes")
+
+    assert sorted(entry.name for entry in built.iterdir()) == ["owner__repo-1", "zzz__repo-2"]
+
+
+def test_the_check_lane_takes_the_first_task_the_lane_does_not_leave_out(tmp_path: Path):
+    # Every name left out sorts before owner__repo-1.
+    source = make_rebench(tmp_path / "source", ["owner__repo-1", *UNGRADEABLE])
+
+    built = lanes.build_rebench(source, tmp_path / "lanes", check=True)
+
+    assert [entry.name for entry in built.iterdir()] == ["owner__repo-1"]
+
+
+def test_a_download_lacking_some_tasks_the_lane_leaves_out_builds_and_names_none(
+    tmp_path: Path, capfd
+):
+    source = make_rebench(tmp_path / "source", ["owner__repo-1", UNGRADEABLE[2]])
+
+    lanes.check_buildable(source, tmp_path / "lanes")
+    built = lanes.build_rebench(source, tmp_path / "lanes")
+
+    assert [entry.name for entry in built.iterdir()] == ["owner__repo-1"]
+    assert capfd.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("check", [False, True], ids=["full", "check"])
+def test_a_rebuild_removes_tasks_left_out_that_an_earlier_lane_holds(tmp_path: Path, check: bool):
+    source = make_rebench(tmp_path / "source", [*UNGRADEABLE, "owner__repo-1"])
+    lane = tmp_path / "lanes" / ("rebench-check" if check else "rebench")
+    # A lane built before any task was left out, holding copies of them all.
+    shutil.copytree(source, lane)
+
+    lanes.build_rebench(source, tmp_path / "lanes", check)
+
+    assert [entry.name for entry in lane.iterdir()] == ["owner__repo-1"]
+
+
+def test_a_download_holding_only_tasks_the_lane_leaves_out_is_an_error_naming_it(tmp_path: Path):
+    source = make_rebench(tmp_path / "source", UNGRADEABLE)
+
+    with pytest.raises(LaneError, match=re.escape(f"{source}: every task in it is one")):
+        lanes.check_buildable(source, tmp_path / "lanes")
+    assert not (tmp_path / "lanes").exists()
+
+
 def test_a_download_with_no_tasks_is_an_error_naming_it(tmp_path: Path):
     source = tmp_path / "source"
     source.mkdir()
@@ -736,6 +796,17 @@ def test_an_unreadable_file_is_an_error_naming_it(tmp_path: Path):
         unreadable.chmod(0o644)
 
     assert str(error.value) == f"{unreadable}: cannot be read: Permission denied"
+
+
+def test_the_digest_covers_the_tasks_the_lane_leaves_out(tmp_path: Path):
+    source = make_rebench(tmp_path / "download", ["owner__repo-1", *UNGRADEABLE])
+    files = {
+        str(path.relative_to(source)): (b"f", path.read_bytes())
+        for path in source.rglob("*")
+        if path.is_file()
+    }
+
+    assert lanes.digest(source) == reference_digest(files)
 
 
 def test_a_download_with_no_tasks_has_no_digest(tmp_path: Path):
