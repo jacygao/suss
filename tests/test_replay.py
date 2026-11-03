@@ -605,6 +605,37 @@ def test_a_test_file_the_image_had_changed_and_the_patch_did_not_touch_is_left_a
     assert record["tests_reset"] == {"restored": [], "removed": []}
 
 
+def test_a_test_file_the_image_had_changed_and_the_patch_edited_is_graded_as_the_image_had_it(
+    tmp_path, local_environment, workspace, found
+):
+    commit(workspace, {"tests/test_lines.py": b"base\n", "tests/test_image.py": b"base\n"})
+    image = {"tests/test_lines.py": b"image\n", "tests/test_image.py": None,
+             "tests/test_new.py": b"image\n"}
+    # The patch runs from the starting tree, so it is taken with the image's
+    # changes committed, which are then left uncommitted as the image has them.
+    write(image)(workspace)
+    git(workspace, "add", "-A")
+    git(workspace, "commit", "-q", "-m", "image")
+    change = write({"tests/test_lines.py": b"harness\n", "tests/test_new.py": None,
+                    "tests/test_image.py": b"harness\n"})
+    job = tmp_path / "agent-job"
+    trial(job, "t1", TASK, patch_of(workspace, change))
+    git(workspace, "reset", "-q", "HEAD~1")
+
+    record = replay(replay_agent(tmp_path, str(job)), local_environment)
+
+    assert (workspace / "tests/test_lines.py").read_bytes() == b"image\n"
+    assert (workspace / "tests/test_new.py").read_bytes() == b"image\n"
+    assert not (workspace / "tests/test_image.py").exists()
+    assert record["tests_reset"] == {
+        "restored": ["tests/test_lines.py", "tests/test_new.py"],
+        "removed": ["tests/test_image.py"],
+    }
+    assert git(workspace, "status", "--porcelain") == (
+        " D tests/test_image.py\n M tests/test_lines.py\n?? tests/test_new.py\n"
+    )
+
+
 def test_a_patch_that_touches_no_test_file_records_two_empty_lists(
     tmp_path, local_environment, workspace, found
 ):

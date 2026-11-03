@@ -1,5 +1,5 @@
 ---
-settles: "§ 3 — which paths the regrade grades as they were at the base, and what replay.json records of them; § 5 — that the rule holds for every language in rebench"
+settles: "§ 3 — which paths the regrade grades as the starting tree held them, and what replay.json records of them; § 5 — that the rule holds for every language in rebench"
 issue: [143]
 recorded: 2026-11-04
 versions: { harbor: 0.22.0, modal: 1.6.3, swe-rebench: "swe-rebench-07-2026 (108 tasks used)" }
@@ -107,7 +107,10 @@ restores anyway, or added test files, which the regrade now removes.
 
 Run from `~/Documents/Dev/suss-runs/checks/grade-tests-at-base-20261104/`,
 over a copy of the lane task and of the trial
-`mikro-orm__mikro-orm-7799__itUUpJB`, byte for byte:
+`mikro-orm__mikro-orm-7799__itUUpJB`, byte for byte. The regrade then restored
+test files from `HEAD`, not from the starting tree. The two differ only where
+the image changed a test file, and the patch's hunks in both test files applied
+cleanly to the image:
 
 ```bash
 uv run --extra modal --project <worktree> harbor run -p lane -e modal -n 1 -k 1 \
@@ -150,5 +153,8 @@ the harness had rewritten.
   passing trials in the table above would now score 0 is unknown.
 - The rule classes the `mdtest` and `ruff_mdtest` crates' sources as test
   files. A harness that fixed a bug in them would have that fix undone.
+- The mikro-orm regrade was not rerun with restoring from the starting tree.
+  Whether the image changes either migrator test outside the patch's hunks was
+  not checked; if it does not, the result is the same.
 - Only Modal was run. The regrade's git commands were tested on this machine's
   git, not in a Docker task image.

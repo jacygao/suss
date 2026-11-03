@@ -3,9 +3,9 @@ ReplayAgent, the Harbor custom agent that regrades a trial of an agent job.
 
 It applies the trial's model.patch in a fresh sandbox, so that the task's
 verifier grades the change and nothing else the harness did to its sandbox.
-Every test file the patch changed is then put back as it was at the base, so
-the change is graded against the tests and not against the harness's edits to
-them. Harbor constructs it on the host, where the agent job is.
+Every test file the patch changed is then put back as it was in the starting
+tree, so the change is graded against the tests and not against the harness's
+edits to them. Harbor constructs it on the host, where the agent job is.
 """
 
 import json
@@ -19,7 +19,7 @@ from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
-from suss.workspace import PATCH_NAME, find_workspace
+from suss.workspace import PATCH_NAME, find_workspace, read_start_tree
 
 RECORD_NAME = "replay.json"
 APPLY_METHODS = ("git apply --verbose", "git apply --3way", "patch --fuzz=3 -p1 -i")
@@ -84,12 +84,13 @@ class ReplayAgent(BaseAgent):
     ) -> None:
         """
         Apply the source trial's patch in the workspace, put every test file
-        it changed back as it was at the base, and write replay.json.
+        it changed back as it was in the starting tree, and write replay.json.
 
         A patch that fails to apply is recorded, not raised, so the verifier
         still grades the workspace. Raises ReplayError when the source job holds
-        no trial of this task, or more than one, and when git cannot read the
-        workspace or put a test file back.
+        no trial of this task, or more than one, and when git cannot compare
+        the workspace with its starting tree or put a test file back. Raises
+        WorkspaceError when git cannot build the starting tree.
         """
         # Harbor writes the trial's config.json before it starts the agent.
         task = _task(self.logs_dir.parent / "config.json")
@@ -99,12 +100,13 @@ class ReplayAgent(BaseAgent):
         if patch.is_file() and patch.stat().st_size > 0:
             workspace = await find_workspace(environment)
             added = [path for path in _created(patch.read_bytes()) if is_test_file(path)]
-            # What the image itself changed or holds is not the patch's, so it stays.
-            before = await _changed_from_base(environment, workspace)
+            start = await read_start_tree(environment, workspace)
+            # An ignored file the image holds is in no tree, but is not the
+            # patch's either, so it stays.
             held = await _present(environment, workspace, added)
             applied = await self._apply(environment, patch, workspace)
             added = [path for path in added if path not in held]
-            tests_reset = await _reset_tests(environment, workspace, before, added)
+            tests_reset = await _reset_tests(environment, workspace, start, added)
             record = {"task": task, "patch": str(patch), **applied, "tests_reset": tests_reset}
         (self.logs_dir / RECORD_NAME).write_text(json.dumps(record, indent=2) + "\n")
 
@@ -158,53 +160,57 @@ def is_test_file(path: str) -> bool:
     return bool(words & TEST_WORDS) or bool(JS_SPEC.search(path))
 
 
-async def _changed_from_base(environment: BaseEnvironment, workspace: str) -> dict[str, bool]:
+async def _changed_from_start(
+    environment: BaseEnvironment, workspace: str, start: str
+) -> dict[str, str]:
     """
-    Every path in the workspace that differs from HEAD, mapped to whether HEAD
-    has it.
+    Every path in which the workspace's tree differs from the starting tree,
+    mapped to its status letter: M, T, D or A.
 
     Ignored files are left out, as they are from the patch. Raises
-    ReplayError when git cannot read the workspace.
+    WorkspaceError when git cannot build the tree, and ReplayError when it
+    cannot compare the two.
     """
+    now = await read_start_tree(environment, workspace)
     # Git's stderr goes to a file, since Docker would mix a warning into the
     # paths. Every path comes back ASCII, quoted where it needs to be.
     command = (
-        'err=$(mktemp) || exit 1; git -c core.quotePath=true status --porcelain=v1'
-        ' --untracked-files=all --no-renames 2>"$err"; rc=$?;'
+        "err=$(mktemp) || exit 1; git -c core.quotePath=true diff-tree -r --no-renames"
+        f' --name-status {shlex.quote(start)} {shlex.quote(now)} 2>"$err"; rc=$?;'
         ' [ $rc -eq 0 ] || cat "$err"; rm -f "$err"; exit $rc'
     )
     result = await environment.exec(command, cwd=workspace, timeout_sec=APPLY_SECONDS)
     output = (result.stdout or "") + (result.stderr or "")
     if result.return_code != 0:
         raise ReplayError(f"git cannot list what changed in {workspace}: {output.strip()}")
-    # Each line is two status letters, a space and the path. The first letter
-    # compares the index with HEAD, where A is a file HEAD lacks.
+    # Each line is a status letter, a tab and the path.
     return {
-        _unquote(line[3:]): line[0] not in "?A"
+        _unquote(line.split("\t", 1)[1]): line[0]
         for line in output.splitlines()
-        if len(line) > 3
+        if "\t" in line
     }
 
 
 async def _reset_tests(
-    environment: BaseEnvironment, workspace: str, before: dict[str, bool], added: list[str]
+    environment: BaseEnvironment, workspace: str, start: str, added: list[str]
 ) -> dict[str, list[str]]:
     """
-    Restore from HEAD each test file the patch changed or deleted, remove each
-    one it added, and return the paths of both.
+    Restore from the starting tree each test file the patch changed or
+    deleted, remove each one it added, and return the paths of both.
 
     `added` is each test file the patch's headers create that the workspace
-    lacked before the patch. A path in HEAD that differed from it before the
-    patch is left as it is. Raises ReplayError naming git's output when git
-    cannot read the workspace or put a file back.
+    lacked before the patch. Each path reset keeps HEAD's entry in the index,
+    as it had before the patch. Raises ReplayError naming git's output when
+    git cannot compare the trees or put a file back.
     """
-    after = await _changed_from_base(environment, workspace)
-    restored = sorted(path for path, in_base in after.items()
-                      if in_base and path not in before and is_test_file(path))
+    changed = await _changed_from_start(environment, workspace, start)
+    restored = sorted(
+        path for path, status in changed.items() if status != "A" and is_test_file(path)
+    )
     # From the headers and not from git, which lists no ignored file: a patch
     # can add a test file and a rule ignoring it, or stop ignoring one the
     # image holds.
-    removed = sorted(set(await _present(environment, workspace, added, outside_base=True)))
+    removed = sorted(set(await _present(environment, workspace, added, outside=start)))
     # Literal, so a test file named with `*` or `[` names only itself.
     git = "git --literal-pathspecs"
     steps = []
@@ -212,10 +218,12 @@ async def _reset_tests(
     # takes the directory's place, and the paths inside it with it.
     if removed:
         paths = " ".join(shlex.quote(path) for path in removed)
-        steps.append(f"{git} rm -q --cached --ignore-unmatch -- {paths} && rm -f -- {paths}")
+        steps.append(f"rm -f -- {paths} && {git} reset -q -- {paths}")
     if restored:
         paths = " ".join(shlex.quote(path) for path in restored)
-        steps.append(f"{git} checkout HEAD -- {paths}")
+        steps.append(
+            f"{git} checkout {shlex.quote(start)} -- {paths} && {git} reset -q -- {paths}"
+        )
     if steps:
         # Into stdout, because Modal keeps stderr apart and git explains a failure there.
         result = await environment.exec(
@@ -223,28 +231,28 @@ async def _reset_tests(
         )
         if result.return_code != 0:
             raise ReplayError(
-                f"git cannot put the patch's test files back as they were at the base in"
-                f" {workspace}: {(result.stdout or '').strip()}"
+                "git cannot put the patch's test files back as they were in the starting"
+                f" tree in {workspace}: {(result.stdout or '').strip()}"
             )
     return {"restored": restored, "removed": removed}
 
 
 async def _present(
-    environment: BaseEnvironment, workspace: str, paths: list[str], *, outside_base: bool = False
+    environment: BaseEnvironment, workspace: str, paths: list[str], *, outside: str = ""
 ) -> list[str]:
     """
-    Those of `paths` that are in the workspace, and with `outside_base`, not
-    in HEAD as well.
+    Those of `paths` that are in the workspace, and not in the tree `outside`
+    when one is given.
 
     Raises ReplayError when the shell cannot check them.
     """
     if not paths:
         return []
-    in_base = ' && ! git cat-file -e "HEAD:$p" 2>/dev/null' if outside_base else ""
+    in_tree = f' && ! git cat-file -e {shlex.quote(outside)}:"$p" 2>/dev/null' if outside else ""
     # Each path that qualifies comes back as its index, since a name can hold a newline.
     command = (
         f"i=0; for p in {' '.join(shlex.quote(path) for path in paths)}; do"
-        f' if {{ [ -e "$p" ] || [ -L "$p" ]; }}{in_base}; then echo "$i"; fi; i=$((i+1)); done'
+        f' if {{ [ -e "$p" ] || [ -L "$p" ]; }}{in_tree}; then echo "$i"; fi; i=$((i+1)); done'
     )
     result = await environment.exec(command, cwd=workspace, timeout_sec=APPLY_SECONDS)
     output = (result.stdout or "") + (result.stderr or "")
