@@ -33,8 +33,9 @@ class Trial:
     grader: dict | None
     patch_bytes: int
     resolved: bool
-    # False when the regrade's replay.json names no patch, or there is none.
-    regrade_applied: bool
+    # False when the regrade's replay.json has `"patch": null`. None when no
+    # replay.json says either way, as when there is no regrade trial.
+    regrade_applied: bool | None
     # The agent trial's directory.
     path: Path
 
@@ -76,7 +77,9 @@ def _trial(job: str, task: str, trial: Path, regrade: Path | None) -> Trial:
         grader=record.get("grader"),
         patch_bytes=patch_bytes if isinstance(patch_bytes, int) else 0,
         resolved=regrade is not None and _reward(regrade) == 1,
-        regrade_applied=isinstance(replay, dict) and replay.get("patch") is not None,
+        regrade_applied=(
+            replay["patch"] is not None if isinstance(replay, dict) and "patch" in replay else None
+        ),
         path=trial,
     )
 
@@ -221,7 +224,8 @@ def report(directory: Path, lane: str, arms: Sequence[str]) -> str:
     is left out when no arm has one.
 
     Raises ConfigError when suss.toml does not define every arm, and
-    CompareError when an arm has no trials or the arms share no task.
+    CompareError when an arm has no trials, a trial's regrade applied none of
+    its patch, or the arms share no task.
     """
     baselines = config.baselines(Path(directory) / "suss.toml", list(arms))
     trials = _read(directory, lane, arms)
@@ -244,14 +248,23 @@ def report(directory: Path, lane: str, arms: Sequence[str]) -> str:
 
 def _read(directory: Path, lane: str, arms: Sequence[str]) -> dict[str, list[Trial]]:
     """
-    Every trial of each arm, raising CompareError for an arm with none, so
-    that nothing is compared that cannot be.
+    Every trial of each arm, raising CompareError for an arm with none, and
+    for any trial with a patch whose regrade applied none, so that nothing is
+    compared that cannot be.
     """
     trials = {}
     for arm in arms:
         trials[arm] = read_trials(directory, lane, arm)
         if not trials[arm]:
             raise CompareError(f"no results for arm {arm} under results/{lane}/")
+        for trial in trials[arm]:
+            # That regrade graded the unchanged repository, so its 0 is not the trial's result.
+            if trial.patch_bytes > 0 and trial.regrade_applied is False:
+                raise CompareError(
+                    f"the trial of {trial.task} in results/{lane}/{arm}/{trial.job} made a "
+                    f"{trial.patch_bytes}-byte patch, but its regrade in "
+                    f"{trial.job}{REGRADE} applied none"
+                )
     return trials
 
 
