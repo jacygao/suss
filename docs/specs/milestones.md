@@ -144,36 +144,32 @@ each arm did and how it differs from its baseline.
       applied no patch, makes the command exit non-zero and print only the error
 - [x] `uv run pytest` passes
 
-## M4 — The SWE-rebench lanes
+## M4 — The SWE-rebench lane
 
-`suss run` and `suss compare` take the `rebench` lanes, built from SWE-rebench's
-July 2026 snapshot, as they take the `pro-` lanes. Suss regrades every lane with
-its own `ReplayAgent`.
+Suss runs one lane, `rebench`, built from SWE-rebench's July 2026 snapshot, and
+regrades it with its own `ReplayAgent`. SWE-bench Pro, its lanes and its
+regrading agent are gone.
 
 ### Acceptance criteria
 
-- [ ] `lanes/<lane>/` holds exactly the lane's tasks: 111 for `rebench`, 21 for
-      `rebench-go`, 21 for `rebench-java`, 20 for `rebench-python`, 25 for
-      `rebench-rust` and 24 for `rebench-ts`
-- [ ] Each task in a `rebench` lane is a copy whose `task.toml` differs from the
-      download's only by `[agent] network_mode = "no-network"`
-- [ ] A lane whose dataset key is missing from `suss.toml` makes `suss run` exit
-      with an error naming the key, before it builds any lane or runs any job
+- [ ] `lanes/rebench/` holds a copy of each of the 111 tasks, whose `task.toml`
+      differs from the download's only by `[agent] network_mode = "no-network"`
+- [ ] `suss.toml` names the tasks with `swe_rebench`, and `swe_bench_pro` and
+      `dataset` are gone
 - [ ] With `DRY_RUN=1`, `suss run` prints a regrade of
-      `suss.replay:ReplayAgent`, with no `PYTHONPATH`, for every lane
-- [ ] `ReplayAgent` finds a trial's patch whatever its task is named, applies it
+      `suss.replay:ReplayAgent`, with no `PYTHONPATH`
+- [ ] `ReplayAgent` finds a trial's patch by the task the trial ran, applies it
       in the workspace, and writes `agent/replay.json`, with `"patch": null` for
       a missing or empty patch
-- [ ] Where neither `/app` nor `/testbed` exists, the workspace is the directory
-      the sandbox starts in, when it holds a git repository
-- [ ] A `rebench` trial's `grader` is
+- [ ] The workspace is the directory the sandbox starts in, and a trial whose
+      starting directory holds no git repository fails naming it
+- [ ] A trial's `grader` is
       `{ "dataset": "swe-rebench-07-2026", "digest": "<sha256>" }`, and two
       downloads of the same tasks give the same digest
+- [ ] Nothing in suss reads a SWE-bench Pro checkout, or pulls an image
 - [ ] On Modal, in the agent phase of a `rebench` task, the harness reaches each
       host in its `allowed_hosts` and no other host
 - [ ] `suss run claude-code rebench --check` on Modal leaves an agent job and
       its regrade under `checks/rebench/claude-code/`, the trial's `suss.json`
       has `status` `ok`, and the regrade's reward is the trial's result
-- [ ] `suss run claude-code pro-go --check` on Modal, regraded by
-      `ReplayAgent`, still has the regrade's reward as the trial's result
 - [ ] `uv run pytest` passes

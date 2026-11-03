@@ -11,20 +11,20 @@ they are graded. Suss runs the same tasks under several arms, grades every
 result the same way, and reports how each arm's score differs from its
 baseline's.
 
-Comparing plain Claude Code with two harnesses that review its change, on the Go
-lane, prints output like this:
+Comparing plain Claude Code with two harnesses that review its change prints
+output like this:
 
 ```
-$ suss compare pro-go claude-code self-review peer-review
+$ suss compare rebench claude-code self-review peer-review
 
 arm          trials  resolved  failed  timed out
-claude-code     256       38%      0%         1%
-self-review     256       41%      1%         1%
-peer-review     256       44%      1%         2%
+claude-code     111       58%      0%         1%
+self-review     111       62%      1%         1%
+peer-review     111       66%      1%         2%
 
 vs. baseline                resolved
-self-review - claude-code   +3% [-2%, +8%]
-peer-review - claude-code   +6% [+1%, +11%]
+self-review - claude-code   +4% [-4%, +12%]
+peer-review - claude-code   +8% [+1%, +15%]
 ```
 
 ## 2. Dependencies
@@ -32,10 +32,9 @@ peer-review - claude-code   +6% [+1%, +11%]
 | Dependency | Version | Needed for |
 |---|---|---|
 | Harbor | 0.22.0 | Runs each task in a sandbox, runs suss in it, and grades the result with the task's own verifier. |
-| Docker | Docker Desktop 4.86.0 or later on macOS. On Linux and Windows, a Docker engine whose kernel has `CONFIG_NFT_FIB_INET`. | The sandboxes, with `environment = "docker"` in `suss.toml`. Without `CONFIG_NFT_FIB_INET`, Harbor refuses every task, because every lane's agent phase has no network. |
+| Docker | Docker Desktop 4.86.0 or later on macOS. On Linux and Windows, a Docker engine whose kernel has `CONFIG_NFT_FIB_INET`. | The sandboxes, with `environment = "docker"` in `suss.toml`. Without `CONFIG_NFT_FIB_INET`, Harbor refuses every task, because the agent phase has no network. |
 | Modal | 1.5.1 or later, and the account Harbor's `modal` environment uses. `uv sync --extra modal` installs its client into suss's environment, through Harbor's own `modal` extra at the Harbor version above. A plain `uv sync` leaves it out. | The sandboxes, when `environment` is `modal`. Versions before 1.5.1 cannot take a network policy per phase. |
-| SWE-bench Pro | a checkout of `scaleapi/SWE-bench_Pro-os` | The `pro-` lanes' tasks, under `v2/tasks/`. |
-| SWE-rebench | `ibragim-badertdinov/swe-rebench-07-2026` from Harbor Hub, as `harbor download` writes it | The `rebench` lanes' tasks. |
+| SWE-rebench | `ibragim-badertdinov/swe-rebench-07-2026` from Harbor Hub, as `harbor download` writes it | The tasks. |
 | Python | 3.12 | Suss itself, which Harbor loads as a custom agent. |
 | `uv` | any | Installs suss and Harbor. |
 
@@ -53,7 +52,7 @@ docker run --rm alpine:3.19 sh -c 'zcat /proc/config.gz | grep NFT_FIB_INET'
 | Term | Meaning |
 |---|---|
 | **Task** | One benchmark task: a repository in a sandbox image, an instruction, and hidden tests. |
-| **Lane** | A set of tasks that suss runs and reports as one, such as `pro-go`. |
+| **Lane** | A set of tasks that suss runs and reports as one, such as `rebench`. |
 | **Harness** | What is being measured, reached through its adapter. |
 | **Adapter** | The directory that lets suss run a harness: a manifest, `suss-harness.toml`, and the commands it names. |
 | **Arm** | A harness and the parameters it runs with, such as a model and a reasoning effort. |
@@ -69,10 +68,10 @@ reaches only the hosts the harness's manifest lists in `allowed_hosts`.
 
 In the setup phase, suss:
 
-1. **finds the workspace and records the base.** The workspace is `/app`;
-   where `/app` does not exist, `/testbed`; and where neither does, the
-   directory the sandbox starts in, which is the image's `WORKDIR`, when it holds
-   a git repository. The base is `git rev-parse HEAD`.
+1. **finds the workspace and records the base.** The workspace is the directory
+   the sandbox starts in, which is the image's `WORKDIR`, such as `/gleam`. It
+   must hold a git repository, or the trial fails naming it. The base is
+   `git rev-parse HEAD`.
 2. **uploads the harness's adapter** to `/opt/suss/adapter/`.
 3. **installs the harness**, if the adapter's manifest names an `install` command.
 
@@ -102,8 +101,8 @@ After each agent job, suss runs a second Harbor job over the same tasks, with
 suss's own `suss.replay:ReplayAgent` as the agent. For each trial, it starts a
 fresh sandbox from the task's image, applies the trial's `model.patch` in the
 workspace, found as the trial found it, and runs the verifier there. That
-verifier's reward is the trial's result. It applies the patch as SWE-bench Pro's
-`PatchReplayAgent` does, so trials regraded by either are graded alike:
+verifier's reward is the trial's result. It applies the patch with the first of
+these that succeeds:
 
 ```bash
 git apply --verbose model.patch || git apply --3way model.patch || patch --fuzz=3 -p1 -i model.patch
@@ -113,7 +112,7 @@ A harness cannot change its result by changing the sandbox it worked in, because
 the grading happens in another.
 
 `ReplayAgent` finds a trial's patch by the task the trial ran, among every trial
-directory of the agent job, whatever the task is named. So an agent job holds
+directory of the agent job. So an agent job holds
 one trial of each task, and suss runs K agent jobs for K trials, where K is `k`
 in `suss.toml`.
 
@@ -144,7 +143,7 @@ directory as `agent/` in the trial's directory under `results/`.
   "arm": "peer-review",
   "harness": { "name": "peer-review", "version": "0.1.0" },
   "params": { "model": "claude-opus-4-6", "effort": "high", "rounds": 3 },
-  "grader": { "dataset": "swe-bench-pro-v2", "commit": "4e7a1c90…" },
+  "grader": { "dataset": "swe-rebench-07-2026", "digest": "9c2f04b1…" },
   "base": "5568b2e0a686cc4d838bddc095b831379143e61b",
   "status": "ok",
   "exit_codes": { "install": 0, "run": 0 },
@@ -153,12 +152,9 @@ directory as `agent/` in the trial's directory under `results/`.
 }
 ```
 
-- `grader` names the dataset the trial's task came from, and its version. For a
-  `pro-` lane, it is the `dataset` that `suss.toml` names, and the commit of the
-  checkout `suss run` used. For a `rebench` lane, it is
-  `{ "dataset": "swe-rebench-07-2026", "digest": "<sha256>" }`, where the digest
-  covers every file of every task in the directory `swe_rebench` names, by path
-  and content, so two downloads of the same tasks have the same digest.
+- `grader` names the dataset the trial's task came from, and a sha256 digest of
+  every file of every task in the directory `swe_rebench` names, by path and
+  content. Two downloads of the same tasks have the same digest.
 - `status` is `ok`, `harness-failed` or `timed-out`. A trial is `timed-out`
   when suss stops `run` at `max_seconds`, and when Harbor's agent timeout stops
   the trial while `run` is going. Either way, suss stops the harness inside the
@@ -255,56 +251,26 @@ resolves when the tests the real change made pass now pass, and the tests that
 passed before still pass. The share of trials that resolve is the measure suss
 compares arms on.
 
-Suss takes tasks from two datasets, and splits each into lanes:
-
-| Lane | Tasks | Which |
-|---|---|---|
-| `pro-go` | 256 | SWE-bench Pro, owners `flipt-io`, `gravitational`, `future-architect`, `navidrome` |
-| `pro-python` | 237 | SWE-bench Pro, owners `ansible`, `internetarchive`, `qutebrowser` |
-| `pro-js` | 149 | SWE-bench Pro, owners `protonmail`, `element-hq`, `NodeBB`, `tutao` |
-| `pro-hard51` | 51 | SWE-bench Pro, the tasks listed in `v2/hard51_ids.txt` |
-| `rebench` | 111 | SWE-rebench, every task |
-| `rebench-go` | 21 | SWE-rebench, `language` `go` |
-| `rebench-java` | 21 | SWE-rebench, `language` `java` |
-| `rebench-python` | 20 | SWE-rebench, `language` `python` |
-| `rebench-rust` | 25 | SWE-rebench, `language` `rust` |
-| `rebench-ts` | 24 | SWE-rebench, `language` `typescript` |
-
-### SWE-bench Pro
-
-SWE-bench Pro V2 holds 642 tasks from 11 repositories, in `v2/tasks/` of the
-checkout. Each instruction is written from the real change: what it does, its
-requirements, and any interfaces it adds. The change is a bug fix or a feature.
-
-A task's owner is the first part of its directory name,
-`instance_<owner>__<repo>-<commit>…`. A lane's result is a result for its
-repositories. With three or four per language, a harness that does better on
-`pro-go` may be doing better on gravitational's Teleport and flipt-io's Flipt
-rather than on Go.
-
-### SWE-rebench
-
-SWE-rebench's July 2026 snapshot holds 111 tasks from 65 repositories, made from
-pull requests merged between 15 May and 15 June 2026. Each instruction is the
-issue the pull request closed, and an `Interface` section naming any interface
-it adds. A task's `language` is in its `tests/config.json`.
+Suss has one lane, `rebench`: the 111 tasks of SWE-rebench's July 2026
+snapshot, from 65 repositories in Go (21), Java (21), Python (20), Rust (25) and
+TypeScript (24). They are made from pull requests merged between 15 May and
+15 June 2026. Each instruction is the issue the pull request closed, and an
+`Interface` section naming any interface it adds.
 
 Each task's image is built from the `Dockerfile` in its `environment/`, and the
-build downloads from the network. Its repository is in the image's `WORKDIR`,
-such as `/gleam`.
+build downloads from the network. Its repository is in the image's `WORKDIR`.
 
 ### Network
 
-Every lane's agent phase has no network. Suss passes each host in the harness's
+The agent phase has no network. Suss passes each host in the harness's
 `allowed_hosts` to Harbor as `--allow-agent-host`, and nothing else, so a harness
 cannot fetch a task's real change from the web.
 
-SWE-bench Pro's tasks set `[agent] network_mode = "no-network"` themselves.
-SWE-rebench's tasks set only `[environment] network_mode = "public"`, under
-which Harbor ignores `--allow-agent-host`. So a `rebench` lane holds a copy of
-each task, whose `task.toml` adds `[agent] network_mode = "no-network"` and is
-otherwise unchanged. The verifier keeps the task's own network, which it uses to
-download a Python on an image that has none.
+The tasks set only `[environment] network_mode = "public"`, under which Harbor
+ignores `--allow-agent-host`. So the lane holds a copy of each task, whose
+`task.toml` adds `[agent] network_mode = "no-network"` and is otherwise
+unchanged. The verifier keeps the task's own network, which it uses to download
+a Python on an image that has none.
 
 ## 6. Commands
 
@@ -312,41 +278,29 @@ download a Python on an image that has none.
 
 ```bash
 suss run <arm> <lane>... [--check] [-- <harbor args>]
-suss run peer-review pro-go pro-python
+suss run peer-review rebench
 ```
 
 It reads the arm from `suss.toml` in the current directory. For each lane, it
-builds `lanes/<lane>/`. A `pro-` lane is a directory of links to its task
-directories in the checkout. A `rebench` lane is a directory of copies of its
-task directories from the directory `swe_rebench` names, each with
+builds `lanes/<lane>/`, a directory of copies of the lane's task directories
+from the directory `swe_rebench` names, each with
 `[agent] network_mode = "no-network"` added to its `task.toml`. A build removes
-what an earlier build of the lane left.
-
-When `environment` is `docker`, it then pulls the image each of the lane's tasks
-names in `[environment] docker_image` of its `task.toml`. The images are built
-for amd64 only, so on a Docker engine that runs on arm64, such as Docker
-Desktop on Apple Silicon, it pulls them for amd64:
-
-```bash
-docker pull --platform linux/amd64 <docker_image>
-```
-
-A task that names no `docker_image`, as no SWE-rebench task does, has nothing
-pulled. Harbor builds its image from its `Dockerfile` when its trial starts.
+what an earlier build of the lane left. Harbor builds each task's image from its
+`Dockerfile` when its trial starts.
 
 Then, K times, it runs an agent job and its regrade:
 
 ```bash
-<env>/bin/harbor run -p lanes/pro-go -e docker -n 16 -k 1 \
+<env>/bin/harbor run -p lanes/rebench -e docker -n 16 -k 1 \
   -a suss.agent:SussAgent --ak arm=peer-review --ak config=suss.toml \
   --allow-agent-host api.anthropic.com --allow-agent-host api.deepseek.com \
   --disable-verification \
-  --jobs-dir results/pro-go/peer-review --job-name <stamp>-1
+  --jobs-dir results/rebench/peer-review --job-name <stamp>-1
 
-<env>/bin/harbor run -p lanes/pro-go -e docker -n 16 -k 1 \
+<env>/bin/harbor run -p lanes/rebench -e docker -n 16 -k 1 \
   -a suss.replay:ReplayAgent -m replay \
-  --ak source_job=<dir>/results/pro-go/peer-review/<stamp>-1 \
-  --jobs-dir results/pro-go/peer-review --job-name <stamp>-1-regrade
+  --ak source_job=<dir>/results/rebench/peer-review/<stamp>-1 \
+  --jobs-dir results/rebench/peer-review --job-name <stamp>-1-regrade
 ```
 
 `<stamp>` is the time `suss run` started, in UTC, as `20261031T142500Z`. Every
@@ -377,13 +331,12 @@ nothing:
 - A positional argument, which `harbor run` does not take.
 
 ```
-$ suss run peer-review pro-go -- -k 2
+$ suss run peer-review rebench -- -k 2
 error: -k/--n-attempts can't be passed after --: suss runs one trial per agent
 job, and k in suss.toml sets how many jobs
 ```
 
-`DRY_RUN=1` prints the `harbor run` commands instead of running them, and pulls
-nothing.
+`DRY_RUN=1` prints the `harbor run` commands instead of running them.
 
 Every agent job is followed by its regrade, whatever its trials did and whatever
 Harbor's exit code was. A trial that failed or errored is graded as its regrade
@@ -403,16 +356,14 @@ lane may be using. It runs one agent job and its regrade whatever `k` is, and
 writes both to `checks/<lane>/<arm>/` instead of `results/`:
 
 ```bash
-suss run peer-review pro-go --check
+suss run peer-review rebench --check
 ```
 
 `suss.toml` names where the tasks are, where the sandboxes run, the cap on each
 trial, and the arms:
 
 ```toml
-swe_bench_pro = "../SWE-bench_Pro-os"
-dataset = "swe-bench-pro-v2"
-swe_rebench = "../swe-rebench-07-2026"
+swe_rebench = "../tasks/swe-rebench-07-2026"
 environment = "docker"
 k = 1
 concurrency = 16
@@ -433,13 +384,9 @@ baseline = "claude-code"
 params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "deepseek/deepseek-v3.2" }
 ```
 
-- `swe_bench_pro` and `dataset` are needed for a `pro-` lane, and `swe_rebench`
-  for a `rebench` lane. A lane whose key is missing makes `suss run` exit with
-  an error naming the key, before it builds any lane or runs any job.
-- `dataset` names the dataset the checkout holds. Suss copies it into each
-  `pro-` trial's `grader` as it stands.
 - `swe_rebench` is `<dir>/swe-rebench-07-2026`, the directory of tasks that
-  `harbor download ibragim-badertdinov/swe-rebench-07-2026 -o <dir>` writes.
+  `harbor download ibragim-badertdinov/swe-rebench-07-2026 -o <dir>` writes,
+  relative to the directory holding `suss.toml`.
 - `harness` is the path to an adapter, relative to the directory holding
   `suss.toml`.
 - `params` is passed to the harness as it stands, as the JSON file `--params`
@@ -451,7 +398,7 @@ params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "d
   before it builds a lane or runs any job, with `DRY_RUN=1` and `--check` too:
 
   ```
-  $ suss run peer-review pro-go
+  $ suss run peer-review rebench
   error: environment is modal, but Modal's client is not installed: run uv sync
   --extra modal
   ```
@@ -463,14 +410,14 @@ params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "d
   `--override-cpus` or `--override-memory-mb` passed after `--` counts in place
   of the tasks' own where it is larger. Memory is counted in MiB, as
   `memory_mb` is, and Docker's is rounded down. When either does not
-  fit, `suss run` exits with an error before it builds any lane, pulls any
-  image or runs any job, and does so under `DRY_RUN=1` too. A task that names
+  fit, `suss run` exits with an error before it builds any lane or runs any
+  job, and does so under `DRY_RUN=1` too. A task that names
   no `cpus` or no `memory_mb` is an error that names it. A `--check` counts
   only its one task, and one trial at a time.
 
   ```
-  $ suss run peer-review pro-go
-  error: concurrency = 16 needs 16 CPUs and 65536 MiB for the tasks in pro-go,
+  $ suss run peer-review rebench
+  error: concurrency = 16 needs 16 CPUs and 65536 MiB for the tasks in rebench,
   but Docker has 10 CPUs and 7934 MiB; set concurrency to 1 or less, or give
   Docker more
   ```
@@ -479,20 +426,20 @@ params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "d
   `concurrency`.
 - `max_seconds` caps each trial: suss stops `run` after it. Set at the top, it
   applies to every arm, and an arm may set its own. It must be under the task's
-  agent timeout, 3000 seconds in every task of both datasets, so that suss
+  agent timeout, 3000 seconds in every task, so that suss
   captures the patch before Harbor stops the trial. When it is not under the agent timeout of every
   task in a lane, `suss run` exits with an error before running any job:
 
   ```
-  $ suss run peer-review pro-go
+  $ suss run peer-review rebench
   error: arm peer-review sets max_seconds = 3000, which must be under the
-  3000-second agent timeout of the tasks in pro-go
+  3000-second agent timeout of the tasks in rebench
   ```
 - `max_cost_usd`, at the top or on the arm, makes `suss run` exit with an error
   before it builds any lane or runs any job, with `DRY_RUN=1` and `--check` too:
 
   ```
-  $ suss run peer-review pro-go
+  $ suss run peer-review rebench
   error: /home/me/evals/suss.toml: [arms.peer-review] sets max_cost_usd, but suss
   does not read it; set the arm's spending limit in its params, under the name
   its adapter takes, such as max_budget_usd for adapters/claude-code
@@ -553,7 +500,7 @@ src/suss/
   agent.py        SussAgent, the Harbor custom agent
   workspace.py    finding the workspace, and capturing the patch
   harness.py      reading a manifest, installing, and running a harness
-  lanes.py        building a lane's directory from its dataset
+  lanes.py        building a lane's directory from the downloaded tasks
   config.py       suss.toml
   replay.py       ReplayAgent, the regrading agent
   compare.py      suss compare
