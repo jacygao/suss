@@ -1,5 +1,7 @@
+import os
 import re
 import shlex
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -65,11 +67,11 @@ def harbor_parses(argv: list[str]) -> dict:
     return parse_kwargs([token for flag, token in zip(argv, argv[1:]) if flag == "--ak"])
 
 
-def spec_commands(root: Path, checkout: Path, env: Path) -> tuple[list[str], list[str]]:
+def spec_commands(root: Path, env: Path) -> tuple[list[str], list[str]]:
     """
     The two `harbor run` commands from the spec's `suss run`, split into tokens,
-    with `root` as the directory holding suss.toml, `checkout` as the SWE-bench
-    Pro checkout, and `env` as the environment suss is installed in.
+    with `root` as the directory holding suss.toml, and `env` as the
+    environment suss is installed in.
     """
     blocks = re.findall(r"```bash\n(.*?)```", SPEC.read_text(), re.DOTALL)
     found = [block for block in blocks if "-a suss.agent:SussAgent" in block]
@@ -79,7 +81,6 @@ def spec_commands(root: Path, checkout: Path, env: Path) -> tuple[list[str], lis
         shlex.split(
             command.replace("<stamp>", STAMP)
             .replace("<dir>", shlex.quote(str(root)))
-            .replace("<checkout>", shlex.quote(str(checkout)))
             .replace("<env>", shlex.quote(str(env)))
         )
         for command in (agent, regrade)
@@ -99,18 +100,13 @@ def spec_config(tmp_path: Path) -> Config:
 def test_both_commands_match_the_spec_token_for_token(tmp_path):
     loaded = spec_config(tmp_path)
     harbor = harbor_executable()
-    expected_agent, expected_regrade = spec_commands(
-        loaded.path.parent, loaded.swe_bench_pro, harbor.parent.parent
-    )
-    pythonpath = expected_regrade.pop(0)
+    expected_agent, expected_regrade = spec_commands(loaded.path.parent, harbor.parent.parent)
 
-    agent, regrade = harbor_commands(loaded, make_manifest(), "pro-go", STAMP, 1)
+    agent, regrade = harbor_commands(loaded, make_manifest(), "rebench", STAMP, 1)
 
     # suss runs each command with its own harbor in place of the first token.
     assert [str(harbor), *agent.argv[1:]] == expected_agent
     assert [str(harbor), *regrade.argv[1:]] == expected_regrade
-    name, _, value = pythonpath.partition("=")
-    assert regrade.env == {name: value}
 
 
 def test_the_stamp_is_utc_in_basic_iso_form():
@@ -505,13 +501,50 @@ def test_an_option_harbor_does_not_know_is_refused(tmp_path):
         )
 
 
-def test_only_the_regrade_gets_pythonpath_and_it_is_absolute(tmp_path):
-    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1)
+def test_the_regrade_runs_suss_replay_agent(tmp_path):
+    _, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1)
 
-    assert agent.env == {}
-    assert regrade.env == {"PYTHONPATH": str(CHECKOUT / "v2" / "tooling")}
-    assert Path(regrade.env["PYTHONPATH"]).is_absolute()
     assert regrade.argv[0] == "harbor"
+    assert regrade.argv[regrade.argv.index("-a") + 1] == "suss.replay:ReplayAgent"
+
+
+# What Harbor does with -a, -m and --ak, in the process `harbor` starts in.
+LOAD_THE_AGENT = """
+import sys
+from harbor.agents.factory import AgentFactory
+from harbor.cli.utils import parse_kwargs
+from harbor.models.trial.config import AgentConfig
+
+name, model, *kwargs = sys.argv[1:]
+config = AgentConfig(name=name, model_name=model, kwargs=parse_kwargs(kwargs))
+agent = AgentFactory.create_agent_from_config(config, logs_dir="agent")
+print(type(agent).__module__, type(agent).__name__)
+"""
+
+
+def test_the_harbor_suss_runs_loads_the_regrades_agent_with_no_pythonpath(tmp_path):
+    _, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1)
+    Path(harbor_parses(regrade.argv)["source_job"]).mkdir(parents=True)
+    # The interpreter the harbor script starts, which is whatever its first line names.
+    python = harbor_executable().read_text().splitlines()[0].removeprefix("#!")
+    env = {name: value for name, value in os.environ.items() if name != "PYTHONPATH"}
+
+    loaded = subprocess.run(
+        [
+            python, "-c", LOAD_THE_AGENT,
+            regrade.argv[regrade.argv.index("-a") + 1],
+            regrade.argv[regrade.argv.index("-m") + 1],
+            *(token for flag, token in zip(regrade.argv, regrade.argv[1:]) if flag == "--ak"),
+        ],
+        # Away from this checkout, so that only an installed suss can be imported.
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert loaded.returncode == 0, loaded.stderr
+    assert loaded.stdout == "suss.replay ReplayAgent\n"
 
 
 @pytest.mark.parametrize(

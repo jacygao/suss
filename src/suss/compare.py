@@ -26,7 +26,6 @@ class Trial:
 
     # The agent job's name, `<stamp>-<i>`.
     job: str
-    # The task's directory name, as PatchReplayAgent matches it.
     task: str
     status: str
     # None when the trial has no suss.json.
@@ -108,10 +107,10 @@ def _directories(parent: Path) -> list[Path]:
 
 def _task(trial: Path) -> str | None:
     """
-    The trial's task, as the last part of `task_name` in its result.json, which
-    is how PatchReplayAgent finds a trial's patch.
+    The trial's task, as the last part of `task_name` in its result.json.
 
-    A trial Harbor stopped before writing result.json still names its task in
+    A trial and its regrade's trial run the same task, so both read the same
+    name here, and this is what pairs them. A trial Harbor stopped before writing result.json still names its task in
     config.json. None when neither does.
     """
     result = _json(trial / "result.json")

@@ -47,10 +47,6 @@ class Project:
     log: Path
     plan: Path
 
-    @property
-    def tooling(self) -> Path:
-        return self.checkout / "v2" / "tooling"
-
     def run(self, *argv: str, clock=None) -> int:
         return cli.main(
             ["run", *argv],
@@ -128,7 +124,6 @@ def project(tmp_path, monkeypatch) -> Project:
     for tasks in TASKS.values():
         for name, image in tasks:
             write_task(checkout, name, image)
-    (checkout / "v2" / "tooling").mkdir(parents=True)
 
     directory = tmp_path / "project"
     (directory / "adapter").mkdir(parents=True)
@@ -199,13 +194,13 @@ def test_each_lane_runs_k_agent_jobs_each_followed_by_its_regrade_in_lane_order(
     ]
     assert runs == [
         ("lanes/pro-go", "suss.agent:SussAgent", f"{STAMP}-1"),
-        ("lanes/pro-go", "patch_replay:PatchReplayAgent", f"{STAMP}-1-regrade"),
+        ("lanes/pro-go", "suss.replay:ReplayAgent", f"{STAMP}-1-regrade"),
         ("lanes/pro-go", "suss.agent:SussAgent", f"{STAMP}-2"),
-        ("lanes/pro-go", "patch_replay:PatchReplayAgent", f"{STAMP}-2-regrade"),
+        ("lanes/pro-go", "suss.replay:ReplayAgent", f"{STAMP}-2-regrade"),
         ("lanes/pro-python", "suss.agent:SussAgent", f"{STAMP}-1"),
-        ("lanes/pro-python", "patch_replay:PatchReplayAgent", f"{STAMP}-1-regrade"),
+        ("lanes/pro-python", "suss.replay:ReplayAgent", f"{STAMP}-1-regrade"),
         ("lanes/pro-python", "suss.agent:SussAgent", f"{STAMP}-2"),
-        ("lanes/pro-python", "patch_replay:PatchReplayAgent", f"{STAMP}-2-regrade"),
+        ("lanes/pro-python", "suss.replay:ReplayAgent", f"{STAMP}-2-regrade"),
     ]
 
 
@@ -231,8 +226,11 @@ def test_harbor_runs_in_the_directory_holding_suss_toml_not_the_current_one(proj
     assert {record["cwd"] for record in project.records()} == {str(project.directory.resolve())}
 
 
-def test_the_regrade_keeps_the_environment_and_adds_the_tooling_to_pythonpath(project, monkeypatch):
+@pytest.mark.parametrize("pythonpath", [None, "/somewhere/else"], ids=["unset", "set"])
+def test_both_jobs_run_in_suss_own_environment_unchanged(project, monkeypatch, pythonpath):
     monkeypatch.setenv("SUSS_TEST_KEY", "kept")
+    if pythonpath is not None:
+        monkeypatch.setenv("PYTHONPATH", pythonpath)
 
     project.run("peer-review", "pro-go")
 
@@ -241,18 +239,7 @@ def test_the_regrade_keeps_the_environment_and_adds_the_tooling_to_pythonpath(pr
         assert record["env"]["SUSS_TEST_KEY"] == "kept"
         assert record["env"]["PATH"] == os.environ["PATH"]
         assert record["env"]["HOME"] == os.environ["HOME"]
-    assert "PYTHONPATH" not in agent["env"]
-    assert regrade["env"]["PYTHONPATH"] == str(project.tooling)
-
-
-def test_the_regrade_puts_the_tooling_before_an_existing_pythonpath(project, monkeypatch):
-    monkeypatch.setenv("PYTHONPATH", "/somewhere/else")
-
-    project.run("peer-review", "pro-go")
-
-    agent, regrade = project.records("harbor")[:2]
-    assert agent["env"]["PYTHONPATH"] == "/somewhere/else"
-    assert regrade["env"]["PYTHONPATH"] == f"{project.tooling}{os.pathsep}/somewhere/else"
+        assert record["env"].get("PYTHONPATH") == pythonpath
 
 
 def test_arguments_after_the_separator_reach_every_agent_job_and_no_regrade(project):
@@ -984,7 +971,7 @@ def test_a_dry_run_prints_each_pair_in_run_order_and_runs_nothing(project, capfd
                 f"--jobs-dir {jobs} --job-name {STAMP}-{trial}"
             )
             expected.append(
-                f"PYTHONPATH={project.tooling} {common} -a patch_replay:PatchReplayAgent -m replay "
+                f"{common} -a suss.replay:ReplayAgent -m replay "
                 f"--ak source_job={root}/{jobs}/{STAMP}-{trial} --jobs-dir {jobs} "
                 f"--job-name {STAMP}-{trial}-regrade"
             )

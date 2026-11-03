@@ -14,7 +14,7 @@ import subprocess
 import sys
 import termios
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -32,8 +32,6 @@ from suss.lanes import LaneError
 @dataclass(frozen=True)
 class Command:
     argv: list[str]
-    # Variables to set on top of the environment suss runs in.
-    env: dict[str, str] = field(default_factory=dict)
 
 
 def stamp(started: datetime) -> str:
@@ -98,7 +96,7 @@ def harbor_commands(
     source_job = config.path.parent / jobs_dir / job_name
     regrade = [
         *common,
-        "-a", "patch_replay:PatchReplayAgent",
+        "-a", "suss.replay:ReplayAgent",
         "-m", "replay",
         "--ak", _kwarg("source_job", str(source_job)),
         "--jobs-dir", str(jobs_dir),
@@ -106,9 +104,7 @@ def harbor_commands(
     ]
     _refuse(harbor_args)
     agent += harbor_args
-    # Absolute, so that Harbor imports patch_replay whatever directory it is in.
-    tooling = config.swe_bench_pro / "v2" / "tooling"
-    return Command(agent), Command(regrade, {"PYTHONPATH": str(tooling)})
+    return Command(agent), Command(regrade)
 
 
 def _kwarg(key: str, value: str) -> str:
@@ -265,9 +261,9 @@ def harbor_executable() -> Path:
     """
     The `harbor` installed beside this Python, in suss's own environment.
 
-    Harbor imports suss.agent in its own process, so only a Harbor that can
-    import suss can run an agent job. One installed as a tool of its own
-    cannot, and it may be the one on PATH.
+    Harbor imports suss.agent and suss.replay in its own process, so only a
+    Harbor that can import suss can run an agent job or its regrade. One
+    installed as a tool of its own cannot, and it may be the one on PATH.
     """
     # Not resolved: the environment's python links to an interpreter outside
     # it, and the harbor beside that one is not suss's.
@@ -378,7 +374,7 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
         for lane in planned:
             for pair in lane.pairs:
                 for command in pair:
-                    print(_shell(command))
+                    print(shlex.join(command.argv))
         return 0
 
     platform_args = None
@@ -466,7 +462,7 @@ def _plan(
         except ValueError as error:
             raise _Stop(str(error)) from None
         pairs.append(
-            tuple(Command([str(harbor), *command.argv[1:]], command.env) for command in commands)
+            tuple(Command([str(harbor), *command.argv[1:]]) for command in commands)
         )
     needs = None
     trials = f"the first task in {lane}" if check else f"the tasks in {lane}"
@@ -479,28 +475,6 @@ def _plan(
         needs = (cpus, memory_mb)
         trials += "".join(f" under {option} {value}" for option, value in overrides.items())
     return _Lane(lane, images, needs, trials, pairs)
-
-
-def _environment(extra: dict[str, str]) -> dict[str, str]:
-    """
-    suss's own environment with `extra` set on top.
-
-    An existing PYTHONPATH is kept after the one in `extra`, so that both
-    stay importable and `extra`'s is searched first.
-    """
-    env = dict(os.environ)
-    for name, value in extra.items():
-        if name == "PYTHONPATH" and env.get(name):
-            value = f"{value}{os.pathsep}{env[name]}"
-        env[name] = value
-    return env
-
-
-def _shell(command: Command) -> str:
-    """The command as a shell line that runs it as suss would, its variables in front."""
-    env = _environment(command.env)
-    assignments = [f"{name}={shlex.quote(env[name])}" for name in command.env]
-    return " ".join([*assignments, shlex.join(command.argv)])
 
 
 def _platform_args(docker: str, root: Path) -> list[str]:
@@ -572,7 +546,6 @@ def _stream(command: Command, cwd: Path, terminal: bool | None = None) -> tuple[
         process = subprocess.Popen(
             command.argv,
             cwd=cwd,
-            env=_environment(command.env),
             stdout=writer,
             stderr=writer,
         )
