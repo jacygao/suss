@@ -23,7 +23,7 @@ from harbor.models.agent.context import AgentContext
 from suss import config as suss_config
 from suss import harness, lanes
 from suss.harness import SandboxPaths
-from suss.workspace import capture_patch, find_workspace, read_base
+from suss.workspace import capture_patch, find_workspace, read_base, read_start_tree
 
 RECORD_NAME = "suss.json"
 # The dataset every trial's task comes from, which names its grader.
@@ -38,6 +38,7 @@ class _Prepared:
 
     workspace: str
     base: str
+    start_tree: str
     install_exit_code: int | None
 
 
@@ -85,6 +86,7 @@ class SussAgent(BaseAgent):
     async def setup(self, environment: BaseEnvironment) -> None:
         workspace = await find_workspace(environment)
         base = await read_base(environment, workspace)
+        start_tree = await read_start_tree(environment, workspace)
         await _upload(environment, self._config.arm.harness, self.paths.adapter)
         await _upload_bytes(
             environment, json.dumps(self._config.arm.params).encode(), self.paths.params
@@ -92,7 +94,7 @@ class SussAgent(BaseAgent):
         install_exit_code = await harness.install(
             environment, self._manifest, workspace, self._config.env, self.paths
         )
-        self._prepared = _Prepared(workspace, base, install_exit_code)
+        self._prepared = _Prepared(workspace, base, start_tree, install_exit_code)
 
     async def run(
         self,
@@ -128,7 +130,9 @@ class SussAgent(BaseAgent):
                 self.paths,
             )
         except BaseException:
-            await capture_patch(environment, prepared.workspace, prepared.base, self.paths.logs)
+            await capture_patch(
+                environment, prepared.workspace, prepared.start_tree, self.paths.logs
+            )
             raise
 
         try:
@@ -144,7 +148,7 @@ class SussAgent(BaseAgent):
     ) -> None:
         """Capture the patch, then write suss.json beside it."""
         patch_bytes = await capture_patch(
-            environment, prepared.workspace, prepared.base, self.paths.logs
+            environment, prepared.workspace, prepared.start_tree, self.paths.logs
         )
         record = {
             "arm": self._config.arm.name,
