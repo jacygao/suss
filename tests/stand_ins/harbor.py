@@ -44,7 +44,7 @@ if plan.get("job_dir", True):
     if plan.get("sources", False):
         (job_dir / ".sources").mkdir()
     if plan.get("trial", True):
-        trial = job_dir / "instance_flipt-io__flipt-02e2163__AivQxJ7"
+        trial = job_dir / "ArcadeData__arcadedb-4281__AivQxJ7"
         trial.mkdir()
         (trial / "result.json").write_text("{}")
 sys.exit(plan.get("exit", 0))

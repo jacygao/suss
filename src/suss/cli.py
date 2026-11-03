@@ -248,8 +248,6 @@ class _Parser(argparse.ArgumentParser):
 @dataclass(frozen=True)
 class _Lane:
     name: str
-    # Empty when the sandboxes do not run on this machine's Docker.
-    images: list[str]
     # The most CPUs and MiB any one trial takes, or None off this machine's Docker.
     needs: tuple[int, int] | None
     # Which trials those are, as the capacity error names them.
@@ -369,7 +367,7 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
         concurrency = 1 if args.check else settings.concurrency
         for lane in planned:
             lanes.check_capacity(lane.trials, lane.needs, concurrency, capacity)
-    # A dry run builds no lane: a build removes the links a running job may be reading.
+    # A dry run builds no lane: a build empties the lane, which a running job may be reading.
     if dry_run:
         for lane in planned:
             for pair in lane.pairs:
@@ -377,16 +375,10 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
                     print(shlex.join(command.argv))
         return 0
 
-    platform_args = None
     failed_regrades = []
     for lane in planned:
-        lanes.build(settings.swe_bench_pro, lane.name, root / "lanes", args.check)
-        if lane.images and platform_args is None:
-            platform_args = _platform_args(docker, root)
-        for image in lane.images:
-            code = _call([docker, "pull", *platform_args, image], root)
-            if code != 0:
-                raise _Stop(f"docker pull of {image} exited {code}, so lane {lane.name} cannot run")
+        # Harbor builds each task's image when its trial starts, so suss pulls none.
+        lanes.build_rebench(settings.swe_rebench, root / "lanes", args.check)
         for agent, regrade in lane.pairs:
             code, output = _stream(agent, root)
             job = root / _option(agent.argv, "--jobs-dir") / _option(agent.argv, "--job-name")
@@ -443,18 +435,18 @@ def _plan(
     harbor: Path,
 ) -> _Lane:
     """
-    The images to pull for the lane, and its pairs of commands, each run as `harbor`.
+    The lane's pairs of commands, each run as `harbor`, and what its trials need.
 
     Raises LaneError, or _Stop for the arguments after `--`, for a lane the
     arm cannot run.
     """
+    lanes.check_lane(lane)
     # The whole lane even for a check, which tests that the arm can run it.
-    found = lanes.read_tasks(lanes.tasks(settings.swe_bench_pro, lane))
+    found = lanes.read_tasks(lanes.rebench_tasks(settings.swe_rebench))
     lanes.check_max_seconds(settings.arm, lane, found)
-    lanes.check_buildable(settings.path.parent / "lanes", lane, check)
+    lanes.check_buildable(settings.swe_rebench, settings.path.parent / "lanes", check)
     used = dict(list(found.items())[:1]) if check else found
     on_docker = settings.environment == "docker"
-    images = lanes.images(used) if on_docker else []
     pairs = []
     for trial in range(1, 2 if check else settings.k + 1):
         try:
@@ -474,19 +466,7 @@ def _plan(
         memory_mb = max(memory_mb, overrides.get("--override-memory-mb", 0))
         needs = (cpus, memory_mb)
         trials += "".join(f" under {option} {value}" for option, value in overrides.items())
-    return _Lane(lane, images, needs, trials, pairs)
-
-
-def _platform_args(docker: str, root: Path) -> list[str]:
-    """
-    The `docker pull` options that get an amd64 image on this Docker engine.
-
-    The V2 images are amd64 only. The engine's architecture is what counts,
-    not this machine's, since the engine may run elsewhere.
-    """
-    if _docker_info(docker, root, "{{.Architecture}}") in ("aarch64", "arm64"):
-        return ["--platform", "linux/amd64"]
-    return []
+    return _Lane(lane, needs, trials, pairs)
 
 
 def _docker_capacity(docker: str, root: Path) -> tuple[int, int]:
@@ -516,13 +496,6 @@ def _docker_info(docker: str, root: Path, format: str) -> str:
     if result.returncode != 0:
         raise _Stop(f"docker info exited {result.returncode}: {result.stderr.strip()}")
     return result.stdout.strip()
-
-
-def _call(argv: list[str], cwd: Path) -> int:
-    try:
-        return subprocess.run(argv, cwd=cwd).returncode
-    except FileNotFoundError:
-        raise _Stop(f"{argv[0]}: no such program") from None
 
 
 def _stream(command: Command, cwd: Path, terminal: bool | None = None) -> tuple[int, str]:
