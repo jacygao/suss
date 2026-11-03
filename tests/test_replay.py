@@ -473,6 +473,39 @@ def test_a_test_file_the_patch_added_and_ignored_is_removed(
     assert record["tests_reset"] == {"restored": [], "removed": [name]}
 
 
+def test_an_ignored_test_file_the_image_had_stays_when_the_patch_drops_its_ignore_rule(
+    tmp_path, local_environment, workspace, found
+):
+    commit(workspace, {".gitignore": b"/tests/generated_test.py\n"})
+    job = tmp_path / "agent-job"
+    trial(job, "t1", TASK, patch_of(workspace, write({".gitignore": b""})))
+    write({"tests/generated_test.py": b"built by the image\n"})(workspace)
+
+    record = replay(replay_agent(tmp_path, str(job)), local_environment)
+
+    assert (workspace / "tests/generated_test.py").read_bytes() == b"built by the image\n"
+    assert record["tests_reset"] == {"restored": [], "removed": []}
+
+
+def test_an_ignored_test_file_the_image_had_stays_when_the_patch_tries_to_add_it(
+    tmp_path, local_environment, workspace, found
+):
+    commit(workspace, {".gitignore": b"/tests/generated_test.py\n"})
+
+    def add_ignored(repo: Path) -> None:
+        write({"tests/generated_test.py": b"the harness's\n"})(repo)
+        git(repo, "add", "-f", "tests/generated_test.py")
+
+    job = tmp_path / "agent-job"
+    trial(job, "t1", TASK, patch_of(workspace, add_ignored))
+    write({"tests/generated_test.py": b"built by the image\n"})(workspace)
+
+    record = replay(replay_agent(tmp_path, str(job)), local_environment)
+
+    assert (workspace / "tests/generated_test.py").exists()
+    assert record["tests_reset"] == {"restored": [], "removed": []}
+
+
 @pytest.mark.parametrize("name", ["tests/fixtures/blob.bin", "tests/fixtures/odd ü.bin"])
 def test_a_binary_test_file_the_patch_added_and_ignored_is_removed(
     tmp_path, local_environment, workspace, found, name

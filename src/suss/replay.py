@@ -98,11 +98,13 @@ class ReplayAgent(BaseAgent):
         record: dict[str, Any] = {"task": task, "patch": None}
         if patch.is_file() and patch.stat().st_size > 0:
             workspace = await find_workspace(environment)
-            # What the image itself changed is not the patch's, so it stays.
+            added = [path for path in _created(patch.read_bytes()) if is_test_file(path)]
+            # What the image itself changed or holds is not the patch's, so it stays.
             before = await _changed_from_base(environment, workspace)
+            held = await _present(environment, workspace, added)
             applied = await self._apply(environment, patch, workspace)
-            created = _created(patch.read_bytes())
-            tests_reset = await _reset_tests(environment, workspace, before, created)
+            added = [path for path in added if path not in held]
+            tests_reset = await _reset_tests(environment, workspace, before, added)
             record = {"task": task, "patch": str(patch), **applied, "tests_reset": tests_reset}
         (self.logs_dir / RECORD_NAME).write_text(json.dumps(record, indent=2) + "\n")
 
@@ -185,27 +187,24 @@ async def _changed_from_base(environment: BaseEnvironment, workspace: str) -> di
 
 
 async def _reset_tests(
-    environment: BaseEnvironment, workspace: str, before: dict[str, bool], created: list[str]
+    environment: BaseEnvironment, workspace: str, before: dict[str, bool], added: list[str]
 ) -> dict[str, list[str]]:
     """
     Restore from HEAD each test file the patch changed or deleted, remove each
     one it added, and return the paths of both.
 
-    `created` is every path the patch's headers create. A path that differed
-    from HEAD before the patch is left as it is. Raises ReplayError naming
-    git's output when git cannot read the workspace or put a file back.
+    `added` is each test file the patch's headers create that the workspace
+    lacked before the patch. A path in HEAD that differed from it before the
+    patch is left as it is. Raises ReplayError naming git's output when git
+    cannot read the workspace or put a file back.
     """
     after = await _changed_from_base(environment, workspace)
-    tests = {path: in_base for path, in_base in after.items()
-             if path not in before and is_test_file(path)}
-    # Git lists no ignored file, and a patch can add a test file along with a
-    # rule that ignores it.
-    unlisted = [path for path in created
-                if path not in before and path not in tests and is_test_file(path)]
-    for path in await _present_and_not_in_base(environment, workspace, unlisted):
-        tests[path] = False
-    restored = sorted(path for path, in_base in tests.items() if in_base)
-    removed = sorted(path for path, in_base in tests.items() if not in_base)
+    restored = sorted(path for path, in_base in after.items()
+                      if in_base and path not in before and is_test_file(path))
+    # From the headers and not from git, which lists no ignored file: a patch
+    # can add a test file and a rule ignoring it, or stop ignoring one the
+    # image holds.
+    removed = sorted(set(await _present(environment, workspace, added, outside_base=True)))
     # Literal, so a test file named with `*` or `[` names only itself.
     git = "git --literal-pathspecs"
     steps = []
@@ -230,17 +229,22 @@ async def _reset_tests(
     return {"restored": restored, "removed": removed}
 
 
-async def _present_and_not_in_base(
-    environment: BaseEnvironment, workspace: str, paths: list[str]
+async def _present(
+    environment: BaseEnvironment, workspace: str, paths: list[str], *, outside_base: bool = False
 ) -> list[str]:
-    """Those of `paths` that are in the workspace and not in HEAD."""
+    """
+    Those of `paths` that are in the workspace, and with `outside_base`, not
+    in HEAD as well.
+
+    Raises ReplayError when the shell cannot check them.
+    """
     if not paths:
         return []
+    in_base = ' && ! git cat-file -e "HEAD:$p" 2>/dev/null' if outside_base else ""
     # Each path that qualifies comes back as its index, since a name can hold a newline.
     command = (
         f"i=0; for p in {' '.join(shlex.quote(path) for path in paths)}; do"
-        ' if { [ -e "$p" ] || [ -L "$p" ]; } && ! git cat-file -e "HEAD:$p" 2>/dev/null;'
-        ' then echo "$i"; fi; i=$((i+1)); done'
+        f' if {{ [ -e "$p" ] || [ -L "$p" ]; }}{in_base}; then echo "$i"; fi; i=$((i+1)); done'
     )
     result = await environment.exec(command, cwd=workspace, timeout_sec=APPLY_SECONDS)
     output = (result.stdout or "") + (result.stderr or "")

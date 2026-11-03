@@ -112,12 +112,14 @@ git apply --verbose model.patch || git apply --3way model.patch || patch --fuzz=
 A harness cannot change its result by changing the sandbox it worked in, because
 the grading happens in another.
 
-After applying, `ReplayAgent` takes each test file that differs from the base
-and did not before the patch. It restores one the base has with
-`git checkout HEAD`, and removes one the base lacks. So the verifier grades
-every test file as it was at the base: an edit or a deletion is undone, a
-rename brings back the old name and removes the new one, and an added test file
-is gone. A file the image had already changed stays as the image had it.
+After applying, `ReplayAgent` restores with `git checkout HEAD` each test file
+of the base that differs from it and did not before the patch. It removes each
+test file the patch creates, by a new file, a rename or a copy, that the base
+lacks and the workspace did not hold before the patch, whether git ignores it
+or not. So the verifier grades every test file as it was at the base: an edit
+or a deletion is undone, a rename brings back the old name and removes the new
+one, and an added test file is gone. A file the image had already changed or
+added stays as the image had it.
 
 A path is a test file when one of its words is `test`, `tests`, `testdata` or
 `mdtest`, or its file name ends in `.spec.` followed by `js`, `jsx`, `ts`, `tsx`,
