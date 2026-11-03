@@ -1,3 +1,5 @@
+import hashlib
+import os
 import re
 import shutil
 import tomllib
@@ -516,3 +518,223 @@ def test_check_buildable_passes_a_lane_a_build_would_replace(tmp_path: Path):
     lanes.check_buildable(source, tmp_path / "lanes")
 
     assert (tmp_path / "lanes" / "rebench" / "stray.txt").exists()
+
+
+def reference_digest(entries: dict[str, tuple[bytes, bytes]]) -> str:
+    """
+    The digest of `entries`, each a kind and its content by path from the
+    download, built from the encoding `lanes.digest` documents.
+    """
+    digest = hashlib.sha256(lanes.DIGEST_PREFIX)
+    for path in sorted(entries, key=lambda path: path.encode()):
+        kind, content = entries[path]
+        name = path.encode()
+        digest.update(kind + len(name).to_bytes(8, "big") + name)
+        digest.update(len(content).to_bytes(8, "big") + content)
+    return digest.hexdigest()
+
+
+def test_the_digest_is_of_each_file_by_path_and_content_in_code_point_order(tmp_path: Path):
+    source = tmp_path / "download"
+    # Upper case, an underscore, a hyphen that sorts before the separator, and
+    # a non-ASCII name, which a case-insensitive or Unicode-normalising
+    # filesystem lists in another order.
+    files = {
+        "b__task/task.toml": b"[agent]\n",
+        "b__task/Zeta": b"Z",
+        "b__task/alpha": b"a",
+        "b__task/_under": b"_",
+        "b__task/café": b"\xc3\xa9",
+        "b__task/x-y/1": b"hyphen",
+        "b__task/x/1": b"slash",
+        "A__task/task.toml": b"[agent]\n",
+    }
+    for path, content in files.items():
+        (source / path).parent.mkdir(parents=True, exist_ok=True)
+        (source / path).write_bytes(content)
+
+    expected = reference_digest({path: (b"f", content) for path, content in files.items()})
+
+    assert lanes.digest(source) == expected
+
+
+class _Listing(list):
+    """A listing that is also the context manager os.scandir returns."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_the_digest_does_not_depend_on_the_order_a_directory_lists_in(
+    tmp_path: Path, monkeypatch
+):
+    source = make_rebench(tmp_path / "download", ["owner__repo-1", "owner__repo-2"])
+    before = lanes.digest(source)
+    listed = os.scandir
+
+    def reversed_scandir(path):
+        with listed(path) as entries:
+            return _Listing(reversed(list(entries)))
+
+    monkeypatch.setattr(lanes.os, "scandir", reversed_scandir)
+
+    assert lanes.digest(source) == before
+
+
+def test_two_copies_in_different_directories_with_different_times_have_one_digest(
+    tmp_path: Path,
+):
+    one = make_rebench(tmp_path / "one" / "swe-rebench-07-2026", ["owner__repo-1", "owner__repo-2"])
+    other = tmp_path / "elsewhere" / "deeper" / "copy"
+    shutil.copytree(one, other)
+    for path in other.rglob("*"):
+        os.utime(path, (1_000_000, 1_000_000))
+
+    assert lanes.digest(one) == lanes.digest(other)
+
+
+def test_a_download_named_by_a_relative_path_or_through_a_link_has_the_same_digest(
+    tmp_path: Path, monkeypatch
+):
+    source = make_rebench(tmp_path / "download", ["owner__repo-1"])
+    (tmp_path / "via").symlink_to(source)
+    monkeypatch.chdir(tmp_path)
+
+    assert lanes.digest(Path("download")) == lanes.digest(tmp_path / "via") == lanes.digest(source)
+
+
+@pytest.mark.parametrize(
+    "path", ["task.toml", "instruction.md", "tests/config.json", "environment/Dockerfile"]
+)
+def test_one_changed_byte_of_one_file_changes_the_digest(tmp_path: Path, path: str):
+    source = make_rebench(tmp_path / "download", ["owner__repo-1", "owner__repo-2"])
+    before = lanes.digest(source)
+    changed = source / "owner__repo-2" / path
+    content = bytearray(changed.read_bytes())
+    content[-1] ^= 1
+    changed.write_bytes(bytes(content))
+
+    assert lanes.digest(source) != before
+
+
+def test_a_renamed_file_changes_the_digest(tmp_path: Path):
+    source = make_rebench(tmp_path / "download", ["owner__repo-1"])
+    before = lanes.digest(source)
+    tests = source / "owner__repo-1" / "tests"
+    (tests / "test.sh").rename(tests / "test2.sh")
+
+    assert lanes.digest(source) != before
+
+
+def test_trees_that_plain_concatenation_confuses_have_different_digests(tmp_path: Path):
+    # Each path run together with its content is "t/abc" in both.
+    one = make_rebench(tmp_path / "one", ["t"])
+    other = make_rebench(tmp_path / "other", ["t"])
+    (one / "t" / "ab").write_bytes(b"c")
+    (other / "t" / "a").write_bytes(b"bc")
+
+    assert lanes.digest(one) != lanes.digest(other)
+
+
+def test_files_that_are_not_part_of_any_task_leave_the_digest_alone(tmp_path: Path):
+    source = make_rebench(tmp_path / "download", ["owner__repo-1"])
+    before = lanes.digest(source)
+    (source / "README.md").write_text("# SWE-rebench-07-2026\n")
+    (source / "notes").mkdir()
+    (source / "notes" / "todo.md").write_text("not a task\n")
+
+    assert lanes.digest(source) == before
+
+
+def test_file_modes_and_empty_directories_leave_the_digest_alone(tmp_path: Path):
+    source = make_rebench(tmp_path / "download", ["owner__repo-1"])
+    before = lanes.digest(source)
+    (source / "owner__repo-1" / "tests" / "test.sh").chmod(0o755)
+    (source / "owner__repo-1" / "instruction.md").chmod(0o600)
+    (source / "owner__repo-1" / "empty" / "nested").mkdir(parents=True)
+
+    assert lanes.digest(source) == before
+
+
+def test_a_link_counts_as_its_target_and_is_never_followed(tmp_path: Path):
+    source = make_rebench(tmp_path / "download", ["owner__repo-1"])
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside\n")
+    link = source / "owner__repo-1" / "tests" / "linked"
+    link.symlink_to(outside)
+    with_link = lanes.digest(source)
+
+    outside.write_text("changed outside\n")
+    assert lanes.digest(source) == with_link, "the digest followed a link out of the task"
+
+    outside.unlink()
+    assert lanes.digest(source) == with_link, "a dangling link changed the digest"
+
+    link.unlink()
+    without_link = lanes.digest(source)
+    assert without_link != with_link, "the link was skipped"
+
+    link.write_bytes(os.fsencode(outside))
+    assert lanes.digest(source) not in (with_link, without_link), (
+        "a file holding a link's target reads as that link"
+    )
+
+
+def test_a_linked_directory_inside_a_task_is_not_walked(tmp_path: Path):
+    source = make_rebench(tmp_path / "download", ["owner__repo-1"])
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (source / "owner__repo-1" / "more").symlink_to(outside)
+    before = lanes.digest(source)
+
+    (outside / "new.txt").write_text("new\n")
+
+    assert lanes.digest(source) == before
+
+
+def test_a_task_entry_that_is_neither_file_directory_nor_link_is_an_error_naming_it(
+    tmp_path: Path,
+):
+    source = make_rebench(tmp_path / "download", ["owner__repo-1"])
+    fifo = source / "owner__repo-1" / "tests" / "pipe"
+    os.mkfifo(fifo)
+
+    with pytest.raises(LaneError) as error:
+        lanes.digest(source)
+
+    assert str(error.value) == f"{fifo}: not a file, a directory or a link, so it cannot be digested"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+def test_an_unreadable_file_is_an_error_naming_it(tmp_path: Path):
+    source = make_rebench(tmp_path / "download", ["owner__repo-1"])
+    unreadable = source / "owner__repo-1" / "tests" / "config.json"
+    unreadable.chmod(0)
+    try:
+        with pytest.raises(LaneError) as error:
+            lanes.digest(source)
+    finally:
+        unreadable.chmod(0o644)
+
+    assert str(error.value) == f"{unreadable}: cannot be read: Permission denied"
+
+
+def test_a_download_with_no_tasks_has_no_digest(tmp_path: Path):
+    (tmp_path / "download").mkdir()
+
+    with pytest.raises(LaneError, match="holds no tasks"):
+        lanes.digest(tmp_path / "download")
+
+
+def test_building_the_lane_leaves_the_downloads_digest_as_it_was(tmp_path: Path):
+    source = make_rebench(tmp_path / "download", ["owner__repo-1", "owner__repo-2"])
+    before = lanes.digest(source)
+
+    lane = lanes.build_rebench(source, tmp_path / "lanes")
+    lanes.build_rebench(source, tmp_path / "lanes")
+
+    assert lanes.digest(source) == before
+    assert lanes.digest(lane) != before, "the lane's task.toml files differ from the download's"

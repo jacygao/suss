@@ -2,8 +2,8 @@
 Run whole trials through SussAgent, in the stand-in environment, with the fake
 adapter in `tests/fake_adapter/` as the harness.
 
-The host holds suss.toml, its .env and a copy of the fake adapter. The
-directory swe_rebench names does not exist, since nothing in a trial reads it. The sandbox is a directory
+The host holds suss.toml, its .env, a copy of the fake adapter, and a
+download of one task for the grader's digest. The sandbox is a directory
 beside it, with its workspace, its /opt/suss and its logs directory as
 siblings, so nothing suss writes to /opt/suss can fall inside the workspace.
 """
@@ -24,6 +24,7 @@ from harbor.cli.utils import parse_kwargs
 from harbor.environments.base import ExecResult
 from harbor.models.agent.context import AgentContext
 
+from suss import lanes
 from suss.agent import SussAgent
 from suss.harness import SandboxPaths
 from suss.workspace import WorkspaceError
@@ -76,6 +77,7 @@ class Trial:
     base: str
     paths: SandboxPaths
     host_logs: Path
+    download: Path
 
     @property
     def logs(self) -> Path:
@@ -132,6 +134,9 @@ def trial(tmp_path, local_environment) -> Trial:
         "max_seconds = 1\n"
     )
     (host / ".env").write_text("SUSS_FAKE_KEY=from the env file\n")
+    download = host / "tasks" / "swe-rebench-07-2026"
+    (download / "owner__repo-1").mkdir(parents=True)
+    (download / "owner__repo-1" / "task.toml").write_text('[environment]\nnetwork_mode = "public"\n')
 
     sandbox = tmp_path / "the sandbox"
     workspace = sandbox / "gleam"
@@ -153,6 +158,7 @@ def trial(tmp_path, local_environment) -> Trial:
         base=base,
         paths=paths,
         host_logs=tmp_path / "harbor trial" / "agent",
+        download=download,
     )
 
 
@@ -197,13 +203,45 @@ def test_the_record_has_exactly_the_specs_fields_with_their_values(
     assert record["arm"] == "fake"
     assert record["harness"] == {"name": "fake", "version": "0.0.1"}
     assert record["params"] == PARAMS
-    assert record["grader"] == {"dataset": "swe-rebench-07-2026"}
+    assert record["grader"] == {
+        "dataset": "swe-rebench-07-2026",
+        "digest": lanes.digest(trial.download),
+    }
     assert record["base"] == trial.base
     assert record["status"] == "ok"
     assert record["exit_codes"] == {"install": 0, "run": 0}
     assert isinstance(record["run_seconds"], (int, float))
     assert record["run_seconds"] >= 0
     assert isinstance(record["patch_bytes"], int)
+
+
+def test_the_graders_digest_is_the_downloads_and_not_the_lanes(local_environment, trial):
+    lane = lanes.build_rebench(trial.download, trial.host / "lanes")
+    first = trial.run(local_environment)["grader"]["digest"]
+    lanes.build_rebench(trial.download, trial.host / "lanes")
+
+    second = trial.run(local_environment)["grader"]["digest"]
+
+    assert first == second == lanes.digest(trial.download)
+    assert first != lanes.digest(lane)
+
+
+def test_a_change_to_the_download_changes_the_next_trials_digest(local_environment, trial):
+    before = trial.run(local_environment)["grader"]["digest"]
+    (trial.download / "owner__repo-1" / "instruction.md").write_text("Fix it.\n")
+
+    after = trial.run(local_environment)["grader"]["digest"]
+
+    assert after != before
+
+
+def test_a_download_with_no_tasks_fails_before_a_sandbox_starts(trial):
+    shutil.rmtree(trial.download)
+
+    with pytest.raises(lanes.LaneError) as raised:
+        trial.agent()
+
+    assert str(raised.value) == f"{trial.download.resolve()}: no such directory"
 
 
 def test_a_failed_install_skips_run_and_still_writes_an_empty_patch(

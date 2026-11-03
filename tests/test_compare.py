@@ -13,7 +13,8 @@ from suss.compare import Difference, Trial, read_trials, resolved_difference
 
 LANE = "pro-go"
 ARM = "claude-code"
-GRADER = {"dataset": "swe-bench-pro-v2", "commit": "66f92766"}
+DIGEST = "9c2f04b1" + "0" * 56
+GRADER = {"dataset": "swe-rebench-07-2026", "digest": DIGEST}
 FLIPT = "instance_flipt-io__flipt-02e21636c58e86c51119b63e0fb5ca7b813b07b1"
 # Harbor truncates a trial directory's name, so this task's trials begin as
 # FLIPT's do.
@@ -747,7 +748,7 @@ def add_trial(root: Path, arm: str, job: str, task: str, grader) -> None:
 
 
 # GRADER, as the error names it.
-SHORT = "swe-bench-pro-v2 at 66f92766"
+SHORT = "swe-rebench-07-2026 (9c2f04b1)"
 
 
 def graders_differ(one: str, one_in: str, other: str, other_in: str) -> str:
@@ -761,10 +762,10 @@ def graders_differ(one: str, one_in: str, other: str, other_in: str) -> str:
 @pytest.mark.parametrize(
     "other, named",
     [
-        ({**GRADER, "dataset": "swe-bench-pro-v3"}, "swe-bench-pro-v3 at 66f92766"),
-        ({**GRADER, "commit": "4e7a1c90d2b3f5a6"}, "swe-bench-pro-v2 at 4e7a1c90"),
+        ({**GRADER, "dataset": "swe-rebench-08-2026"}, "swe-rebench-08-2026 (9c2f04b1)"),
+        ({**GRADER, "digest": "4e7a1c90" + "f" * 56}, "swe-rebench-07-2026 (4e7a1c90)"),
     ],
-    ids=["dataset", "commit"],
+    ids=["dataset", "digest"],
 )
 def test_arms_whose_graders_differ_are_an_error_naming_both(results, capsys, other, named):
     add_trial(results, "beta", "S-9", "t1", other)
@@ -779,32 +780,33 @@ def test_arms_whose_graders_differ_are_an_error_naming_both(results, capsys, oth
 
 
 def test_graders_that_differ_within_one_arm_are_an_error(results, capsys):
-    add_trial(results, "base", "S-9", "t1", {**GRADER, "commit": "4e7a1c90"})
+    add_trial(results, "base", "S-9", "t1", {**GRADER, "digest": "4e7a1c90" + "f" * 56})
 
     code, out, err = run_compare(results, capsys, LANE, "base", "beta")
 
     assert code != 0
     assert (out, err) == (
         "",
-        graders_differ(SHORT, "base/S-1", "swe-bench-pro-v2 at 4e7a1c90", "base/S-9"),
+        graders_differ(SHORT, "base/S-1", "swe-rebench-07-2026 (4e7a1c90)", "base/S-9"),
     )
 
 
 def test_a_grader_that_differs_on_a_task_not_every_arm_has_is_still_an_error(results, capsys):
     # t5 is alpha's alone, so it counts in neither table, and is still read.
-    add_trial(results, "alpha", "S-9", "t5", {**GRADER, "dataset": "swe-bench-pro-v3"})
+    add_trial(results, "alpha", "S-9", "t5", {**GRADER, "dataset": "swe-rebench-08-2026"})
 
     code, out, err = run_compare(results, capsys, LANE, "base", "alpha")
 
     assert code != 0
     assert (out, err) == (
         "",
-        graders_differ(SHORT, "base/S-1", "swe-bench-pro-v3 at 66f92766", "alpha/S-9"),
+        graders_differ(SHORT, "base/S-1", "swe-rebench-08-2026 (9c2f04b1)", "alpha/S-9"),
     )
 
 
-def test_graders_whose_commits_share_a_short_form_print_in_full(results, capsys):
-    add_trial(results, "beta", "S-9", "t1", {**GRADER, "commit": "66f92766ffff"})
+def test_graders_whose_digests_share_a_short_form_print_in_full(results, capsys):
+    other = "9c2f04b1" + "f" * 56
+    add_trial(results, "beta", "S-9", "t1", {**GRADER, "digest": other})
 
     code, out, err = run_compare(results, capsys, LANE, "base", "beta")
 
@@ -812,9 +814,27 @@ def test_graders_whose_commits_share_a_short_form_print_in_full(results, capsys)
     assert (out, err) == (
         "",
         graders_differ(
-            '{"commit": "66f92766", "dataset": "swe-bench-pro-v2"}',
+            f'{{"dataset": "swe-rebench-07-2026", "digest": "{DIGEST}"}}',
             "base/S-1",
-            '{"commit": "66f92766ffff", "dataset": "swe-bench-pro-v2"}',
+            f'{{"dataset": "swe-rebench-07-2026", "digest": "{other}"}}',
+            "beta/S-9",
+        ),
+    )
+
+
+def test_a_grader_of_another_shape_prints_in_full(results, capsys):
+    old = {"dataset": "swe-bench-pro-v2", "commit": "66f92766"}
+    add_trial(results, "beta", "S-9", "t1", old)
+
+    code, out, err = run_compare(results, capsys, LANE, "base", "beta")
+
+    assert code != 0
+    assert (out, err) == (
+        "",
+        graders_differ(
+            f'{{"dataset": "swe-rebench-07-2026", "digest": "{DIGEST}"}}',
+            "base/S-1",
+            '{"commit": "66f92766", "dataset": "swe-bench-pro-v2"}',
             "beta/S-9",
         ),
     )
@@ -836,7 +856,7 @@ def test_a_trial_with_no_suss_json_takes_no_part_in_the_grader_check(tmp_path, c
 
 
 def test_graders_whose_keys_come_in_another_order_are_the_same_grader(results, capsys):
-    add_trial(results, "beta", "S-9", "t1", {"commit": GRADER["commit"], "dataset": GRADER["dataset"]})
+    add_trial(results, "beta", "S-9", "t1", {"digest": GRADER["digest"], "dataset": GRADER["dataset"]})
 
     code, out, err = run_compare(results, capsys, LANE, "base", "beta")
 

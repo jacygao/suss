@@ -21,7 +21,7 @@ from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
 from suss import config as suss_config
-from suss import harness
+from suss import harness, lanes
 from suss.harness import SandboxPaths
 from suss.workspace import capture_patch, find_workspace, read_base
 
@@ -56,8 +56,9 @@ class SussAgent(BaseAgent):
 
         `paths` is where the sandbox keeps things. Harbor never passes it, so
         production gets the default. Raises TypeError when Harbor parsed `arm`
-        or `config` as something other than a string, and ConfigError or
-        ManifestError when the settings cannot be read.
+        or `config` as something other than a string, ConfigError or
+        ManifestError when the settings cannot be read, and LaneError when the
+        download `swe_rebench` names cannot be digested.
         """
         for key, value in (("arm", arm), ("config", config)):
             if not isinstance(value, str):
@@ -71,6 +72,7 @@ class SussAgent(BaseAgent):
         self.paths = paths
         self._config = suss_config.load(Path(config), arm)
         self._manifest = harness.load_manifest(self._config.arm.harness)
+        self._grader = {"dataset": DATASET, "digest": lanes.digest(self._config.swe_rebench)}
         self._prepared: _Prepared | None = None
 
     @staticmethod
@@ -148,7 +150,7 @@ class SussAgent(BaseAgent):
             "arm": self._config.arm.name,
             "harness": {"name": self._manifest.name, "version": self._manifest.version},
             "params": self._config.arm.params,
-            "grader": {"dataset": DATASET},
+            "grader": self._grader,
             "base": prepared.base,
             "status": result.status,
             "exit_codes": result.exit_codes,

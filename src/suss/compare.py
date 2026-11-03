@@ -293,15 +293,15 @@ def _one_grader(lane: str, trials: Mapping[str, Sequence[Trial]]) -> None:
 
 def _graders(one, other) -> tuple[str, str]:
     """
-    The two graders as a person reads them, `<dataset> at <short commit>`.
+    The two graders as a person reads them, `<dataset> (<first 8 of digest>)`.
 
     Graders that would read the same that way, or that are not a dataset and a
-    commit, print in full.
+    digest, print in full.
     """
     def short(grader) -> str | None:
-        if isinstance(grader, dict) and grader.keys() == {"dataset", "commit"}:
+        if isinstance(grader, dict) and grader.keys() == {"dataset", "digest"}:
             if all(isinstance(value, str) for value in grader.values()):
-                return f"{grader['dataset']} at {grader['commit'][:8]}"
+                return f"{grader['dataset']} ({grader['digest'][:8]})"
         return None
 
     named = short(one), short(other)
