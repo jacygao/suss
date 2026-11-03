@@ -1,5 +1,6 @@
 import json
 import random
+import shutil
 import time
 from pathlib import Path
 
@@ -236,7 +237,17 @@ def test_a_trial_with_no_regrade_trial_is_unresolved(tmp_path, arm):
         ("S-1", NAVIDROME): True,
         ("S-2", FLIPT): False,
     }
-    assert trials["S-1", FLIPT].regrade_applied is False
+    assert trials["S-1", FLIPT].regrade_applied is None
+
+
+def test_a_regrade_trial_with_no_replay_json_says_nothing_of_its_patch(tmp_path, arm):
+    write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
+    regrade = write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK", UNRESOLVED)
+    (regrade / "agent" / "replay.json").unlink()
+
+    [trial] = read_trials(tmp_path, LANE, ARM)
+
+    assert (trial.resolved, trial.regrade_applied) == (False, None)
 
 
 @pytest.mark.parametrize("reward", [1, 1.0])
@@ -622,3 +633,71 @@ def test_arguments_after_the_separator_are_refused(results, capsys):
 
     assert code != 0
     assert (out, err) == ("", "error: suss compare takes nothing after --\n")
+
+
+def regrade_applies_nothing(root: Path, arm: str, task: str, i: int) -> Path:
+    """
+    Make write_arm's i-th regrade of the task one that found no patch, as
+    PatchReplayAgent leaves it: replay.json naming none, and reward 0.
+    """
+    job = root / "results" / LANE / arm / f"S-{i}{compare.REGRADE}"
+    regrade = trial_directory(job, task, f"regrd{i}")
+    result = json.loads((regrade / "result.json").read_text())
+    write_json(regrade / "result.json", dict(result, verifier_result=UNRESOLVED))
+    write_json(regrade / "agent" / "replay.json", {"task": task, "patch": None})
+    return regrade / "agent" / "replay.json"
+
+
+@pytest.mark.parametrize("task", ["t2", "t5"], ids=["shared", "alphas-own"])
+def test_a_regrade_that_applied_none_of_a_trials_patch_is_an_error_naming_both(
+    results, capsys, task
+):
+    # Every trial read counts, including one of a task the other arms lack.
+    regrade_applies_nothing(results, "alpha", task, 1)
+
+    code, out, err = run_compare(results, capsys, LANE, "base", "alpha")
+
+    assert code != 0
+    assert (out, err) == (
+        "",
+        f"error: the trial of {task} in results/{LANE}/alpha/S-1 made a 4182-byte patch, "
+        "but its regrade in S-1-regrade applied none\n",
+    )
+
+
+def test_a_trial_with_no_record_whose_regrade_applied_nothing_is_compared(results, capsys):
+    # alpha's first trial of t1 has no suss.json, so no patch_bytes.
+    regrade_applies_nothing(results, "alpha", "t1", 1)
+
+    code, out, err = run_compare(results, capsys, LANE, "alpha", "base")
+
+    assert (code, err) == (0, "")
+    assert "alpha      12       33%     17%        17%\n" in out
+
+
+def test_an_empty_patch_whose_regrade_applied_nothing_counts_as_unresolved(results, capsys):
+    trial = trial_directory(results / "results" / LANE / "beta" / "S-1", "t1", "agent1")
+    write_json(trial / "agent" / "suss.json", {"grader": GRADER, "status": "ok", "patch_bytes": 0})
+    regrade_applies_nothing(results, "beta", "t1", 1)
+
+    code, out, err = run_compare(results, capsys, LANE, "beta", "base")
+
+    # beta's resolved trial of t1 is now unresolved: 7 of 13 resolve, not 8.
+    assert (code, err) == (0, "")
+    assert "beta      13       54%      0%         0%\n" in out
+
+
+@pytest.mark.parametrize("how", ["no-replay-json", "no-patch-in-it", "no-regrade-trial"])
+def test_a_patch_whose_regrade_says_nothing_of_it_counts_as_unresolved(results, capsys, how):
+    replay = regrade_applies_nothing(results, "beta", "t1", 1)
+    if how == "no-replay-json":
+        replay.unlink()
+    elif how == "no-patch-in-it":
+        write_json(replay, {"task": "t1"})
+    else:
+        shutil.rmtree(replay.parent.parent)
+
+    code, out, err = run_compare(results, capsys, LANE, "beta", "base")
+
+    assert (code, err) == (0, "")
+    assert "beta      13       54%      0%         0%\n" in out
