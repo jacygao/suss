@@ -99,18 +99,21 @@ async def capture_patch(
     # A file in the starting tree that git now ignores is still staged while it
     # exists, as a tracked file would be. Otherwise a harness that only ignores
     # a file the image left untracked would give a patch deleting it.
+    # Only the starting files add -A left out can be such a file. Each is
+    # checked alone, because check-ignore exits 128 for a path beyond a symlink,
+    # which a directory the harness replaced with one leaves, and that path is
+    # a real deletion.
     await _run(
         env,
         "{"
         f" cd {shlex.quote(workspace)}"
         " && list=$(mktemp)"
-        f' && git ls-tree -r -z --name-only {shlex.quote(start)} > "$list"'
-        # check-ignore exits 1 when it finds no path ignored.
-        ' && { git check-ignore -z --no-index --stdin < "$list" > "$list.ignored"; [ $? -le 1 ]; }'
+        f' && git diff --cached -z --name-only --diff-filter=D {shlex.quote(start)} > "$list"'
         " && while IFS= read -r -d '' path; do"
-        ' if [ -L "$path" ] || [ -f "$path" ]; then printf "%s\\0" "$path"; fi;'
-        ' done < "$list.ignored" | git update-index -z --add --stdin; } 2>&1;'
-        ' status=$?; [ -n "$list" ] && rm -f "$list" "$list.ignored"; exit $status',
+        ' if { [ -L "$path" ] || [ -f "$path" ]; }'
+        ' && git check-ignore -q --no-index -- "$path" 2>/dev/null; then printf "%s\\0" "$path"; fi;'
+        ' done < "$list" | git update-index -z --add --stdin; } 2>&1;'
+        ' status=$?; [ -n "$list" ] && rm -f "$list"; exit $status',
     )
     # Git writes the file itself, because exec returns stdout as decoded text,
     # which corrupts any byte that is not valid UTF-8. The flags after --binary

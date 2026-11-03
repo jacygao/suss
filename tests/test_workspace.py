@@ -340,6 +340,24 @@ def test_a_file_the_image_left_untracked_and_the_harness_ignores_and_deletes_is_
     assert files_named(logs / "model.patch") == {".gitignore", "uv.lock"}
 
 
+def test_a_starting_directory_the_harness_replaces_with_a_symlink_is_captured(
+    local_environment, repo, logs
+):
+    (repo / "dir").mkdir()
+    (repo / "dir" / "file.txt").write_text("from the image\n")
+    (repo / "elsewhere").mkdir()
+    (repo / "elsewhere" / "file.txt").write_text("from the image\n")
+    start = run(read_start_tree(local_environment, str(repo)))
+    (repo / "dir" / "file.txt").unlink()
+    (repo / "dir").rmdir()
+    (repo / "dir").symlink_to("elsewhere")
+    run(capture_patch(local_environment, str(repo), start, str(logs)))
+
+    patch = (logs / "model.patch").read_text()
+    assert files_named(logs / "model.patch") == {"dir", "dir/file.txt"}
+    assert "new file mode 120000" in patch
+
+
 def test_an_image_with_no_index_and_no_harness_change_gives_an_empty_patch(
     local_environment, repo, logs
 ):
