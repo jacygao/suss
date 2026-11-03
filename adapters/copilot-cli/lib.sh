@@ -60,3 +60,23 @@ optional_number() {
     [ -n "$value" ] || fail "$2: \"$1\" must be a number of at least 0"
     printf '%s\n' "$value"
 }
+
+# Print the file name of Copilot CLI's release build for the filesystem rooted
+# at $1 and the `uname -m` $2, or fail naming a machine it has no build for.
+#
+# The musl build wherever musl's loader is, since the glibc build installs
+# there too and then cannot start.
+copilot_build() {
+    case $2 in
+        x86_64|amd64) arch=x64 ;;
+        aarch64|arm64) arch=arm64 ;;
+        *) fail "Copilot CLI has no Linux build for the machine $2" ;;
+    esac
+    for loader in "$1"/lib/ld-musl-*; do
+        if [ -e "$loader" ]; then
+            printf 'copilot-linuxmusl-%s.tar.gz\n' "$arch"
+            return
+        fi
+    done
+    printf 'copilot-linux-%s.tar.gz\n' "$arch"
+}
