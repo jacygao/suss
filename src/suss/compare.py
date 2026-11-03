@@ -19,6 +19,9 @@ from suss import config
 
 REGRADE = "-regrade"
 
+# The keys of parsed_counts in a rebench verifier's report.
+TEST_OUTCOMES = ("PASSED", "FAILED", "SKIPPED", "ERROR")
+
 
 @dataclass(frozen=True)
 class Trial:
@@ -38,6 +41,10 @@ class Trial:
     regrade_applied: bool | None
     # The type of the exception the regrade raised, when it wrote no replay.json.
     regrade_raised: str | None
+    # Whether the regrade's verifier/report.json counts a test as passed,
+    # failed, skipped or errored. When it counts none, a 0 cannot tell a wrong
+    # patch from grading that broke.
+    regrade_tested: bool
     # The agent trial's directory.
     path: Path
 
@@ -89,6 +96,7 @@ def _trial(job: str, task: str, trial: Path, regrade: Path | None) -> Trial:
         resolved=regrade is not None and _reward(regrade) == 1,
         regrade_applied=applied,
         regrade_raised=raised,
+        regrade_tested=regrade is not None and _tested(regrade),
         path=trial,
     )
 
@@ -140,6 +148,23 @@ def _reward(trial: Path) -> float | int | None:
     rewards = verifier.get("rewards") if isinstance(verifier, dict) else None
     reward = rewards.get("reward") if isinstance(rewards, dict) else None
     return reward if isinstance(reward, int | float) and not isinstance(reward, bool) else None
+
+
+def _tested(trial: Path) -> bool:
+    """
+    Whether `parsed_counts` in the trial's verifier/report.json counts a test.
+
+    A report that is missing, or whose parsed_counts is not counts, counts none.
+    """
+    report = _json(trial / "verifier" / "report.json")
+    found = report.get("parsed_counts") if isinstance(report, dict) else None
+    if not isinstance(found, dict):
+        return False
+    return any(
+        isinstance(count, int) and not isinstance(count, bool) and count > 0
+        for outcome, count in found.items()
+        if outcome in TEST_OUTCOMES
+    )
 
 
 def _exception(trial: Path) -> str | None:
@@ -243,7 +268,9 @@ def report(directory: Path, lane: str, arms: Sequence[str]) -> str:
 
     Both tables count only the tasks every arm has trials for. The second has
     a row for each arm whose baseline is among `arms`, in the order given, and
-    is left out when no arm has one.
+    is left out when no arm has one. After them come the trials of those tasks
+    whose regrade recorded no test result, by arm in the order given, then by
+    job and task.
 
     Raises ConfigError when suss.toml does not define every arm, and
     CompareError when an arm has no trials, a trial's regrade applied none of
@@ -266,7 +293,10 @@ def report(directory: Path, lane: str, arms: Sequence[str]) -> str:
         for arm in arms
         if baselines[arm] in arms
     ]
-    return render(shares, differences)
+    untested = [
+        (arm, trial.job, trial.task) for arm in arms for trial in kept[arm] if not trial.regrade_tested
+    ]
+    return render(shares, differences, untested)
 
 
 def _read(directory: Path, lane: str, arms: Sequence[str]) -> dict[str, list[Trial]]:
@@ -353,11 +383,14 @@ def _shares(trials: Sequence[Trial]) -> Shares:
 
 
 def render(
-    shares: Mapping[str, Shares], differences: Sequence[tuple[str, str, Difference]]
+    shares: Mapping[str, Shares],
+    differences: Sequence[tuple[str, str, Difference]],
+    untested: Sequence[tuple[str, str, str]] = (),
 ) -> str:
     """
     The first table, of each arm's shares, and the second, of each
-    (arm, baseline, difference), unless there are none.
+    (arm, baseline, difference), unless there are none. Then each
+    (arm, job, task) in `untested`, unless there are none.
     """
     header = ["arm", "trials", "resolved", "failed", "timed out"]
     rows = [
@@ -382,6 +415,12 @@ def render(
                 f"{label.ljust(label_width)}   {estimate.rjust(estimate_width)} "
                 f"[{_signed(difference.low)}, {_signed(difference.high)}]"
             )
+    if untested:
+        arm_width = max(len(arm) for arm, _, _ in untested)
+        job_width = max(len(job) for _, job, _ in untested)
+        lines += ["", "These trials' regrades recorded no test result, so their grading may have broken:"]
+        for arm, job, task in untested:
+            lines.append(f"  {arm.ljust(arm_width)}  {job.ljust(job_width)}  {task}")
     return "\n".join(lines) + "\n"
 
 
