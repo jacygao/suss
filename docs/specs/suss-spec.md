@@ -106,10 +106,9 @@ left in place, stays out of the patch.
 After each agent job, suss runs a second Harbor job over the same tasks, with
 suss's own `suss.replay:ReplayAgent` as the agent. For each trial, it starts a
 fresh sandbox from the task's image, applies the trial's `model.patch` in the
-workspace, found as the trial found it, puts every test file the patch changed
-back as it was in the sandbox's starting tree, and runs the verifier there. That verifier's reward
-is the trial's result. It applies the patch with the first of these that
-succeeds:
+workspace, found as the trial found it, puts every test file back as the image
+held it, and runs the verifier there. That verifier's reward is the trial's
+result. It applies the patch with the first of these that succeeds:
 
 ```bash
 git apply --verbose model.patch || git apply --3way model.patch || patch --fuzz=3 -p1 -i model.patch
@@ -118,14 +117,10 @@ git apply --verbose model.patch || git apply --3way model.patch || patch --fuzz=
 A harness cannot change its result by changing the sandbox it worked in, because
 the grading happens in another.
 
-`ReplayAgent` reads the starting tree before applying. After applying, it
-restores from that tree each test file of the tree that the workspace no longer
-matches. It removes each test file the patch creates, by a new file, a rename
-or a copy, that the tree lacks and the workspace did not hold before the patch,
-whether git ignores it or not. The index keeps `HEAD`'s entry for each path it
-resets. So the verifier grades every test file as the image held it: an edit
-or a deletion is undone, a rename brings back the old name and removes the new
-one, and an added test file is gone.
+`ReplayAgent` reads the sandbox's starting tree before applying the patch.
+After applying it, it restores from that tree each test file the patch edited,
+deleted or renamed, and removes each test file the patch added. So the verifier
+grades every test file as the image held it, whatever the harness did to it.
 
 A path is a test file when one of its words is `test`, `tests`, `testdata` or
 `mdtest`, or its file name ends in `.spec.` followed by `js`, `jsx`, `ts`, `tsx`,
