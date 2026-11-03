@@ -1,9 +1,13 @@
 """
-A lane's directory of links to its task directories in the SWE-bench Pro
-checkout, which Harbor reads as `-p lanes/<lane>`, and the checks made on a
-lane before any job.
+A lane's directory, which Harbor reads as `-p lanes/<lane>`, and the checks
+made on a lane before any job.
+
+A SWE-bench Pro lane holds links to its tasks in the checkout. The rebench lane
+holds copies of the downloaded tasks, since each task.toml must change.
 """
 
+import re
+import shutil
 import tomllib
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -24,6 +28,13 @@ LANES: dict[str, tuple[str, ...] | None] = {
     "pro-js": ("protonmail", "element-hq", "NodeBB", "tutao"),
     "pro-hard51": None,
 }
+
+REBENCH = "rebench"
+
+NO_NETWORK = 'network_mode = "no-network"'
+
+# The `[agent]` header as TOML allows it to be spelled, bare-keyed.
+AGENT_HEADER = re.compile(r"[ \t]*\[[ \t]*agent[ \t]*\][ \t]*(#.*)?\r?\n?\Z")
 
 
 def tasks(checkout: Path, lane: str) -> list[Path]:
@@ -236,6 +247,109 @@ def _read_task(path: Path) -> dict:
         raise LaneError(f"{path}: cannot be read: {error.strerror}") from None
     except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
         raise LaneError(f"{path}: not valid TOML: {error}") from None
+
+
+def rebench_tasks(swe_rebench: Path) -> list[Path]:
+    """
+    The task directories of the download, sorted by name: each directory in it
+    holding a task.toml.
+
+    Raises LaneError when the download is not a directory or holds no task.
+    """
+    source = Path(swe_rebench).resolve()
+    if not source.is_dir():
+        raise LaneError(f"{source}: no such directory")
+    found = [entry for entry in source.iterdir() if (entry / "task.toml").is_file()]
+    if not found:
+        raise LaneError(f"{source} holds no tasks: no directory in it has a task.toml")
+    return sorted(found, key=lambda task: task.name)
+
+
+def build_rebench(swe_rebench: Path, lanes: Path, check: bool = False) -> Path:
+    """
+    Make `lanes/rebench/` hold a copy of each task in the download, whose
+    task.toml adds `[agent] network_mode = "no-network"`.
+
+    With `check`, it makes `lanes/rebench-check/` instead, holding only the
+    first task by name. Every other file is copied as it is, mode included.
+    Whatever an earlier build left is removed. Raises LaneError as
+    `rebench_tasks` does, naming a task.toml that already sets the agent's
+    network mode or that the key cannot be added to, and when the lane's path
+    is a link or anything else but a directory. Every task.toml is read before
+    the lane is touched, so an error leaves an earlier build as it was.
+    """
+    found = rebench_tasks(swe_rebench)
+    if check:
+        found = found[:1]
+    directory = _directory(lanes, REBENCH, check)
+    for path in (Path(lanes), directory):
+        # A dangling link does not exist, and still blocks the mkdir.
+        if (path.exists() or path.is_symlink()) and not path.is_dir():
+            raise LaneError(f"{path}: not a directory, so no lane can be built there")
+    # A build empties the lane, and must not empty a directory the link names.
+    if directory.is_symlink():
+        raise LaneError(f"{directory}: a link, so the rebench lane is not built through it")
+    tomls = {task: _without_network(task / "task.toml") for task in found}
+    if directory.is_dir():
+        shutil.rmtree(directory)
+    directory.mkdir(parents=True)
+    for task, toml in tomls.items():
+        copy = directory / task.name
+        # The task.toml is written fresh rather than over its copy, which may be read-only.
+        shutil.copytree(
+            task,
+            copy,
+            symlinks=True,
+            ignore=lambda at, names: ["task.toml"] if at == str(task) else [],
+        )
+        (copy / "task.toml").write_bytes(toml)
+        shutil.copymode(task / "task.toml", copy / "task.toml")
+    return directory
+
+
+def _without_network(path: Path) -> bytes:
+    """
+    The task.toml at `path` with `network_mode = "no-network"` added to its
+    `[agent]` table, its text otherwise unchanged.
+
+    The line goes directly under the `[agent]` header, or under a new one at
+    the end where there is none. Raises LaneError naming the file when it
+    already sets the agent's network mode, or when the result does not parse
+    to the original plus that one key.
+    """
+    original = _read_task(path)
+    agent = original.get("agent", {})
+    if isinstance(agent, dict) and "network_mode" in agent:
+        raise LaneError(
+            f"{path}: sets [agent] network_mode = {agent['network_mode']!r}, which the "
+            "rebench lane must set to no-network itself"
+        )
+    lines = path.read_bytes().decode().splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    headers = [number for number, line in enumerate(lines) if AGENT_HEADER.match(line)]
+    if len(headers) == 1:
+        header = lines[headers[0]]
+        # The added line ends as the header does, \r\n or \n.
+        lines.insert(headers[0] + 1, NO_NETWORK + header[len(header.rstrip("\r\n")) :])
+    else:
+        lines.append(f"\n[agent]\n{NO_NETWORK}\n")
+    text = "".join(lines)
+    if not isinstance(agent, dict):
+        agent = {}
+    expected = {**original, "agent": {**agent, "network_mode": "no-network"}}
+    try:
+        added = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        added = None
+    # A header inside a multi-line string, or a table made some other way,
+    # puts the line where it changes something else, or breaks the file.
+    if added != expected:
+        raise LaneError(
+            f"{path}: [agent] network_mode cannot be added to it without changing "
+            "anything else, so it must be added by hand"
+        )
+    return text.encode()
 
 
 def _seconds(value: float) -> str:
