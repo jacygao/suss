@@ -108,7 +108,7 @@ async def capture_patch(
         "{"
         f" cd {shlex.quote(workspace)}"
         " && list=$(mktemp)"
-        f' && git diff --cached -z --name-only --diff-filter=D {shlex.quote(start)} > "$list"'
+        f' && git diff --cached -z --no-renames --name-only --diff-filter=D {shlex.quote(start)} > "$list"'
         " && while IFS= read -r -d '' path; do"
         ' if { [ -L "$path" ] || [ -f "$path" ]; }'
         ' && git check-ignore -q --no-index -- "$path" 2>/dev/null; then printf "%s\\0" "$path"; fi;'

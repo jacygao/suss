@@ -340,6 +340,19 @@ def test_a_file_the_image_left_untracked_and_the_harness_ignores_and_deletes_is_
     assert files_named(logs / "model.patch") == {".gitignore", "uv.lock"}
 
 
+def test_an_ignored_starting_file_stays_when_the_harness_adds_a_copy_of_it(
+    local_environment, repo, logs
+):
+    (repo / "uv.lock").write_text("pinned\n")
+    start = run(read_start_tree(local_environment, str(repo)))
+    (repo / ".gitignore").write_text("uv.lock\n")
+    (repo / "saved.lock").write_text("pinned\n")
+    run(capture_patch(local_environment, str(repo), start, str(logs)))
+
+    assert files_named(logs / "model.patch") == {".gitignore", "saved.lock"}
+    assert "a/uv.lock" not in (logs / "model.patch").read_text()
+
+
 def test_a_starting_directory_the_harness_replaces_with_a_symlink_is_captured(
     local_environment, repo, logs
 ):
