@@ -260,3 +260,40 @@ def test_max_cost_usd_is_refused_naming_the_param_that_replaces_it(
         "params, under the name its adapter takes, such as max_budget_usd for "
         "adapters/claude-code"
     )
+
+
+def test_baselines_reads_each_arms_baseline_and_none_where_it_names_none(spec_config: Path):
+    assert config.baselines(spec_config, ["peer-review", "claude-code"]) == {
+        "peer-review": "claude-code",
+        "claude-code": None,
+    }
+
+
+def test_baselines_needs_none_of_what_a_run_needs(tmp_path: Path):
+    # No top-level key, no harness, and a max_cost_usd that load refuses.
+    path = write_config(
+        tmp_path, 'max_cost_usd = 20\n[arms.a]\nbaseline = "b"\nmax_cost_usd = 5\n[arms.b]\n'
+    )
+
+    assert config.baselines(path, ["a", "b"]) == {"a": "b", "b": None}
+
+
+def test_baselines_refuses_an_arm_the_file_does_not_define_naming_both(tmp_path: Path):
+    path = write_config(tmp_path, '[arms.a]\nbaseline = "b"\n')
+
+    with pytest.raises(config.ConfigError) as error:
+        config.baselines(path, ["a", "b"])
+
+    assert str(error.value) == f"arm b is not defined in {path.resolve()}"
+
+
+def test_baselines_refuses_a_missing_file(tmp_path: Path):
+    with pytest.raises(config.ConfigError, match="suss.toml: no such file"):
+        config.baselines(tmp_path / "suss.toml", ["a"])
+
+
+def test_baselines_refuses_a_file_that_is_not_toml(tmp_path: Path):
+    path = write_config(tmp_path, "[arms.a\n")
+
+    with pytest.raises(config.ConfigError, match="not valid TOML"):
+        config.baselines(path, ["a"])
