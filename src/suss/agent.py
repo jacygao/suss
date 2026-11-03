@@ -3,14 +3,13 @@ SussAgent, the Harbor custom agent that runs one trial of one arm.
 
 Harbor constructs it on the host, then calls `setup` in the setup phase and
 `run` in the agent phase, in the same sandbox. Everything read from the host,
-suss.toml, the manifest and the grader's commit, is read in the constructor,
-so a bad config fails before a sandbox starts.
+suss.toml and the manifest, is read in the constructor, so a bad config fails
+before a sandbox starts.
 """
 
 import asyncio
 import json
 import shlex
-import subprocess
 import tempfile
 from dataclasses import dataclass
 from importlib.metadata import version
@@ -23,11 +22,12 @@ from harbor.models.agent.context import AgentContext
 
 from suss import config as suss_config
 from suss import harness
-from suss.config import ConfigError
 from suss.harness import SandboxPaths
 from suss.workspace import capture_patch, find_workspace, read_base
 
 RECORD_NAME = "suss.json"
+# The dataset every trial's task comes from, which names its grader.
+DATASET = "swe-rebench-07-2026"
 # How long a cancelled run may take to capture the patch and write suss.json.
 CLEANUP_SECONDS = 60
 
@@ -71,7 +71,6 @@ class SussAgent(BaseAgent):
         self.paths = paths
         self._config = suss_config.load(Path(config), arm)
         self._manifest = harness.load_manifest(self._config.arm.harness)
-        self._grader_commit = _head(self._config.swe_bench_pro)
         self._prepared: _Prepared | None = None
 
     @staticmethod
@@ -149,7 +148,7 @@ class SussAgent(BaseAgent):
             "arm": self._config.arm.name,
             "harness": {"name": self._manifest.name, "version": self._manifest.version},
             "params": self._config.arm.params,
-            "grader": {"dataset": self._config.dataset, "commit": self._grader_commit},
+            "grader": {"dataset": DATASET},
             "base": prepared.base,
             "status": result.status,
             "exit_codes": result.exit_codes,
@@ -161,20 +160,6 @@ class SussAgent(BaseAgent):
             (json.dumps(record, indent=2) + "\n").encode(),
             f"{self.paths.logs.rstrip('/')}/{RECORD_NAME}",
         )
-
-
-def _head(checkout: Path) -> str:
-    """The commit a checkout on the host is at. Raises ConfigError when git cannot read it."""
-    result = subprocess.run(
-        ["git", "-C", str(checkout), "rev-parse", "--verify", "HEAD"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise ConfigError(
-            f"cannot read the commit of swe_bench_pro, {checkout}: {result.stderr.strip()}"
-        )
-    return result.stdout.strip()
 
 
 async def _upload_bytes(env: BaseEnvironment, data: bytes, target: str) -> None:

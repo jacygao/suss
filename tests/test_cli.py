@@ -17,7 +17,7 @@ from suss.harness import Manifest
 
 SPEC = Path(__file__).resolve().parent.parent / "docs" / "specs" / "suss-spec.md"
 STAMP = "20261031T142500Z"
-CHECKOUT = Path("/work/SWE-bench_Pro-os")
+TASKS = Path("/work/tasks/swe-rebench-07-2026")
 
 
 def make_config(
@@ -25,8 +25,7 @@ def make_config(
 ):
     return Config(
         path=root / "suss.toml",
-        swe_bench_pro=CHECKOUT,
-        dataset="swe-bench-pro-v2",
+        swe_rebench=TASKS,
         environment=environment,
         k=3,
         concurrency=concurrency,
@@ -125,14 +124,14 @@ def test_a_start_time_with_no_zone_is_refused():
 
 
 def test_the_jobs_are_named_from_the_stamp_and_the_trial_number(tmp_path):
-    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 3)
+    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 3)
 
     assert agent.argv[agent.argv.index("--job-name") + 1] == f"{STAMP}-3"
     assert regrade.argv[regrade.argv.index("--job-name") + 1] == f"{STAMP}-3-regrade"
 
 
 def test_the_regrade_replays_the_agent_job_it_follows(tmp_path):
-    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 2)
+    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 2)
 
     jobs_dir = agent.argv[agent.argv.index("--jobs-dir") + 1]
     job_name = agent.argv[agent.argv.index("--job-name") + 1]
@@ -144,58 +143,58 @@ def test_the_regrade_replays_the_agent_job_it_follows(tmp_path):
 def test_the_regrade_names_its_source_job_by_an_absolute_path_from_the_suss_toml_directory(
     tmp_path,
 ):
-    _, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1)
+    _, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1)
 
     source_job = harbor_parses(regrade.argv)["source_job"]
-    assert source_job == f"{tmp_path}/results/pro-go/peer-review/{STAMP}-1"
+    assert source_job == f"{tmp_path}/results/rebench/peer-review/{STAMP}-1"
     assert Path(source_job).is_absolute()
 
 
 def test_a_check_takes_the_check_lane_and_writes_under_checks(tmp_path):
     agent, regrade = harbor_commands(
-        make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, check=True
+        make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, check=True
     )
 
     for command in (agent, regrade):
-        assert command.argv[command.argv.index("-p") + 1] == "lanes/pro-go-check"
-        assert command.argv[command.argv.index("--jobs-dir") + 1] == "checks/pro-go/peer-review"
-    assert harbor_parses(regrade.argv)["source_job"] == f"{tmp_path}/checks/pro-go/peer-review/{STAMP}-1"
+        assert command.argv[command.argv.index("-p") + 1] == "lanes/rebench-check"
+        assert command.argv[command.argv.index("--jobs-dir") + 1] == "checks/rebench/peer-review"
+    assert harbor_parses(regrade.argv)["source_job"] == f"{tmp_path}/checks/rebench/peer-review/{STAMP}-1"
 
 
 def test_both_jobs_take_the_environment_and_concurrency_from_the_config(tmp_path):
     agent, regrade = harbor_commands(
-        make_config(tmp_path, environment="modal", concurrency=4), make_manifest(), "pro-go", STAMP, 1
+        make_config(tmp_path, environment="modal", concurrency=4), make_manifest(), "rebench", STAMP, 1
     )
 
     for command in (agent, regrade):
         assert command.argv[:10] == [
-            "harbor", "run", "-p", "lanes/pro-go", "-e", "modal", "-n", "4", "-k", "1",
+            "harbor", "run", "-p", "lanes/rebench", "-e", "modal", "-n", "4", "-k", "1",
         ]
 
 
 def test_the_agent_job_allows_each_manifest_host_in_order_and_no_others(tmp_path):
     hosts = ("b.example.com", "a.example.com", "10.0.0.0/8")
 
-    agent, _ = harbor_commands(make_config(tmp_path), make_manifest(hosts), "pro-go", STAMP, 1)
+    agent, _ = harbor_commands(make_config(tmp_path), make_manifest(hosts), "rebench", STAMP, 1)
 
     allowed = [token for flag, token in zip(agent.argv, agent.argv[1:]) if flag == "--allow-agent-host"]
     assert allowed == list(hosts)
 
 
 def test_a_harness_with_no_allowed_hosts_gets_no_allow_agent_host(tmp_path):
-    agent, _ = harbor_commands(make_config(tmp_path), make_manifest(()), "pro-go", STAMP, 1)
+    agent, _ = harbor_commands(make_config(tmp_path), make_manifest(()), "rebench", STAMP, 1)
 
     assert agent.argv == [
-        "harbor", "run", "-p", "lanes/pro-go", "-e", "docker", "-n", "16", "-k", "1",
+        "harbor", "run", "-p", "lanes/rebench", "-e", "docker", "-n", "16", "-k", "1",
         "-a", "suss.agent:SussAgent", "--ak", "arm=peer-review", "--ak", "config=suss.toml",
         "--disable-verification",
-        "--jobs-dir", "results/pro-go/peer-review", "--job-name", f"{STAMP}-1",
+        "--jobs-dir", "results/rebench/peer-review", "--job-name", f"{STAMP}-1",
     ]
 
 
 def test_the_regrade_runs_the_verifier(tmp_path):
     _, regrade = harbor_commands(
-        make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, ["--max-retries", "2"]
+        make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, ["--max-retries", "2"]
     )
 
     # Its verifier's reward is the trial's result, and with verification disabled it records none.
@@ -204,7 +203,7 @@ def test_the_regrade_runs_the_verifier(tmp_path):
 
 
 def test_the_regrade_allows_no_agent_host(tmp_path):
-    _, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1)
+    _, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1)
 
     assert regrade.argv[0] == "harbor"
     assert "--allow-agent-host" not in regrade.argv
@@ -213,8 +212,8 @@ def test_the_regrade_allows_no_agent_host(tmp_path):
 def test_arguments_after_the_separator_go_to_the_agent_job_only(tmp_path):
     extra = ["--max-retries", "2", "--ae", "FOO=bar"]
 
-    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, extra)
-    plain_agent, plain_regrade = harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1)
+    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, extra)
+    plain_agent, plain_regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1)
 
     assert agent.argv == plain_agent.argv + extra
     assert regrade == plain_regrade
@@ -223,7 +222,7 @@ def test_arguments_after_the_separator_go_to_the_agent_job_only(tmp_path):
 def test_a_refused_option_as_another_options_value_passes_through(tmp_path):
     extra = ["--extra-instruction", "-k", "--retry-include=--job-name"]
 
-    agent, _ = harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, extra)
+    agent, _ = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, extra)
 
     assert agent.argv[-3:] == extra
 
@@ -231,7 +230,7 @@ def test_a_refused_option_as_another_options_value_passes_through(tmp_path):
 @pytest.mark.parametrize(
     "extra",
     [
-        ["-p", "lanes/pro-go"],
+        ["-p", "lanes/rebench"],
         ["--path", "elsewhere"],
         ["--path=elsewhere"],
         ["-pelsewhere"],
@@ -250,7 +249,7 @@ def test_a_refused_option_as_another_options_value_passes_through(tmp_path):
         ["--agent-kwarg", "x=1"],
         ["--allow-agent-host", "api.anthropic.com"],
         ["--allow-agent-host=example.com"],
-        ["--jobs-dir", "results/pro-go/peer-review"],
+        ["--jobs-dir", "results/rebench/peer-review"],
         ["--jobs-dir=elsewhere"],
         ["-o", "elsewhere"],
         ["-oelsewhere"],
@@ -264,7 +263,7 @@ def test_a_refused_option_as_another_options_value_passes_through(tmp_path):
 def test_an_option_suss_sets_is_refused_in_every_spelling_whatever_its_value(extra, tmp_path):
     # Harbor takes the last of a repeated option, so any of these would win over suss's own.
     with pytest.raises(ValueError, match="can't be passed after --"):
-        harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, extra)
+        harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, extra)
 
 
 def harbor_run_options():
@@ -274,7 +273,7 @@ def harbor_run_options():
 
 def options_suss_sets(tmp_path) -> set[str]:
     run, _ = harbor_run_options()
-    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1)
+    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1)
     emitted = set()
     for command in (agent, regrade):
         _, _, found = run.make_parser(run.context_class(run)).parse_args(command.argv[2:])
@@ -288,7 +287,7 @@ def refused_options(tmp_path) -> set[str]:
     for param in params:
         extra = [param.opts[0]] if param.is_flag else [param.opts[0], "1"]
         try:
-            harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, extra)
+            harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, extra)
         except ValueError as error:
             if str(error).startswith(param.opts[0]):
                 refused.add(param.name)
@@ -403,7 +402,7 @@ def test_an_option_that_changes_what_the_agent_job_runs_says_why_it_is_refused(
     extra, message, tmp_path
 ):
     with pytest.raises(ValueError) as refused:
-        harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, extra)
+        harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, extra)
 
     assert str(refused.value) == message
 
@@ -419,7 +418,7 @@ def test_an_option_that_changes_what_the_agent_job_runs_says_why_it_is_refused(
 )
 def test_a_positional_argument_is_refused_by_name(extra, word, tmp_path):
     with pytest.raises(ValueError) as refused:
-        harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, extra)
+        harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, extra)
 
     assert str(refused.value) == f"{word} can't be passed after --: harbor run takes only options"
 
@@ -427,7 +426,7 @@ def test_a_positional_argument_is_refused_by_name(extra, word, tmp_path):
 def test_an_options_value_is_not_taken_for_a_positional_argument(tmp_path):
     extra = ["--max-retries", "2", "--ae=FOO=bar", "--retry-include", "stray"]
 
-    agent, _ = harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, extra)
+    agent, _ = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, extra)
 
     assert agent.argv[-5:] == extra
 
@@ -481,7 +480,7 @@ def test_an_options_value_is_not_taken_for_a_positional_argument(tmp_path):
 )
 def test_a_refused_option_says_where_its_setting_comes_from(extra, message, tmp_path):
     with pytest.raises(ValueError) as refused:
-        harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, extra)
+        harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, extra)
 
     assert str(refused.value) == message
 
@@ -491,18 +490,18 @@ def test_a_refused_option_says_where_its_setting_comes_from(extra, message, tmp_
 )
 def test_allow_agent_host_is_refused_when_the_manifest_allows_no_hosts(extra, tmp_path):
     with pytest.raises(ValueError, match="^--allow-agent-host can't be passed after --"):
-        harbor_commands(make_config(tmp_path), make_manifest(()), "pro-go", STAMP, 1, extra)
+        harbor_commands(make_config(tmp_path), make_manifest(()), "rebench", STAMP, 1, extra)
 
 
 def test_an_option_harbor_does_not_know_is_refused(tmp_path):
     with pytest.raises(ValueError, match="--no-such-option"):
         harbor_commands(
-            make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1, ["--no-such-option"]
+            make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, ["--no-such-option"]
         )
 
 
 def test_the_regrade_runs_suss_replay_agent(tmp_path):
-    _, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1)
+    _, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1)
 
     assert regrade.argv[0] == "harbor"
     assert regrade.argv[regrade.argv.index("-a") + 1] == "suss.replay:ReplayAgent"
@@ -523,7 +522,7 @@ print(type(agent).__module__, type(agent).__name__)
 
 
 def test_the_harbor_suss_runs_loads_the_regrades_agent_with_no_pythonpath(tmp_path):
-    _, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1)
+    _, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1)
     Path(harbor_parses(regrade.argv)["source_job"]).mkdir(parents=True)
     # The interpreter the harbor script starts, which is whatever its first line names.
     python = harbor_executable().read_text().splitlines()[0].removeprefix("#!")
@@ -573,20 +572,20 @@ def test_the_harbor_suss_runs_loads_the_regrades_agent_with_no_pythonpath(tmp_pa
     ],
 )
 def test_every_ak_value_reaches_the_agent_as_the_string_it_was(arm, tmp_path):
-    agent, regrade = harbor_commands(make_config(tmp_path, arm=arm), make_manifest(), "pro-go", STAMP, 1)
+    agent, regrade = harbor_commands(make_config(tmp_path, arm=arm), make_manifest(), "rebench", STAMP, 1)
 
     assert harbor_parses(agent.argv) == {"arm": arm, "config": "suss.toml"}
-    assert harbor_parses(regrade.argv) == {"source_job": f"{tmp_path}/results/pro-go/{arm}/{STAMP}-1"}
+    assert harbor_parses(regrade.argv) == {"source_job": f"{tmp_path}/results/rebench/{arm}/{STAMP}-1"}
 
 
 def test_an_ordinary_ak_value_is_not_quoted(tmp_path):
-    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "pro-go", STAMP, 1)
+    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1)
 
     assert ak_values(agent.argv) == {"arm": "peer-review", "config": "suss.toml"}
-    assert ak_values(regrade.argv) == {"source_job": f"{tmp_path}/results/pro-go/peer-review/{STAMP}-1"}
+    assert ak_values(regrade.argv) == {"source_job": f"{tmp_path}/results/rebench/peer-review/{STAMP}-1"}
 
 
 def test_an_arm_harbor_would_read_as_a_number_is_quoted_as_a_json_string(tmp_path):
-    agent, _ = harbor_commands(make_config(tmp_path, arm="2026"), make_manifest(), "pro-go", STAMP, 1)
+    agent, _ = harbor_commands(make_config(tmp_path, arm="2026"), make_manifest(), "rebench", STAMP, 1)
 
     assert ak_values(agent.argv)["arm"] == '"2026"'

@@ -31,8 +31,7 @@ def write_config(directory: Path, text: str) -> Path:
 
 
 TOP = """\
-swe_bench_pro = "../SWE-bench_Pro-os"
-dataset = "swe-bench-pro-v2"
+swe_rebench = "../tasks/swe-rebench-07-2026"
 environment = "docker"
 k = 3
 concurrency = 4
@@ -42,7 +41,7 @@ concurrency = 4
 def test_reads_the_top_level_keys_of_the_spec_example(spec_config: Path):
     settings = config.load(spec_config, "claude-code")
 
-    assert settings.dataset == "swe-bench-pro-v2"
+    assert settings.swe_rebench == (spec_config.parent / "../tasks/swe-rebench-07-2026").resolve()
     assert settings.environment == "docker"
     assert settings.k == 1
     assert settings.concurrency == 16
@@ -110,7 +109,7 @@ def test_paths_resolve_from_the_directory_holding_suss_toml(
 
     settings = config.load(path, "a")
 
-    assert settings.swe_bench_pro == (tmp_path / "SWE-bench_Pro-os").resolve()
+    assert settings.swe_rebench == (tmp_path / "tasks" / "swe-rebench-07-2026").resolve()
     assert settings.arm.harness == (tmp_path / "self-review").resolve()
 
 
@@ -122,7 +121,7 @@ def test_paths_resolve_from_suss_toml_given_by_a_relative_path(
 
     settings = config.load(Path("project/suss.toml"), "a")
 
-    assert settings.swe_bench_pro == (tmp_path / "SWE-bench_Pro-os").resolve()
+    assert settings.swe_rebench == (tmp_path / "tasks" / "swe-rebench-07-2026").resolve()
     assert settings.arm.harness == (tmp_path / "project" / "adapters" / "claude-code").resolve()
 
 
@@ -197,7 +196,7 @@ def test_a_missing_suss_toml_is_an_error_naming_it(tmp_path: Path):
 
 @pytest.mark.parametrize(
     "content",
-    [b"k = \n", b"k = 1\nk = 2\n", b'dataset = "\xff"\n'],
+    [b"k = \n", b"k = 1\nk = 2\n", b'environment = "\xff"\n'],
     ids=["no-value", "duplicate-key", "not-utf-8"],
 )
 def test_a_suss_toml_that_is_not_toml_is_an_error_naming_it(tmp_path: Path, content: bytes):
@@ -211,7 +210,7 @@ def test_a_suss_toml_that_is_not_toml_is_an_error_naming_it(tmp_path: Path, cont
 
 
 @pytest.mark.parametrize(
-    "key", ["swe_bench_pro", "dataset", "environment", "k", "concurrency"]
+    "key", ["swe_rebench", "environment", "k", "concurrency"]
 )
 def test_a_missing_top_level_key_is_an_error_naming_it_and_the_file(tmp_path: Path, key: str):
     lines = [line for line in TOP.splitlines() if not line.startswith(f"{key} =")]
@@ -222,6 +221,38 @@ def test_a_missing_top_level_key_is_an_error_naming_it_and_the_file(tmp_path: Pa
 
     assert repr(key) in str(error.value)
     assert str(path) in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "old, named",
+    [
+        ('swe_bench_pro = "../SWE-bench_Pro-os"\n', "swe_bench_pro"),
+        ('dataset = "swe-bench-pro-v2"\n', "dataset"),
+        ('swe_bench_pro = "../SWE-bench_Pro-os"\ndataset = "swe-bench-pro-v2"\n', "swe_bench_pro and dataset"),
+    ],
+    ids=["swe_bench_pro", "dataset", "both"],
+)
+def test_a_key_suss_no_longer_reads_is_an_error_naming_it(tmp_path: Path, old: str, named: str):
+    path = write_config(tmp_path, old + TOP + '[arms.a]\nharness = "h"\n')
+
+    with pytest.raises(config.ConfigError) as error:
+        config.load(path, "a")
+
+    assert str(error.value) == (
+        f"{path}: sets {named}, which suss no longer reads; name the directory of "
+        "downloaded SWE-rebench tasks with swe_rebench"
+    )
+
+
+def test_an_old_suss_toml_without_swe_rebench_is_refused_for_its_old_keys(tmp_path: Path):
+    old = TOP.replace(
+        'swe_rebench = "../tasks/swe-rebench-07-2026"\n',
+        'swe_bench_pro = "../SWE-bench_Pro-os"\ndataset = "swe-bench-pro-v2"\n',
+    )
+    path = write_config(tmp_path, old + '[arms.a]\nharness = "h"\n')
+
+    with pytest.raises(config.ConfigError, match="sets swe_bench_pro and dataset"):
+        config.load(path, "a")
 
 
 def test_an_arm_without_a_harness_is_an_error_naming_the_key_the_arm_and_the_file(

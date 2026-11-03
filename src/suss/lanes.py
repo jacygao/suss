@@ -2,8 +2,8 @@
 A lane's directory, which Harbor reads as `-p lanes/<lane>`, and the checks
 made on a lane before any job.
 
-A SWE-bench Pro lane holds links to its tasks in the checkout. The rebench lane
-holds copies of the downloaded tasks, since each task.toml must change.
+The rebench lane holds copies of the downloaded tasks, since each task.toml
+must change.
 """
 
 import re
@@ -17,20 +17,14 @@ from suss.config import Arm
 
 
 class LaneError(Exception):
-    """A lane cannot be built from the checkout given, or cannot run the arm given."""
+    """A lane cannot be built from the tasks given, or cannot run the arm given."""
 
 
 MIB = 2**20
 
-# Each lane's owners, or None for the lane listed in v2/hard51_ids.txt.
-LANES: dict[str, tuple[str, ...] | None] = {
-    "pro-go": ("flipt-io", "gravitational", "future-architect", "navidrome"),
-    "pro-python": ("ansible", "internetarchive", "qutebrowser"),
-    "pro-js": ("protonmail", "element-hq", "NodeBB", "tutao"),
-    "pro-hard51": None,
-}
-
 REBENCH = "rebench"
+
+LANES = (REBENCH,)
 
 NO_NETWORK = 'network_mode = "no-network"'
 
@@ -38,71 +32,10 @@ NO_NETWORK = 'network_mode = "no-network"'
 AGENT_HEADER = re.compile(r"[ \t]*\[[ \t]*agent[ \t]*\][ \t]*(#.*)?\r?\n?\Z")
 
 
-def tasks(checkout: Path, lane: str) -> list[Path]:
-    """
-    The lane's task directories in the checkout, sorted by name.
-
-    Raises LaneError for an unknown lane, a checkout with no v2/tasks/ or no
-    v2/hard51_ids.txt, an id in that file with no task, or a lane with no
-    tasks at all.
-    """
+def check_lane(lane: str) -> None:
+    """Raise LaneError, naming the only lane, for a lane suss does not have."""
     if lane not in LANES:
-        raise LaneError(f"no lane named {lane}; the lanes are {', '.join(LANES)}")
-    directory = Path(checkout).resolve() / "v2" / "tasks"
-    if not directory.is_dir():
-        raise LaneError(f"{directory}: no such directory")
-    owners = LANES[lane]
-    if owners is None:
-        found = _listed(directory, directory.parent / "hard51_ids.txt")
-    else:
-        found = [
-            task for task in directory.iterdir() if task.is_dir() and _owner(task.name) in owners
-        ]
-    if not found:
-        raise LaneError(f"{directory} holds no tasks for lane {lane}")
-    return sorted(found, key=lambda task: task.name)
-
-
-def build(checkout: Path, lane: str, lanes: Path, check: bool = False) -> Path:
-    """
-    Make `lanes/<lane>/` hold exactly one link to each of the lane's tasks.
-
-    With `check`, it makes `lanes/<lane>-check/` instead, holding only the
-    first task by name. Each link is named for its task and points at it by
-    absolute path, so it resolves wherever the lane is read from. Links left
-    by an earlier build are removed. Raises LaneError as `tasks` does, and
-    when the directory holds anything but links, which it leaves in place.
-    """
-    found = tasks(checkout, lane)
-    if check:
-        found = found[:1]
-    check_buildable(lanes, lane, check)
-    directory = _directory(lanes, lane, check)
-    directory.mkdir(parents=True, exist_ok=True)
-    for entry in directory.iterdir():
-        entry.unlink()
-    for task in found:
-        (directory / task.name).symlink_to(task)
-    return directory
-
-
-def check_buildable(lanes: Path, lane: str, check: bool = False) -> None:
-    """
-    Refuse a lane whose directory `build` would refuse, changing nothing.
-
-    Raises LaneError when the directory, or the lanes directory holding it, is
-    something other than a directory, or when it holds anything but links.
-    """
-    directory = _directory(lanes, lane, check)
-    for path in (Path(lanes), directory):
-        # A dangling link does not exist, and still blocks the mkdir.
-        if (path.exists() or path.is_symlink()) and not path.is_dir():
-            raise LaneError(f"{path}: not a directory, so no lane can be built there")
-    if not directory.is_dir():
-        return
-    for entry in directory.iterdir():
-        if not entry.is_symlink():
-            raise LaneError(f"{entry}: not a link, so not left by a lane build")
+        raise LaneError(f"no lane named {lane}; the only lane is {REBENCH}")
 
 
 def _directory(lanes: Path, lane: str, check: bool) -> Path:
@@ -136,25 +69,6 @@ def check_max_seconds(arm: Arm, lane: str, tasks: Mapping[Path, dict]) -> None:
             f"arm {arm.name} sets max_seconds = {_seconds(arm.max_seconds)}, which must be "
             f"under the {_seconds(shortest)}-second agent timeout of the tasks in {lane}"
         )
-
-
-def images(tasks: Mapping[Path, dict]) -> list[str]:
-    """
-    The images the tasks name in `[environment] docker_image`, each once, in
-    the order of the first task naming it.
-
-    `tasks` are as `read_tasks` gives them. Raises LaneError naming a
-    task.toml that names no image.
-    """
-    found = {}
-    for task, toml in tasks.items():
-        image = _field(toml, "environment", "docker_image")
-        if not isinstance(image, str) or not image:
-            raise LaneError(
-                f"{task / 'task.toml'}: no [environment] docker_image, so suss cannot pull its image"
-            )
-        found[image] = None
-    return list(found)
 
 
 def needs(tasks: Mapping[Path, dict]) -> tuple[int, int]:
@@ -266,6 +180,11 @@ def rebench_tasks(swe_rebench: Path) -> list[Path]:
     return sorted(found, key=lambda task: task.name)
 
 
+def check_buildable(swe_rebench: Path, lanes: Path, check: bool = False) -> None:
+    """Refuse a lane that `build_rebench` would refuse, changing nothing."""
+    _plan_build(swe_rebench, lanes, check)
+
+
 def build_rebench(swe_rebench: Path, lanes: Path, check: bool = False) -> Path:
     """
     Make `lanes/rebench/` hold a copy of each task in the download, whose
@@ -279,18 +198,7 @@ def build_rebench(swe_rebench: Path, lanes: Path, check: bool = False) -> Path:
     is a link or anything else but a directory. Every task.toml is read before
     the lane is touched, so an error leaves an earlier build as it was.
     """
-    found = rebench_tasks(swe_rebench)
-    if check:
-        found = found[:1]
-    directory = _directory(lanes, REBENCH, check)
-    for path in (Path(lanes), directory):
-        # A dangling link does not exist, and still blocks the mkdir.
-        if (path.exists() or path.is_symlink()) and not path.is_dir():
-            raise LaneError(f"{path}: not a directory, so no lane can be built there")
-    # A build empties the lane, and must not empty a directory the link names.
-    if directory.is_symlink():
-        raise LaneError(f"{directory}: a link, so the rebench lane is not built through it")
-    tomls = {task: _without_network(task / "task.toml") for task in found}
+    directory, tomls = _plan_build(swe_rebench, lanes, check)
     if directory.is_dir():
         shutil.rmtree(directory, onexc=_remove_from_read_only)
     directory.mkdir(parents=True)
@@ -309,6 +217,27 @@ def build_rebench(swe_rebench: Path, lanes: Path, check: bool = False) -> Path:
         shutil.copymode(task / "task.toml", copy / "task.toml")
         copy.chmod(mode)
     return directory
+
+
+def _plan_build(swe_rebench: Path, lanes: Path, check: bool) -> tuple[Path, dict[Path, bytes]]:
+    """
+    The lane's directory, and each task it takes with the task.toml its copy
+    gets, reading everything and changing nothing.
+
+    Raises LaneError as `build_rebench` does.
+    """
+    found = rebench_tasks(swe_rebench)
+    if check:
+        found = found[:1]
+    directory = _directory(lanes, REBENCH, check)
+    for path in (Path(lanes), directory):
+        # A dangling link does not exist, and still blocks the mkdir.
+        if (path.exists() or path.is_symlink()) and not path.is_dir():
+            raise LaneError(f"{path}: not a directory, so no lane can be built there")
+    # A build empties the lane, and must not empty a directory the link names.
+    if directory.is_symlink():
+        raise LaneError(f"{directory}: a link, so the rebench lane is not built through it")
+    return directory, {task: _without_network(task / "task.toml") for task in found}
 
 
 def _remove_from_read_only(function, path: str, error: BaseException) -> None:
@@ -375,30 +304,3 @@ def _seconds(value: float) -> str:
     if float(value).is_integer():
         return str(int(value))
     return str(value)
-
-
-def _owner(name: str) -> str | None:
-    # The owner is everything up to the first `__`; a prefix match would let
-    # one owner take the tasks of another whose name starts with it.
-    rest = name.removeprefix("instance_")
-    if rest == name or "__" not in rest:
-        return None
-    return rest.split("__", 1)[0]
-
-
-def _listed(directory: Path, ids: Path) -> list[Path]:
-    """The tasks in `directory` named by the lines of `ids`, which may carry blank lines and surrounding space."""
-    try:
-        lines = ids.read_text().splitlines()
-    except FileNotFoundError:
-        raise LaneError(f"{ids}: no such file") from None
-    found = []
-    for line in lines:
-        name = line.strip()
-        if not name:
-            continue
-        task = directory / name
-        if not task.is_dir():
-            raise LaneError(f"{ids} lists {name}, which has no task in {directory}")
-        found.append(task)
-    return found

@@ -2,8 +2,8 @@
 Run whole trials through SussAgent, in the stand-in environment, with the fake
 adapter in `tests/fake_adapter/` as the harness.
 
-The host holds suss.toml, its .env, a git checkout standing in for
-swe_bench_pro, and a copy of the fake adapter. The sandbox is a directory
+The host holds suss.toml, its .env and a copy of the fake adapter. The
+directory swe_rebench names does not exist, since nothing in a trial reads it. The sandbox is a directory
 beside it, with its workspace, its /opt/suss and its logs directory as
 siblings, so nothing suss writes to /opt/suss can fall inside the workspace.
 """
@@ -72,7 +72,6 @@ class Trial:
     host: Path
     config: Path
     adapter: Path
-    grader_commit: str
     workspace: Path
     base: str
     paths: SandboxPaths
@@ -112,13 +111,11 @@ class Trial:
 @pytest.fixture
 def trial(tmp_path, local_environment) -> Trial:
     host = tmp_path / "the host"
-    grader_commit = init_repo(host / "SWE-bench_Pro-os", {"README": "the grader\n"})
     adapter = host / "adapters" / "fake"
     shutil.copytree(FAKE_ADAPTER, adapter)
     config = host / "suss.toml"
     config.write_text(
-        'swe_bench_pro = "SWE-bench_Pro-os"\n'
-        'dataset = "swe-bench-pro-v2"\n'
+        'swe_rebench = "tasks/swe-rebench-07-2026"\n'
         'environment = "docker"\n'
         "k = 1\n"
         "concurrency = 1\n"
@@ -152,7 +149,6 @@ def trial(tmp_path, local_environment) -> Trial:
         host=host,
         config=config,
         adapter=adapter,
-        grader_commit=grader_commit,
         workspace=workspace,
         base=base,
         paths=paths,
@@ -201,7 +197,7 @@ def test_the_record_has_exactly_the_specs_fields_with_their_values(
     assert record["arm"] == "fake"
     assert record["harness"] == {"name": "fake", "version": "0.0.1"}
     assert record["params"] == PARAMS
-    assert record["grader"] == {"dataset": "swe-bench-pro-v2", "commit": trial.grader_commit}
+    assert record["grader"] == {"dataset": "swe-rebench-07-2026"}
     assert record["base"] == trial.base
     assert record["status"] == "ok"
     assert record["exit_codes"] == {"install": 0, "run": 0}
@@ -311,7 +307,7 @@ def test_config_is_read_relative_to_the_current_directory(
 
     record = trial.run(local_environment, trial.agent(config="suss.toml"))
 
-    assert record["grader"]["commit"] == trial.grader_commit
+    assert record["params"] == PARAMS
 
 
 @pytest.mark.parametrize("key, value", [("arm", 2026), ("arm", True), ("config", 1.5)])

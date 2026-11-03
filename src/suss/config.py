@@ -24,8 +24,7 @@ class Arm:
 @dataclass(frozen=True)
 class Config:
     path: Path
-    swe_bench_pro: Path
-    dataset: str
+    swe_rebench: Path
     environment: str
     k: int
     concurrency: int
@@ -33,7 +32,9 @@ class Config:
     env: dict[str, str]
 
 
-REQUIRED = ("swe_bench_pro", "dataset", "environment", "k", "concurrency")
+REQUIRED = ("swe_rebench", "environment", "k", "concurrency")
+# Ignored, they would leave a run going on what its author believes they still set.
+RETIRED = ("swe_bench_pro", "dataset")
 REQUIRED_IN_ARM = ("harness",)
 
 
@@ -43,13 +44,19 @@ def load(path: Path, arm: str) -> Config:
 
     Paths in the file resolve from the directory holding it, whatever the
     current directory is. `max_seconds` is optional. Raises ConfigError,
-    naming the file, when it is missing or is not TOML, when a required key is
-    missing, when `k` is not a whole number of at least 1, when the file does
-    not define `arm`, when the top or `arm` sets `max_cost_usd`, or when a .env
-    line is not NAME=VALUE.
+    naming the file, when it is missing or is not TOML, when it sets
+    `swe_bench_pro` or `dataset`, when a required key is missing, when `k` is
+    not a whole number of at least 1, when the file does not define `arm`, when
+    the top or `arm` sets `max_cost_usd`, or when a .env line is not NAME=VALUE.
     """
     path, data = _read(path)
     directory = path.parent
+    retired = [key for key in RETIRED if key in data]
+    if retired:
+        raise ConfigError(
+            f"{path}: sets {' and '.join(retired)}, which suss no longer reads; name the "
+            "directory of downloaded SWE-rebench tasks with swe_rebench"
+        )
     for key in REQUIRED:
         if key not in data:
             raise ConfigError(f"{path}: no {key!r}")
@@ -76,8 +83,7 @@ def load(path: Path, arm: str) -> Config:
             )
     return Config(
         path=path,
-        swe_bench_pro=(directory / data["swe_bench_pro"]).resolve(),
-        dataset=data["dataset"],
+        swe_rebench=(directory / data["swe_rebench"]).resolve(),
         environment=data["environment"],
         k=data["k"],
         concurrency=data["concurrency"],
