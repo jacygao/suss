@@ -212,6 +212,7 @@ def test_a_start_directory_with_no_repository_fails_naming_it(env, tmp_path):
     with pytest.raises(WorkspaceError) as raised:
         run(find_workspace(env))
     assert str(plain) in str(raised.value), "the error does not name the directory"
+    assert "not a git repository" in str(raised.value), "the error drops what git said"
 
 
 def test_a_start_directory_inside_a_repository_fails_naming_it(env, tmp_path):

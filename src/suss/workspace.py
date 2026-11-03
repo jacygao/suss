@@ -28,10 +28,11 @@ async def find_workspace(env: BaseEnvironment) -> str:
     """
     # Only the newline pwd ends with, since a directory's name can end in whitespace.
     start = (await _run(env, "pwd")).removesuffix("\n")
-    result = await env.exec(f"git -C {shlex.quote(start)} rev-parse --show-prefix")
+    # Into stdout, because Modal keeps stderr apart and git explains a failure there.
+    result = await env.exec(f"git -C {shlex.quote(start)} rev-parse --show-prefix 2>&1")
     if result.return_code != 0:
         raise WorkspaceError(
-            f"the sandbox starts in {start}, which holds no git repository:"
+            f"the sandbox starts in {start}, where git finds no repository it can read:"
             f" {(result.stdout or '').strip()}"
         )
     prefix = (result.stdout or "").strip()
