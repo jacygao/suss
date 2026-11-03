@@ -371,8 +371,17 @@ def test_the_same_input_gives_the_same_interval():
     assert resolved_difference(arm, baseline) == first
 
 
-def test_it_draws_ten_thousand_resamples():
-    assert compare.RESAMPLES == 10_000
+def test_it_draws_ten_thousand_resamples(monkeypatch):
+    draws = []
+
+    class Counting(random.Random):
+        def choices(self, population, *args, k=1, **kwargs):
+            draws.append(k)
+            return super().choices(population, *args, k=k, **kwargs)
+
+    monkeypatch.setattr(compare.random, "Random", Counting)
+    resolved_difference(tasks(outcomes(3, 4)), tasks(outcomes(5, 2)))
+    assert draws == [7] * 10_000, "expected 10,000 resamples, each drawing 7 tasks"
 
 
 def test_ten_thousand_resamples_over_256_tasks_take_under_a_second():
