@@ -302,6 +302,44 @@ def test_files_git_ignores_stay_out_of_the_start_tree_and_the_patch(
     assert (logs / "model.patch").read_bytes() == b""
 
 
+@pytest.mark.parametrize("pattern", ["uv.lock", "*.lock", "cache/", "cache/*.txt"])
+def test_a_file_the_image_left_untracked_and_the_harness_ignores_stays_in_the_tree(
+    local_environment, repo, logs, tmp_path, pattern
+):
+    def untracked_by_the_image(into: Path) -> None:
+        (into / "uv.lock").write_text("pinned\n")
+        (into / "cache").mkdir()
+        (into / "cache" / "data.txt").write_text("cached\n")
+
+    untracked_by_the_image(repo)
+    base = run(read_base(local_environment, str(repo)))
+    start = run(read_start_tree(local_environment, str(repo)))
+    (repo / ".gitignore").write_text(pattern + "\n")
+    run(capture_patch(local_environment, str(repo), start, str(logs)))
+
+    rebuilt = tmp_path / "rebuilt"
+    subprocess.run(["git", "clone", "-q", str(repo), str(rebuilt)], check=True)
+    git(rebuilt, "checkout", "-q", base)
+    untracked_by_the_image(rebuilt)
+    git(rebuilt, "apply", "--binary", str(logs / "model.patch"))
+    assert tree(rebuilt) == tree(repo), (
+        f"ignoring {pattern} made model.patch delete a file the harness left alone"
+    )
+
+
+def test_a_file_the_image_left_untracked_and_the_harness_ignores_and_deletes_is_deleted(
+    local_environment, repo, logs
+):
+    (repo / "uv.lock").write_text("pinned\n")
+    start = run(read_start_tree(local_environment, str(repo)))
+    (repo / ".gitignore").write_text("uv.lock\n")
+    (repo / "uv.lock").unlink()
+    run(capture_patch(local_environment, str(repo), start, str(logs)))
+
+    assert "deleted file mode 100644" in (logs / "model.patch").read_text()
+    assert files_named(logs / "model.patch") == {".gitignore", "uv.lock"}
+
+
 def test_an_image_with_no_index_and_no_harness_change_gives_an_empty_patch(
     local_environment, repo, logs
 ):

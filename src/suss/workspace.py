@@ -95,14 +95,29 @@ async def capture_patch(
     """
     git = f"git -C {shlex.quote(workspace)}"
     patch = shlex.quote(f"{logs_dir.rstrip('/')}/{PATCH_NAME}")
+    await _run(env, f"mkdir -p {shlex.quote(logs_dir)} && {git} add -A")
+    # A file in the starting tree that git now ignores is still staged while it
+    # exists, as a tracked file would be. Otherwise a harness that only ignores
+    # a file the image left untracked would give a patch deleting it.
+    await _run(
+        env,
+        "{"
+        f" cd {shlex.quote(workspace)}"
+        " && list=$(mktemp)"
+        f' && git ls-tree -r -z --name-only {shlex.quote(start)} > "$list"'
+        # check-ignore exits 1 when it finds no path ignored.
+        ' && { git check-ignore -z --no-index --stdin < "$list" > "$list.ignored"; [ $? -le 1 ]; }'
+        " && while IFS= read -r -d '' path; do"
+        ' if [ -L "$path" ] || [ -f "$path" ]; then printf "%s\\0" "$path"; fi;'
+        ' done < "$list.ignored" | git update-index -z --add --stdin; } 2>&1;'
+        ' status=$?; [ -n "$list" ] && rm -f "$list" "$list.ignored"; exit $status',
+    )
     # Git writes the file itself, because exec returns stdout as decoded text,
     # which corrupts any byte that is not valid UTF-8. The flags after --binary
     # stop the repository's config writing a patch that does not apply.
     await _run(
         env,
-        f"mkdir -p {shlex.quote(logs_dir)}"
-        f" && {git} add -A"
-        f" && {git} diff --cached --binary"
+        f"{git} diff --cached --binary"
         " --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/"
         f" {shlex.quote(start)} -- > {patch}",
     )

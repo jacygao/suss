@@ -101,6 +101,11 @@ made, whether it committed it or not, and none of the changes the image already
 had. A regrade starts from the same image, so the patch applies there with
 `git apply`.
 
+Before the diff, suss also stages each file of the starting tree that git now
+ignores and that still exists, as `git add -A` does for a tracked file. A
+harness that only ignores a file the image left untracked leaves it out of the
+patch.
+
 ### Regrading
 
 After each agent job, suss runs a second Harbor job over the same tasks, with
