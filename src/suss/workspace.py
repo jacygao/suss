@@ -55,12 +55,38 @@ async def read_base(env: BaseEnvironment, workspace: str) -> str:
     return output.strip()
 
 
+async def read_start_tree(env: BaseEnvironment, workspace: str) -> str:
+    """
+    Return the tree the workspace holds: HEAD's, with every change the working
+    tree has, staged or not, and every untracked file git does not ignore.
+
+    Read it before the harness runs. It is built in a copy of the index, so the
+    index, HEAD, the refs and `git status` are as they were. Raises
+    WorkspaceError when git cannot build it.
+    """
+    # A copy of the real index, or none where there is none, so that `git add -A`
+    # here keeps and drops the same files git ignores as it does at capture.
+    output = await _run(
+        env,
+        "{"
+        f" cd {shlex.quote(workspace)}"
+        " && index=$(git rev-parse --git-path index)"
+        " && copy=$(mktemp -d)"
+        ' && export GIT_INDEX_FILE="$copy/index"'
+        ' && { [ ! -f "$index" ] || cp "$index" "$GIT_INDEX_FILE"; }'
+        " && git add -A && git write-tree; } 2>&1;"
+        ' status=$?; [ -n "$copy" ] && rm -rf "$copy"; exit $status',
+    )
+    # The tree is write-tree's line, the last; add -A can warn before it.
+    return output.split()[-1]
+
+
 async def capture_patch(
-    env: BaseEnvironment, workspace: str, base: str, logs_dir: str = LOGS_DIR
+    env: BaseEnvironment, workspace: str, start: str, logs_dir: str = LOGS_DIR
 ) -> int:
     """
-    Write the whole change from the base to model.patch in the logs directory,
-    and return its size in bytes.
+    Write the whole change from the tree `start` names to model.patch in the
+    logs directory, and return its size in bytes.
 
     The change is the same whether the harness committed it, staged it or left
     it in the working tree. A workspace with no change gives an empty patch.
@@ -78,7 +104,7 @@ async def capture_patch(
         f" && {git} add -A"
         f" && {git} diff --cached --binary"
         " --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/"
-        f" {shlex.quote(base)} -- > {patch}",
+        f" {shlex.quote(start)} -- > {patch}",
     )
     return int(await _run(env, f"wc -c < {patch}"))
 

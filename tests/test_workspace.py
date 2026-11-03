@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from suss.workspace import WorkspaceError, capture_patch, find_workspace, read_base
+from suss.workspace import (
+    WorkspaceError,
+    capture_patch,
+    find_workspace,
+    read_base,
+    read_start_tree,
+)
 
 # Git sees a NUL as binary, and writes the file into the patch encoded.
 BINARY = bytes(range(256)) * 4
@@ -111,8 +117,9 @@ def test_patch_rebuilds_the_harness_tree_from_the_base(
     local_environment, repo, logs, tmp_path, harness
 ):
     base = run(read_base(local_environment, str(repo)))
+    start = run(read_start_tree(local_environment, str(repo)))
     harness(repo)
-    size = run(capture_patch(local_environment, str(repo), base, str(logs)))
+    size = run(capture_patch(local_environment, str(repo), start, str(logs)))
 
     patch = logs / "model.patch"
     assert size == patch.stat().st_size
@@ -160,7 +167,7 @@ def test_capture_raises_outside_a_repository(local_environment, tmp_path, logs):
         run(capture_patch(local_environment, str(plain), "HEAD", str(logs)))
 
 
-def test_capture_raises_for_a_base_that_is_not_a_commit(local_environment, repo, logs):
+def test_capture_raises_for_a_start_that_is_not_a_tree(local_environment, repo, logs):
     change_everything(repo)
     with pytest.raises(WorkspaceError):
         run(capture_patch(local_environment, str(repo), "0" * 40, str(logs)))
@@ -169,6 +176,150 @@ def test_capture_raises_for_a_base_that_is_not_a_commit(local_environment, repo,
 def test_read_base_raises_outside_a_repository(local_environment, tmp_path):
     with pytest.raises(WorkspaceError):
         run(read_base(local_environment, str(tmp_path)))
+
+
+def dirty_the_image(repo: Path) -> None:
+    """
+    Leave the changes a task's image can hold before the trial starts: an edit,
+    a staged edit, a deletion and an untracked file. The harness edits keep.txt
+    again.
+    """
+    (repo / "keep.txt").write_text("zero\none\n")
+    (repo / "pom.xml").write_text("<version>1.18.38</version>\n")
+    (repo / "script.sh").write_text("echo hello\n")
+    git(repo, "add", "script.sh")
+    (repo / "gone.txt").unlink()
+    (repo / "uv.lock").write_text("pinned\n")
+
+
+def edit_on_top(repo: Path) -> None:
+    (repo / "keep.txt").write_text("zero\none\ntwo\n")
+    (repo / "new.txt").write_text("fresh\n")
+
+
+def stage_on_top(repo: Path) -> None:
+    edit_on_top(repo)
+    git(repo, "add", "-A")
+
+
+def commit_on_top(repo: Path) -> None:
+    edit_on_top(repo)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "harness")
+
+
+def apply_to_the_image(repo: Path, base: str, patch: Path, into: Path) -> Path:
+    """A fresh clone at the base, holding the image's changes, as a regrade starts; then the patch."""
+    subprocess.run(["git", "clone", "-q", str(repo), str(into)], check=True)
+    git(into, "checkout", "-q", base)
+    dirty_the_image(into)
+    git(into, "apply", "--binary", str(patch))
+    return into
+
+
+def files_named(patch: Path) -> set[str]:
+    return {
+        line.rsplit(" b/", 1)[-1]
+        for line in patch.read_text().splitlines()
+        if line.startswith("diff --git ")
+    }
+
+
+@pytest.mark.parametrize("harness", [edit_on_top, stage_on_top, commit_on_top])
+def test_the_patch_leaves_out_what_the_image_already_changed(
+    local_environment, repo, logs, tmp_path, harness
+):
+    dirty_the_image(repo)
+    base = run(read_base(local_environment, str(repo)))
+    start = run(read_start_tree(local_environment, str(repo)))
+    harness(repo)
+    run(capture_patch(local_environment, str(repo), start, str(logs)))
+
+    patch = logs / "model.patch"
+    assert files_named(patch) == {"keep.txt", "new.txt"}, (
+        "model.patch holds more than the harness changed"
+    )
+    rebuilt = apply_to_the_image(repo, base, patch, tmp_path / "rebuilt")
+    assert tree(rebuilt) == tree(repo), (
+        "applying model.patch to the image's starting tree does not give the harness's tree"
+    )
+
+
+def test_reading_the_start_tree_changes_nothing_the_harness_sees(local_environment, repo):
+    dirty_the_image(repo)
+    index = repo / ".git" / "index"
+
+    def seen() -> tuple:
+        return (
+            git(repo, "status", "--porcelain=v2", "--untracked-files=all"),
+            git(repo, "ls-files", "--stage"),
+            git(repo, "rev-parse", "HEAD"),
+            git(repo, "for-each-ref"),
+            git(repo, "stash", "list"),
+            index.read_bytes(),
+        )
+
+    before = seen()
+    run(read_start_tree(local_environment, str(repo)))
+
+    assert seen() == before, "reading the start tree changed the workspace the harness sees"
+
+
+@pytest.mark.parametrize(
+    "harness", [leave_in_working_tree, stage, commit_once, commit_several]
+)
+def test_a_clean_image_gives_the_same_patch_as_a_diff_from_the_base_commit(
+    local_environment, repo, logs, harness
+):
+    base = run(read_base(local_environment, str(repo)))
+    start = run(read_start_tree(local_environment, str(repo)))
+    harness(repo)
+    run(capture_patch(local_environment, str(repo), start, str(logs)))
+    from_start = (logs / "model.patch").read_bytes()
+    run(capture_patch(local_environment, str(repo), base, str(logs)))
+
+    assert from_start == (logs / "model.patch").read_bytes(), (
+        "on a clean image, the patch differs from the one the base commit gives"
+    )
+
+
+def test_files_git_ignores_stay_out_of_the_start_tree_and_the_patch(
+    local_environment, repo, logs
+):
+    (repo / ".gitignore").write_text("*.log\n")
+    (repo / "tracked.log").write_text("tracked though ignored\n")
+    git(repo, "add", "-f", ".gitignore", "tracked.log")
+    git(repo, "commit", "-q", "-m", "ignore logs")
+    (repo / "build.log").write_text("noise\n")
+
+    start = run(read_start_tree(local_environment, str(repo)))
+    (repo / "more.log").write_text("more noise\n")
+    run(capture_patch(local_environment, str(repo), start, str(logs)))
+
+    assert start == git(repo, "rev-parse", "HEAD^{tree}").strip(), (
+        "the start tree differs from HEAD's, though the image added only ignored files"
+    )
+    assert (logs / "model.patch").read_bytes() == b""
+
+
+def test_an_image_with_no_index_and_no_harness_change_gives_an_empty_patch(
+    local_environment, repo, logs
+):
+    (repo / ".gitignore").write_text("*.log\n")
+    (repo / "tracked.log").write_text("tracked though ignored\n")
+    git(repo, "add", "-f", ".gitignore", "tracked.log")
+    git(repo, "commit", "-q", "-m", "ignore logs")
+    (repo / ".git" / "index").unlink()
+
+    start = run(read_start_tree(local_environment, str(repo)))
+    run(capture_patch(local_environment, str(repo), start, str(logs)))
+
+    assert (logs / "model.patch").read_bytes() == b""
+
+
+def test_read_start_tree_raises_outside_a_repository(local_environment, tmp_path):
+    with pytest.raises(WorkspaceError):
+        run(read_start_tree(local_environment, str(tmp_path)))
 
 
 def init(repo: Path) -> Path:

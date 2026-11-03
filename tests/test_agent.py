@@ -338,6 +338,20 @@ def test_nothing_suss_writes_reaches_the_workspace_or_the_patch(local_environmen
     assert (trial.sandbox_adapter / "run.sh").exists()
 
 
+def test_changes_the_image_already_had_stay_out_of_the_patch(local_environment, trial):
+    (trial.workspace / "hello.txt").write_text("hello from the image\n")
+    (trial.workspace / "pom.xml").write_text("<version>1.18.38</version>\n")
+    trial.then("run", 'echo "a known change" >> hello.txt')
+
+    record = trial.run(local_environment)
+
+    patch = trial.patch()
+    assert "pom.xml" not in patch, "model.patch holds a file only the image changed"
+    assert "-hello\n" not in patch, "model.patch holds the image's own edit"
+    assert "+a known change\n" in patch, "model.patch lost the harness's change"
+    assert record["base"] == trial.base, "the record's base is not the commit HEAD named"
+
+
 def test_config_is_read_relative_to_the_current_directory(
     local_environment, trial, monkeypatch
 ):
