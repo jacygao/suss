@@ -6,6 +6,8 @@ The rebench lane holds copies of the downloaded tasks, since each task.toml
 must change.
 """
 
+import hashlib
+import os
 import re
 import shutil
 import stat
@@ -178,6 +180,76 @@ def rebench_tasks(swe_rebench: Path) -> list[Path]:
     if not found:
         raise LaneError(f"{source} holds no tasks: no directory in it has a task.toml")
     return sorted(found, key=lambda task: task.name)
+
+
+# Names the encoding below, so a change to it cannot give an old digest.
+DIGEST_PREFIX = b"suss grader digest 1\0"
+FILE = b"f"
+LINK = b"l"
+
+
+def digest(swe_rebench: Path) -> str:
+    """
+    The sha256, in hex, of every file of every task in the download, by path
+    and content.
+
+    The tasks are the directories `rebench_tasks` finds, so anything else at
+    the top of the download takes no part. Each entry's path runs from the
+    download, with `/` between its parts, and the entries go in order of
+    those paths' bytes, which is code point order. Each entry adds:
+
+    - its kind, `f` for a file or `l` for a link;
+    - the length of its path as 8 bytes, big-endian, then the path;
+    - the length of its content as 8 bytes, big-endian, then the content.
+
+    A link inside a task adds its target as written, and is never followed.
+    A task directory that is itself a link adds the files of the task it
+    names, as `build_rebench` copies them. A directory adds nothing but the paths of what it holds, so an empty one
+    adds nothing. Modes and times add nothing. Raises LaneError as
+    `rebench_tasks` does, and naming an entry that cannot be read or is
+    neither a file, a directory nor a link.
+    """
+    entries: list[tuple[bytes, str]] = []
+    for task in rebench_tasks(swe_rebench):
+        entries.extend(_task_entries(task, os.fsencode(task.name)))
+    entries.sort()
+    found = hashlib.sha256(DIGEST_PREFIX)
+    for name, path in entries:
+        kind, content = _entry(path)
+        found.update(kind + len(name).to_bytes(8, "big") + name)
+        found.update(len(content).to_bytes(8, "big") + content)
+    return found.hexdigest()
+
+
+def _task_entries(directory: Path | str, name: bytes) -> list[tuple[bytes, str]]:
+    """Each file and link under `directory`, by its path from the download, and its path here."""
+    entries = []
+    try:
+        with os.scandir(directory) as listing:
+            children = list(listing)
+    except OSError as error:
+        raise LaneError(f"{directory}: cannot be read: {error.strerror}") from None
+    for child in children:
+        path = name + b"/" + os.fsencode(child.name)
+        if child.is_dir(follow_symlinks=False):
+            entries.extend(_task_entries(child.path, path))
+        else:
+            entries.append((path, child.path))
+    return entries
+
+
+def _entry(path: str) -> tuple[bytes, bytes]:
+    """The kind and the content of a file or a link, for `digest`."""
+    try:
+        mode = os.lstat(path).st_mode
+        if stat.S_ISLNK(mode):
+            return LINK, os.fsencode(os.readlink(path))
+        if stat.S_ISREG(mode):
+            with open(path, "rb") as file:
+                return FILE, file.read()
+    except OSError as error:
+        raise LaneError(f"{path}: cannot be read: {error.strerror}") from None
+    raise LaneError(f"{path}: not a file, a directory or a link, so it cannot be digested")
 
 
 def check_buildable(swe_rebench: Path, lanes: Path, check: bool = False) -> None:
