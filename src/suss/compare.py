@@ -225,10 +225,11 @@ def report(directory: Path, lane: str, arms: Sequence[str]) -> str:
 
     Raises ConfigError when suss.toml does not define every arm, and
     CompareError when an arm has no trials, a trial's regrade applied none of
-    its patch, or the arms share no task.
+    its patch, two trials carry different graders, or the arms share no task.
     """
     baselines = config.baselines(Path(directory) / "suss.toml", list(arms))
     trials = _read(directory, lane, arms)
+    _one_grader(lane, trials)
     common = set.intersection(*({trial.task for trial in found} for found in trials.values()))
     if not common:
         raise CompareError(
@@ -266,6 +267,48 @@ def _read(directory: Path, lane: str, arms: Sequence[str]) -> dict[str, list[Tri
                     f"{trial.job}{REGRADE} applied none"
                 )
     return trials
+
+
+def _one_grader(lane: str, trials: Mapping[str, Sequence[Trial]]) -> None:
+    """
+    Raise CompareError naming the first two graders that differ.
+
+    Every trial read counts, including one on a task only some arms have. A
+    trial with no suss.json has no grader, and takes no part.
+    """
+    first = None
+    for arm, found in trials.items():
+        for trial in found:
+            if trial.grader is None:
+                continue
+            if first is None:
+                first = (arm, trial)
+            elif trial.grader != first[1].grader:
+                named = _graders(first[1].grader, trial.grader)
+                raise CompareError(
+                    f"trials carry different graders: {named[0]} in "
+                    f"results/{lane}/{first[0]}/{first[1].job}, "
+                    f"{named[1]} in results/{lane}/{arm}/{trial.job}"
+                )
+
+
+def _graders(one, other) -> tuple[str, str]:
+    """
+    The two graders as a person reads them, `<dataset> at <short commit>`.
+
+    Graders that would read the same that way, or that are not a dataset and a
+    commit, print in full.
+    """
+    def short(grader) -> str | None:
+        if isinstance(grader, dict) and grader.keys() == {"dataset", "commit"}:
+            if all(isinstance(value, str) for value in grader.values()):
+                return f"{grader['dataset']} at {grader['commit'][:8]}"
+        return None
+
+    named = short(one), short(other)
+    if None in named or named[0] == named[1]:
+        return json.dumps(one, sort_keys=True), json.dumps(other, sort_keys=True)
+    return named
 
 
 def _outcomes(trials: Sequence[Trial]) -> dict[str, list[bool]]:
