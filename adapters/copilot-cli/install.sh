@@ -22,14 +22,23 @@ version=${version#v}
 build=$(copilot_build / "$(uname -m)") || exit 1
 command -v sha256sum > /dev/null 2>&1 || fail "the image has no sha256sum to check $build with"
 
-# Only -q and -O, since Alpine's wget is busybox's, which lacks most of GNU's options.
+# Download URL $1 to the file $2 with whichever of curl, wget and Python the
+# image has, since some task images have only Python.
+#
+# Only -q and -O for wget, since Alpine's wget is busybox's, which lacks most
+# of GNU's options. urlopen follows redirects and raises on an HTTP error, so
+# Python exits non-zero rather than saving an error page.
 download() {
     if command -v curl > /dev/null 2>&1; then
         curl -fsSL -o "$2" "$1"
     elif command -v wget > /dev/null 2>&1; then
         wget -q -O "$2" "$1"
+    elif python=$(command -v python3 || command -v python); then
+        "$python" -c 'import shutil, sys, urllib.request
+with urllib.request.urlopen(sys.argv[1]) as r, open(sys.argv[2], "wb") as f:
+    shutil.copyfileobj(r, f)' "$1" "$2"
     else
-        fail "the image has neither curl nor wget to download Copilot CLI with"
+        fail "the image has no curl, wget or Python to download Copilot CLI with"
     fi || fail "cannot download $1"
 }
 
