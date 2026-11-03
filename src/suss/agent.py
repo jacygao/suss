@@ -25,7 +25,7 @@ from suss import config as suss_config
 from suss import harness
 from suss.config import ConfigError
 from suss.harness import SandboxPaths
-from suss.workspace import WORKSPACES, capture_patch, find_workspace, read_base
+from suss.workspace import capture_patch, find_workspace, read_base
 
 RECORD_NAME = "suss.json"
 # How long a cancelled run may take to capture the patch and write suss.json.
@@ -48,17 +48,16 @@ class SussAgent(BaseAgent):
         arm: Any,
         config: Any,
         paths: SandboxPaths = SandboxPaths(),
-        workspaces: tuple[str, ...] = WORKSPACES,
         **kwargs: Any,
     ):
         """
         Read the arm's settings from the suss.toml at `config`, a host path
         relative to the directory `harbor run` started in.
 
-        `paths` and `workspaces` are where the sandbox keeps things. Harbor
-        never passes them, so production gets the defaults. Raises TypeError
-        when Harbor parsed `arm` or `config` as something other than a string,
-        and ConfigError or ManifestError when the settings cannot be read.
+        `paths` is where the sandbox keeps things. Harbor never passes it, so
+        production gets the default. Raises TypeError when Harbor parsed `arm`
+        or `config` as something other than a string, and ConfigError or
+        ManifestError when the settings cannot be read.
         """
         for key, value in (("arm", arm), ("config", config)):
             if not isinstance(value, str):
@@ -70,7 +69,6 @@ class SussAgent(BaseAgent):
                 )
         super().__init__(**kwargs)
         self.paths = paths
-        self.workspaces = workspaces
         self._config = suss_config.load(Path(config), arm)
         self._manifest = harness.load_manifest(self._config.arm.harness)
         self._grader_commit = _head(self._config.swe_bench_pro)
@@ -84,7 +82,7 @@ class SussAgent(BaseAgent):
         return version("suss")
 
     async def setup(self, environment: BaseEnvironment) -> None:
-        workspace = await find_workspace(environment, self.workspaces)
+        workspace = await find_workspace(environment)
         base = await read_base(environment, workspace)
         await _upload(environment, self._config.arm.harness, self.paths.adapter)
         await _upload_bytes(

@@ -1,5 +1,4 @@
 import asyncio
-import os
 import stat
 import subprocess
 from pathlib import Path
@@ -172,48 +171,56 @@ def test_read_base_raises_outside_a_repository(local_environment, tmp_path):
         run(read_base(local_environment, str(tmp_path)))
 
 
-@pytest.mark.parametrize(
-    "present, expected",
-    [(["app"], "app"), (["testbed"], "testbed"), (["app", "testbed"], "app")],
-)
-def test_finds_app_or_else_testbed(local_environment, tmp_path, present, expected):
-    for name in present:
-        (tmp_path / name).mkdir()
-    candidates = (str(tmp_path / "app"), str(tmp_path / "testbed"))
-    assert run(find_workspace(local_environment, candidates)) == str(tmp_path / expected)
+def init(repo: Path) -> Path:
+    repo.mkdir(parents=True)
+    git(repo, "init", "-q")
+    git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "-q", "--allow-empty", "-m", "base")
+    return repo
 
 
-def test_no_workspace_raises(local_environment, tmp_path):
-    candidates = (str(tmp_path / "app"), str(tmp_path / "testbed"))
-    with pytest.raises(WorkspaceError):
-        run(find_workspace(local_environment, candidates))
+def start_in(env, directory: Path) -> None:
+    """Make the sandbox start in `directory`, as Harbor does for a task that sets a workdir."""
+    env.task_env_config.workdir = str(directory)
 
 
-def test_the_workspace_is_found_in_the_sandbox_not_on_this_machine(
-    local_environment, tmp_path, monkeypatch
-):
-    """
-    This machine is made to look as if it has /app, and the sandbox, stood in
-    for by an exec that maps the default paths into tmp_path, has only /testbed.
-    """
-    on_this_machine = {"/app", "/testbed"}
-    for name in ("exists", "is_dir"):
-        real = getattr(Path, name)
-        monkeypatch.setattr(
-            Path, name, lambda self, real=real: str(self) in on_this_machine or real(self)
-        )
-    for name in ("exists", "isdir"):
-        real = getattr(os.path, name)
-        monkeypatch.setattr(
-            os.path, name, lambda path, real=real: str(path) in on_this_machine or real(path)
-        )
-    (tmp_path / "testbed").mkdir()
-    real_exec = local_environment.exec
+@pytest.fixture(params=["local_environment", "modal_environment"])
+def env(request):
+    """Both stand-ins, since Docker gives None for empty output and Modal gives ""."""
+    return request.getfixturevalue(request.param)
 
-    async def sandbox_exec(command, *args, **kwargs):
-        for path in ("/app", "/testbed"):
-            command = command.replace(path, str(tmp_path) + path)
-        return await real_exec(command, *args, **kwargs)
 
-    local_environment.exec = sandbox_exec
-    assert run(find_workspace(local_environment)) == "/testbed"
+def test_the_workspace_is_the_directory_the_sandbox_starts_in(env, tmp_path):
+    # A space in the name, so a path left unquoted breaks.
+    repo = init(tmp_path / "the gleam")
+    start_in(env, repo)
+    assert run(find_workspace(env)) == str(repo)
+
+
+def test_a_start_directory_reached_through_a_symlink_is_its_repository(env, tmp_path):
+    repo = init(tmp_path / "gleam")
+    link = tmp_path / "link"
+    link.symlink_to(repo)
+    start_in(env, link)
+    assert Path(run(find_workspace(env))).resolve() == repo.resolve()
+
+
+def test_a_start_directory_with_no_repository_fails_naming_it(env, tmp_path):
+    plain = tmp_path / "plain dir"
+    plain.mkdir()
+    start_in(env, plain)
+    with pytest.raises(WorkspaceError) as raised:
+        run(find_workspace(env))
+    assert str(plain) in str(raised.value), "the error does not name the directory"
+    assert "not a git repository" in str(raised.value), "the error drops what git said"
+
+
+def test_a_start_directory_inside_a_repository_fails_naming_it(env, tmp_path):
+    """git apply in a subdirectory skips every path outside it, so a regrade there would drop changes."""
+    repo = init(tmp_path / "gleam")
+    inside = repo / "src"
+    inside.mkdir()
+    start_in(env, inside)
+    with pytest.raises(WorkspaceError) as raised:
+        run(find_workspace(env))
+    assert str(inside) in str(raised.value), "the error does not name the directory"

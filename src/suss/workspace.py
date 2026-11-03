@@ -9,7 +9,6 @@ import shlex
 
 from harbor.environments.base import BaseEnvironment
 
-WORKSPACES = ("/app", "/testbed")
 LOGS_DIR = "/logs/agent"
 PATCH_NAME = "model.patch"
 
@@ -18,19 +17,31 @@ class WorkspaceError(Exception):
     """A workspace suss cannot read or capture. The message carries git's output."""
 
 
-async def find_workspace(
-    env: BaseEnvironment, candidates: tuple[str, ...] = WORKSPACES
-) -> str:
+async def find_workspace(env: BaseEnvironment) -> str:
     """
-    Return the first candidate that is a directory in the sandbox.
+    Return the directory the sandbox starts in, which is the image's WORKDIR.
 
-    Raises WorkspaceError when none is.
+    It must be the top level of a git repository. A directory inside one is
+    refused as well, because `git apply` there skips every path outside it,
+    so a regrade would drop part of the patch. Raises WorkspaceError naming
+    the directory when it is not.
     """
-    for path in candidates:
-        result = await env.exec(f"test -d {shlex.quote(path)}")
-        if result.return_code == 0:
-            return path
-    raise WorkspaceError(f"no workspace: none of {', '.join(candidates)} is a directory")
+    # Only the newline pwd ends with, since a directory's name can end in whitespace.
+    start = (await _run(env, "pwd")).removesuffix("\n")
+    # Into stdout, because Modal keeps stderr apart and git explains a failure there.
+    result = await env.exec(f"git -C {shlex.quote(start)} rev-parse --show-prefix 2>&1")
+    if result.return_code != 0:
+        raise WorkspaceError(
+            f"the sandbox starts in {start}, where git finds no repository it can read:"
+            f" {(result.stdout or '').strip()}"
+        )
+    prefix = (result.stdout or "").strip()
+    if prefix:
+        raise WorkspaceError(
+            f"the sandbox starts in {start}, which is {prefix} inside a git repository,"
+            " not its top level"
+        )
+    return start
 
 
 async def read_base(env: BaseEnvironment, workspace: str) -> str:

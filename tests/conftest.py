@@ -126,6 +126,19 @@ class LocalEnvironment(BaseEnvironment):
         raise NotImplementedError
 
 
+def start_directory(root: Path) -> EnvironmentConfig:
+    """
+    Start every command in an empty directory, as a sandbox starts in its
+    image's WORKDIR.
+
+    Left unset, a command would start where pytest did, in this checkout,
+    which is a git repository a test could find in place of its own.
+    """
+    start = root / "start"
+    start.mkdir()
+    return EnvironmentConfig(workdir=str(start))
+
+
 @pytest.fixture
 def local_environment(tmp_path_factory):
     root = tmp_path_factory.mktemp("local-environment")
@@ -134,7 +147,7 @@ def local_environment(tmp_path_factory):
         environment_name="local",
         session_id="local",
         trial_paths=TrialPaths(root / "trial"),
-        task_env_config=EnvironmentConfig(),
+        task_env_config=start_directory(root),
     )
     yield environment
     asyncio.run(environment.stop(delete=True))
@@ -178,18 +191,28 @@ class ContainerEnvironment(LocalEnvironment):
         subprocess.run(["docker", "rm", "-f", self.container], capture_output=True)
 
 
-@pytest.fixture
-def container_environment(tmp_path_factory):
-    """A ContainerEnvironment whose mounted directory is `environment.environment_dir`."""
+def require_docker() -> None:
     if shutil.which("docker") is None or subprocess.run(
         ["docker", "info"], capture_output=True
     ).returncode != 0:
         pytest.skip("Docker is not running")
+
+
+@pytest.fixture
+def container_image() -> str:
+    """The image container_environment runs. A test module overrides it for an image of its own."""
+    return CONTAINER_IMAGE
+
+
+@pytest.fixture
+def container_environment(tmp_path_factory, container_image):
+    """A ContainerEnvironment whose mounted directory is `environment.environment_dir`."""
+    require_docker()
     root = tmp_path_factory.mktemp("container-environment").resolve()
     # Open to every user, so a command run as a user other than root can write here.
     root.chmod(0o777)
     started = subprocess.run(
-        ["docker", "run", "-d", "--rm", "-v", f"{root}:{root}", CONTAINER_IMAGE,
+        ["docker", "run", "-d", "--rm", "-v", f"{root}:{root}", container_image,
          "sh", "-c", "sleep infinity"],
         capture_output=True,
         text=True,
@@ -286,7 +309,7 @@ def modal_environment(tmp_path_factory):
         environment_name="modal",
         session_id="modal",
         trial_paths=TrialPaths(root / "trial"),
-        task_env_config=EnvironmentConfig(),
+        task_env_config=start_directory(root),
     )
     yield environment
     asyncio.run(environment.stop(delete=True))

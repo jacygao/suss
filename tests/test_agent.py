@@ -26,6 +26,7 @@ from harbor.models.agent.context import AgentContext
 
 from suss.agent import SussAgent
 from suss.harness import SandboxPaths
+from suss.workspace import WorkspaceError
 
 FAKE_ADAPTER = Path(__file__).resolve().parent / "fake_adapter"
 SPEC = Path(__file__).resolve().parent.parent / "docs" / "specs" / "suss-spec.md"
@@ -95,7 +96,6 @@ class Trial:
             config=config if config is not None else str(self.config),
             logs_dir=self.host_logs,
             paths=self.paths,
-            workspaces=(str(self.workspace),),
         )
 
     def run(self, env, agent: SussAgent | None = None) -> dict:
@@ -110,7 +110,7 @@ class Trial:
 
 
 @pytest.fixture
-def trial(tmp_path) -> Trial:
+def trial(tmp_path, local_environment) -> Trial:
     host = tmp_path / "the host"
     grader_commit = init_repo(host / "SWE-bench_Pro-os", {"README": "the grader\n"})
     adapter = host / "adapters" / "fake"
@@ -137,8 +137,10 @@ def trial(tmp_path) -> Trial:
     (host / ".env").write_text("SUSS_FAKE_KEY=from the env file\n")
 
     sandbox = tmp_path / "the sandbox"
-    workspace = sandbox / "app"
+    workspace = sandbox / "gleam"
     base = init_repo(workspace, {"hello.txt": "hello\n"})
+    # The sandbox starts in the workspace, as an image's WORKDIR makes it.
+    local_environment.task_env_config.workdir = str(workspace)
     opt = sandbox / "opt" / "suss"
     paths = SandboxPaths(
         adapter=str(opt / "adapter"),
@@ -350,8 +352,21 @@ def test_harbors_own_construction_keeps_the_specs_sandbox_paths(trial):
         params="/opt/suss/params.json",
         logs="/logs/agent",
     )
-    assert agent.workspaces == ("/app", "/testbed")
     assert agent.to_agent_info().name == SussAgent.name()
+
+
+def test_a_trial_that_starts_outside_a_repository_fails_naming_the_directory(
+    local_environment, trial, tmp_path
+):
+    elsewhere = tmp_path / "the sandbox" / "elsewhere"
+    elsewhere.mkdir()
+    local_environment.task_env_config.workdir = str(elsewhere)
+
+    with pytest.raises(WorkspaceError) as raised:
+        go(trial.agent().setup(environment=local_environment))
+
+    assert str(elsewhere) in str(raised.value), "the error does not name the directory"
+    assert not trial.sandbox_adapter.exists(), "setup went on past the workspace"
 
 
 def test_run_before_setup_is_refused(local_environment, trial):
