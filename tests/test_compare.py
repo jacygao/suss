@@ -2,6 +2,7 @@ import asyncio
 import json
 import random
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -198,6 +199,8 @@ def test_reads_whether_the_regrade_applied_the_patch_from_what_replay_agent_wrot
     (regrade / "agent" / "replay.json").unlink()
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    # A repository, as every workspace is, since the regrade asks git what the patch changed.
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
 
     async def find_workspace(environment):
         return str(workspace)
