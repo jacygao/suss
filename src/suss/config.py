@@ -48,15 +48,8 @@ def load(path: Path, arm: str) -> Config:
     not define `arm`, when the top or `arm` sets `max_cost_usd`, or when a .env
     line is not NAME=VALUE.
     """
-    path = Path(path).resolve()
+    path, data = _read(path)
     directory = path.parent
-    try:
-        with path.open("rb") as file:
-            data = tomllib.load(file)
-    except FileNotFoundError:
-        raise ConfigError(f"{path}: no such file") from None
-    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
-        raise ConfigError(f"{path}: not valid TOML: {error}") from None
     for key in REQUIRED:
         if key not in data:
             raise ConfigError(f"{path}: no {key!r}")
@@ -97,6 +90,37 @@ def load(path: Path, arm: str) -> Config:
         ),
         env=_read_env(directory / ".env"),
     )
+
+
+def baselines(path: Path, arms: list[str]) -> dict[str, str | None]:
+    """
+    Each of `arms`' baseline from the suss.toml at `path`, None for an arm that
+    names none.
+
+    Nothing else in the file is read, so a file `load` refuses for a run still
+    gives them. Raises ConfigError, naming the file, when it is missing or is
+    not TOML, or when it does not define one of the arms.
+    """
+    path, data = _read(path)
+    defined = data.get("arms", {})
+    found = {}
+    for arm in arms:
+        if arm not in defined:
+            raise ConfigError(f"arm {arm} is not defined in {path}")
+        found[arm] = defined[arm].get("baseline")
+    return found
+
+
+def _read(path: Path) -> tuple[Path, dict[str, Any]]:
+    """The file's resolved path and its TOML, raising ConfigError when it has none."""
+    path = Path(path).resolve()
+    try:
+        with path.open("rb") as file:
+            return path, tomllib.load(file)
+    except FileNotFoundError:
+        raise ConfigError(f"{path}: no such file") from None
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
+        raise ConfigError(f"{path}: not valid TOML: {error}") from None
 
 
 def _cap(key: str, arm: dict[str, Any], top: dict[str, Any]) -> Any:

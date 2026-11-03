@@ -1,6 +1,7 @@
 """
 suss compare: reading an arm's trials under `results/`, each with its regrade's
-result, and the difference between two arms' resolved shares, with an interval.
+result, the difference between two arms' resolved shares, with an interval, and
+the tables the command prints.
 
 Reading never raises on what a trial left or failed to leave. A trial with no
 readable record is `harness-failed`, and one whose regrade has no readable
@@ -13,6 +14,8 @@ import statistics
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+
+from suss import config
 
 REGRADE = "-regrade"
 
@@ -192,3 +195,127 @@ def resolved_difference(
 def _difference(counts: Sequence[tuple[int, int, int, int]]) -> float:
     resolved, trials, base_resolved, base_trials = map(sum, zip(*counts))
     return resolved / trials - base_resolved / base_trials
+
+
+class CompareError(Exception):
+    """The arms' results cannot be compared, for the reason the message gives."""
+
+
+@dataclass(frozen=True)
+class Shares:
+    """An arm's trials, and the share of them resolved, failed and timed out."""
+
+    trials: int
+    resolved: float
+    failed: float
+    timed_out: float
+
+
+def report(directory: Path, lane: str, arms: Sequence[str]) -> str:
+    """
+    What `suss compare` prints for the arms on the lane, run in `directory`,
+    the directory holding suss.toml.
+
+    Both tables count only the tasks every arm has trials for. The second has
+    a row for each arm whose baseline is among `arms`, in the order given, and
+    is left out when no arm has one.
+
+    Raises ConfigError when suss.toml does not define every arm, and
+    CompareError when an arm has no trials or the arms share no task.
+    """
+    baselines = config.baselines(Path(directory) / "suss.toml", list(arms))
+    trials = _read(directory, lane, arms)
+    common = set.intersection(*({trial.task for trial in found} for found in trials.values()))
+    if not common:
+        raise CompareError(
+            f"arms {', '.join(arms[:-1])} and {arms[-1]} have no task in common "
+            f"under results/{lane}/"
+        )
+    kept = {arm: [trial for trial in found if trial.task in common] for arm, found in trials.items()}
+    shares = {arm: _shares(kept[arm]) for arm in arms}
+    outcomes = {arm: _outcomes(kept[arm]) for arm in arms}
+    differences = [
+        (arm, baselines[arm], resolved_difference(outcomes[arm], outcomes[baselines[arm]]))
+        for arm in arms
+        if baselines[arm] in arms
+    ]
+    return render(shares, differences)
+
+
+def _read(directory: Path, lane: str, arms: Sequence[str]) -> dict[str, list[Trial]]:
+    """
+    Every trial of each arm, raising CompareError for an arm with none, so
+    that nothing is compared that cannot be.
+    """
+    trials = {}
+    for arm in arms:
+        trials[arm] = read_trials(directory, lane, arm)
+        if not trials[arm]:
+            raise CompareError(f"no results for arm {arm} under results/{lane}/")
+    return trials
+
+
+def _outcomes(trials: Sequence[Trial]) -> dict[str, list[bool]]:
+    """Whether each trial resolved, by task, as resolved_difference takes them."""
+    by_task: dict[str, list[bool]] = {}
+    for trial in trials:
+        by_task.setdefault(trial.task, []).append(trial.resolved)
+    return by_task
+
+
+def _shares(trials: Sequence[Trial]) -> Shares:
+    count = len(trials)
+    return Shares(
+        trials=count,
+        resolved=sum(trial.resolved for trial in trials) / count,
+        failed=sum(trial.status == "harness-failed" for trial in trials) / count,
+        timed_out=sum(trial.status == "timed-out" for trial in trials) / count,
+    )
+
+
+def render(
+    shares: Mapping[str, Shares], differences: Sequence[tuple[str, str, Difference]]
+) -> str:
+    """
+    The first table, of each arm's shares, and the second, of each
+    (arm, baseline, difference), unless there are none.
+    """
+    header = ["arm", "trials", "resolved", "failed", "timed out"]
+    rows = [
+        [arm, str(s.trials), _percent(s.resolved), _percent(s.failed), _percent(s.timed_out)]
+        for arm, s in shares.items()
+    ]
+    widths = [max(len(row[i]) for row in [header, *rows]) for i in range(len(header))]
+    lines = [
+        "  ".join(
+            [row[0].ljust(widths[0])] + [cell.rjust(width) for cell, width in zip(row[1:], widths[1:])]
+        )
+        for row in [header, *rows]
+    ]
+    if differences:
+        labels = [f"{arm} - {baseline}" for arm, baseline, _ in differences]
+        estimates = [_signed(difference.estimate) for _, _, difference in differences]
+        label_width = max(len(label) for label in ["vs. baseline", *labels])
+        estimate_width = max(len(estimate) for estimate in estimates)
+        lines += ["", f"{'vs. baseline'.ljust(label_width)}   resolved"]
+        for label, estimate, (_, _, difference) in zip(labels, estimates, differences):
+            lines.append(
+                f"{label.ljust(label_width)}   {estimate.rjust(estimate_width)} "
+                f"[{_signed(difference.low)}, {_signed(difference.high)}]"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def _whole(share: float) -> int:
+    """The share as a whole percent, a half rounded away from zero."""
+    percent = int(abs(share) * 100 + 0.5)
+    return -percent if share < 0 else percent
+
+
+def _percent(share: float) -> str:
+    return f"{_whole(share)}%"
+
+
+def _signed(share: float) -> str:
+    # A share that rounds to 0 from below prints +0%, not -0%.
+    return f"{_whole(share):+d}%"
