@@ -108,7 +108,7 @@ each arm did and how it differs from its baseline.
 
 ### Acceptance criteria
 
-- [ ] `suss compare pro-go claude-code self-review peer-review`, over results in
+- [x] `suss compare pro-go claude-code self-review peer-review`, over results in
       the layout `suss run` writes, prints two tables. The first gives each arm's
       trials and its resolved, failed and timed-out shares. The second gives each
       arm's resolved difference from its baseline, with an interval:
@@ -122,24 +122,24 @@ each arm did and how it differs from its baseline.
       self-review - claude-code   +3% [-2%, +8%]
       peer-review - claude-code   +6% [+1%, +11%]
       ```
-- [ ] Only tasks that every given arm has trials for are counted, and nothing
+- [x] Only tasks that every given arm has trials for are counted, and nothing
       under `checks/` is read
-- [ ] Each trial in `<stamp>-<i>` is paired with the trial for the same task in
+- [x] Each trial in `<stamp>-<i>` is paired with the trial for the same task in
       `<stamp>-<i>-regrade`, and its result is that regrade's reward
-- [ ] `harness-failed` and `timed-out` trials count as their regrade graded them
-- [ ] A trial whose regrade has no reward counts as unresolved, and a trial with
+- [x] `harness-failed` and `timed-out` trials count as their regrade graded them
+- [x] A trial whose regrade has no reward counts as unresolved, and a trial with
       no `suss.json` counts as `harness-failed`
-- [ ] Each arm's `baseline` is read from `suss.toml` in the current directory
-- [ ] An arm gets a row in the second table only when its `baseline` is among
+- [x] Each arm's `baseline` is read from `suss.toml` in the current directory
+- [x] An arm gets a row in the second table only when its `baseline` is among
       the arms given
-- [ ] The interval is a 95% bootstrap interval that resamples tasks, keeping each
+- [x] The interval is a 95% bootstrap interval that resamples tasks, keeping each
       task's K trials together, and a fixture with a known difference lands
       inside it. The same results always print the same interval
-- [ ] An arm with no results under the lane, or not defined in `suss.toml`,
+- [x] An arm with no results under the lane, or not defined in `suss.toml`,
       makes the command exit non-zero and print only an error naming the arm
-- [ ] When the arms' trials that have a `suss.json` do not all carry the same
+- [x] When the arms' trials that have a `suss.json` do not all carry the same
       `grader`, the command exits non-zero and prints only the error. A trial
       with no `suss.json` takes no part in that check
-- [ ] A trial whose `suss.json` has `patch_bytes` above 0, and whose regrade
+- [x] A trial whose `suss.json` has `patch_bytes` above 0, and whose regrade
       applied no patch, makes the command exit non-zero and print only the error
-- [ ] `uv run pytest` passes
+- [x] `uv run pytest` passes
