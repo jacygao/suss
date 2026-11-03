@@ -459,6 +459,34 @@ def test_a_renamed_test_file_is_back_under_its_old_name_and_gone_from_its_new(
     assert git(workspace, "status", "--porcelain") == ""
 
 
+@pytest.mark.parametrize("name", ["tests/conftest.py", "tests/odd name ü.py"])
+def test_a_test_file_the_patch_added_and_ignored_is_removed(
+    tmp_path, local_environment, workspace, found, name
+):
+    def add_ignored(repo: Path) -> None:
+        write({name: b"import pytest\n", ".gitignore": f"/{name}\n".encode()})(repo)
+        git(repo, "add", "-f", name)
+
+    record = regrade(tmp_path, local_environment, workspace, add_ignored)
+
+    assert not (workspace / name).exists()
+    assert record["tests_reset"] == {"restored": [], "removed": [name]}
+
+
+@pytest.mark.parametrize("name", ["tests/fixtures/blob.bin", "tests/fixtures/odd ü.bin"])
+def test_a_binary_test_file_the_patch_added_and_ignored_is_removed(
+    tmp_path, local_environment, workspace, found, name
+):
+    def add_ignored(repo: Path) -> None:
+        write({name: b"\0" + HIGH_BYTES, ".gitignore": f"/{name}\n".encode()})(repo)
+        git(repo, "add", "-f", name)
+
+    record = regrade(tmp_path, local_environment, workspace, add_ignored)
+
+    assert not (workspace / name).exists()
+    assert record["tests_reset"] == {"restored": [], "removed": [name]}
+
+
 def test_a_test_file_the_patch_replaced_with_a_directory_comes_back_as_a_file(
     tmp_path, local_environment, workspace, found
 ):

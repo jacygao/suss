@@ -101,7 +101,8 @@ class ReplayAgent(BaseAgent):
             # What the image itself changed is not the patch's, so it stays.
             before = await _changed_from_base(environment, workspace)
             applied = await self._apply(environment, patch, workspace)
-            tests_reset = await _reset_tests(environment, workspace, before)
+            created = _created(patch.read_bytes())
+            tests_reset = await _reset_tests(environment, workspace, before, created)
             record = {"task": task, "patch": str(patch), **applied, "tests_reset": tests_reset}
         (self.logs_dir / RECORD_NAME).write_text(json.dumps(record, indent=2) + "\n")
 
@@ -184,19 +185,25 @@ async def _changed_from_base(environment: BaseEnvironment, workspace: str) -> di
 
 
 async def _reset_tests(
-    environment: BaseEnvironment, workspace: str, before: dict[str, bool]
+    environment: BaseEnvironment, workspace: str, before: dict[str, bool], created: list[str]
 ) -> dict[str, list[str]]:
     """
     Restore from HEAD each test file the patch changed or deleted, remove each
     one it added, and return the paths of both.
 
-    A path that differed from HEAD before the patch is left as it is. Raises
-    ReplayError naming git's output when git cannot read the workspace or put
-    a file back.
+    `created` is every path the patch's headers create. A path that differed
+    from HEAD before the patch is left as it is. Raises ReplayError naming
+    git's output when git cannot read the workspace or put a file back.
     """
     after = await _changed_from_base(environment, workspace)
     tests = {path: in_base for path, in_base in after.items()
              if path not in before and is_test_file(path)}
+    # Git lists no ignored file, and a patch can add a test file along with a
+    # rule that ignores it.
+    unlisted = [path for path in created
+                if path not in before and path not in tests and is_test_file(path)]
+    for path in await _present_and_not_in_base(environment, workspace, unlisted):
+        tests[path] = False
     restored = sorted(path for path, in_base in tests.items() if in_base)
     removed = sorted(path for path, in_base in tests.items() if not in_base)
     # Literal, so a test file named with `*` or `[` names only itself.
@@ -221,6 +228,71 @@ async def _reset_tests(
                 f" {workspace}: {(result.stdout or '').strip()}"
             )
     return {"restored": restored, "removed": removed}
+
+
+async def _present_and_not_in_base(
+    environment: BaseEnvironment, workspace: str, paths: list[str]
+) -> list[str]:
+    """Those of `paths` that are in the workspace and not in HEAD."""
+    if not paths:
+        return []
+    # Each path that qualifies comes back as its index, since a name can hold a newline.
+    command = (
+        f"i=0; for p in {' '.join(shlex.quote(path) for path in paths)}; do"
+        ' if { [ -e "$p" ] || [ -L "$p" ]; } && ! git cat-file -e "HEAD:$p" 2>/dev/null;'
+        ' then echo "$i"; fi; i=$((i+1)); done'
+    )
+    result = await environment.exec(command, cwd=workspace, timeout_sec=APPLY_SECONDS)
+    output = (result.stdout or "") + (result.stderr or "")
+    if result.return_code != 0:
+        raise ReplayError(f"cannot check the patch's new files in {workspace}: {output.strip()}")
+    return [paths[int(line)] for line in output.split() if line.isdigit()]
+
+
+def _created(patch: bytes) -> list[str]:
+    """
+    Every path the patch's headers create, by a new file, a rename or a copy,
+    relative to the workspace.
+    """
+    created = []
+    lines = patch.decode(errors="surrogateescape").splitlines()
+    new_file: str | None = None
+    header = ""
+    for i, line in enumerate(lines):
+        if line.startswith("diff --git "):
+            new_file = None
+            header = line[len("diff --git ") :]
+        elif line.startswith("new file mode"):
+            # A binary file has no +++ line, so its path comes from the diff line.
+            new_file = _git_header_path(header)
+            if new_file is not None:
+                created.append(new_file)
+        elif line.startswith(("rename to ", "copy to ")):
+            created.append(_unquote(line.split(" to ", 1)[1]))
+        elif line == "--- /dev/null" and i + 1 < len(lines) and lines[i + 1].startswith("+++ "):
+            target = lines[i + 1][4:]
+            target = _unquote(target) if target.startswith('"') else target.split("\t")[0]
+            # The first component goes, as `patch -p1` and `git apply` drop it.
+            path = target.split("/", 1)[1] if "/" in target else target
+            if path != new_file:
+                created.append(path)
+    return created
+
+
+def _git_header_path(header: str) -> str | None:
+    """
+    The b/ path of a `diff --git` line for a new file, whose two paths are the
+    same apart from their prefixes.
+    """
+    if header.startswith('"'):
+        end = 1
+        while end < len(header) and header[end] != '"':
+            end += 2 if header[end] == "\\" else 1
+        b = header[end + 2 :]
+        b = _unquote(b) if b.startswith('"') else b
+    else:
+        b = header[(len(header) - 1) // 2 + 1 :]
+    return b[2:] if b.startswith("b/") else None
 
 
 def _unquote(path: str) -> str:
