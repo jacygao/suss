@@ -156,7 +156,8 @@ directory as `agent/` in the trial's directory under `results/`.
 
 - `grader` names the dataset the trial's task came from, and a sha256 digest of
   every file of every task in the directory `swe_rebench` names, by path and
-  content. A link counts by its target, and is not followed. File times, modes,
+  content. A link inside a task counts by its target, and is not followed. A
+  task directory that is a link counts as the task it names. File times, modes,
   empty directories, and files outside every task, such as the download's
   `README.md`, leave the digest unchanged, so two downloads of the same tasks
   have the same digest.
