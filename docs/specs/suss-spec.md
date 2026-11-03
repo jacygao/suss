@@ -70,8 +70,8 @@ In the setup phase, suss:
 
 1. **finds the workspace and records the base.** The workspace is the directory
    the sandbox starts in, which is the image's `WORKDIR`, such as `/gleam`. It
-   must hold a git repository, or the trial fails naming it. The base is
-   `git rev-parse HEAD`.
+   must be the top level of a git repository, or the trial fails naming it. The
+   base is `git rev-parse HEAD`.
 2. **uploads the harness's adapter** to `/opt/suss/adapter/`.
 3. **installs the harness**, if the adapter's manifest names an `install` command.
 
@@ -112,9 +112,11 @@ A harness cannot change its result by changing the sandbox it worked in, because
 the grading happens in another.
 
 `ReplayAgent` finds a trial's patch by the task the trial ran, among every trial
-directory of the agent job. So an agent job holds
-one trial of each task, and suss runs K agent jobs for K trials, where K is `k`
-in `suss.toml`.
+directory of the agent job. So an agent job holds one trial of each task, and
+suss runs K agent jobs for K trials, where K is `k` in `suss.toml`. When the
+agent job holds no trial of the task, or more than one, `ReplayAgent` fails the
+regrade's trial, and Harbor records the exception in that trial's
+`result.json`.
 
 It writes `agent/replay.json` in the regrade's trial. With no patch, or an empty
 one, it applies nothing and writes `"patch": null`:
@@ -154,7 +156,11 @@ directory as `agent/` in the trial's directory under `results/`.
 
 - `grader` names the dataset the trial's task came from, and a sha256 digest of
   every file of every task in the directory `swe_rebench` names, by path and
-  content. Two downloads of the same tasks have the same digest.
+  content. A link inside a task counts by its target, and is not followed. A
+  task directory that is a link counts as the task it names. File times, modes,
+  empty directories, and files outside every task, such as the download's
+  `README.md`, leave the digest unchanged, so two downloads of the same tasks
+  have the same digest.
 - `status` is `ok`, `harness-failed` or `timed-out`. A trial is `timed-out`
   when suss stops `run` at `max_seconds`, and when Harbor's agent timeout stops
   the trial while `run` is going. Either way, suss stops the harness inside the
@@ -266,8 +272,9 @@ The agent phase has no network. Suss passes each host in the harness's
 `allowed_hosts` to Harbor as `--allow-agent-host`, and nothing else, so a harness
 cannot fetch a task's real change from the web.
 
-The tasks set only `[environment] network_mode = "public"`, under which Harbor
-ignores `--allow-agent-host`. So the lane holds a copy of each task, whose
+The tasks give the network to the whole trial, with
+`[environment] network_mode = "public"`, or with `allow_internet = true` in
+one, and Harbor ignores `--allow-agent-host` under either. So the lane holds a copy of each task, whose
 `task.toml` adds `[agent] network_mode = "no-network"` and is otherwise
 unchanged. The verifier keeps the task's own network, which it uses to download
 a Python on an image that has none.
@@ -484,8 +491,9 @@ It exits with an error, and prints nothing else, when:
 - The arms' trials that have a `suss.json` do not all carry the same `grader`.
   A trial with no `suss.json` has no `grader` to compare, and still counts as
   `harness-failed`.
-- A trial whose `suss.json` has `patch_bytes` above 0 has a regrade whose
-  `agent/replay.json` has `"patch": null`.
+- A trial whose `suss.json` has `patch_bytes` above 0 has a regrade that
+  applied no patch: its `agent/replay.json` has `"patch": null`, or it has no
+  `agent/replay.json` and its `result.json` records an exception.
 
 ## 7. The project
 
