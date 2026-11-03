@@ -19,7 +19,7 @@ from harbor.models.agent.context import AgentContext
 from harbor.models.trial.config import AgentConfig
 
 import suss.replay
-from suss.replay import ReplayAgent, ReplayError
+from suss.replay import ReplayAgent, ReplayError, is_test_file
 
 TASK = "gleam-lang__gleam-5797"
 # Git sees no NUL as text, and writes these bytes into the patch raw, where
@@ -331,3 +331,247 @@ def test_each_methods_output_follows_its_own_line_where_stderr_is_kept_apart(
 
     first_method_output = record["apply_out"].split("$ git apply --3way")[0]
     assert "error: absent.txt" in first_method_output, record["apply_out"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tests/issues/GH7798.test.ts",
+        "internal/spec/spec_test.go",
+        "libs/agno/tests/unit/team/test_run.py",
+        "core/src/test/java/io/kestra/core/utils/LogsTest.java",
+        "hugegraph-test/src/main/java/org/apache/hugegraph/core/CountStrategyCoreTest.java",
+        "src/XMLTests.java",
+        "packages/core/__tests__/unsetAllMarks.spec.ts",
+        "packages/api/src/agents/tools.spec.ts",
+        "crates/extract/src/visitor/tests.rs",
+        "crates/coral-spec/src/v4/openapi_tests.rs",
+        "crates/ruff_linter/src/rules/ruff/snapshots/ruff_linter__rules__ruff__tests__ruf100_5.snap",
+        "crates/oxc_semantic/tests/fixtures/oxc/ts/decorators/parameter-decorator-shadow.snap",
+        "testdata/baselines/reference/compiler/isolatedDeclarations.types",
+        "crates/ty_python_semantic/resources/mdtest/generics/legacy/variance.md",
+        "test-parity/node-suite/node-core/namespace-absent-member-read.ts",
+        "test262/harness/assert.js",
+    ],
+)
+def test_a_path_with_a_test_word_or_a_js_spec_name_is_a_test_file(path):
+    assert is_test_file(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "internal/spec/spec.go",
+        "crates/coral-spec/src/v4/surfaces/openapi/schemas.rs",
+        "langchain4j-core/src/main/java/dev/langchain4j/agent/tool/ToolSpecifications.java",
+        "crates/rust-analyzer/src/target_spec.rs",
+        "packages/data-schemas/tsconfig.spec.json",
+        "tasks/coverage/snapshots/semantic_typescript.snap",
+        "server/src/main/java/com/arcadedb/server/http/handler/GetTimeSeriesLatestHandler.java",
+        "feature/tpm/attestation.go",
+        "net/speedtest/speedtest.go",
+        "crates/ty_vendored/vendor/typeshed/stdlib/unittest/case.pyi",
+        "src/main/java/TestedModels.java",
+        "crates/ruff_db/src/testing.rs",
+    ],
+)
+def test_a_path_with_no_test_word_and_no_js_spec_name_is_not_a_test_file(path):
+    assert not is_test_file(path)
+
+
+def commit(repo: Path, files: dict[str, bytes]) -> None:
+    """Add `files` to the base, as the task's repository had them."""
+    write(files)(repo)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "tests")
+
+
+def write(files: dict[str, bytes | None]):
+    """A change that writes each file, or deletes it where the content is None."""
+
+    def change(repo: Path) -> None:
+        for name, content in files.items():
+            if content is None:
+                (repo / name).unlink()
+            else:
+                (repo / name).parent.mkdir(parents=True, exist_ok=True)
+                (repo / name).write_bytes(content)
+
+    return change
+
+
+def regrade(tmp_path, environment, workspace, change) -> dict:
+    job = tmp_path / "agent-job"
+    trial(job, "t1", TASK, patch_of(workspace, change))
+    return replay(replay_agent(tmp_path, str(job)), environment)
+
+
+def test_a_test_file_the_patch_edited_is_graded_as_it_was_at_the_base(
+    tmp_path, local_environment, workspace, found
+):
+    commit(workspace, {"tests/test_lines.py": b"assert snapshot_written\n"})
+    change = write({"tests/test_lines.py": b"assert not snapshot_written\n", "lines.txt": b"fix\n"})
+
+    record = regrade(tmp_path, local_environment, workspace, change)
+
+    assert (workspace / "tests/test_lines.py").read_bytes() == b"assert snapshot_written\n"
+    assert (workspace / "lines.txt").read_bytes() == b"fix\n"
+    assert record["tests_reset"] == {"restored": ["tests/test_lines.py"], "removed": []}
+    assert git(workspace, "status", "--porcelain") == " M lines.txt\n"
+
+
+def test_a_test_file_the_patch_deleted_comes_back(tmp_path, local_environment, workspace, found):
+    commit(workspace, {"src/test/java/LinesTest.java": b"class LinesTest {}\n"})
+
+    record = regrade(
+        tmp_path, local_environment, workspace, write({"src/test/java/LinesTest.java": None})
+    )
+
+    assert (workspace / "src/test/java/LinesTest.java").read_bytes() == b"class LinesTest {}\n"
+    assert record["tests_reset"] == {"restored": ["src/test/java/LinesTest.java"], "removed": []}
+    assert git(workspace, "status", "--porcelain") == ""
+
+
+def test_a_test_file_the_patch_added_is_removed(tmp_path, local_environment, workspace, found):
+    change = write({"pkg/lines_test.go": b"package lines\n", "lines.txt": b"fix\n"})
+
+    record = regrade(tmp_path, local_environment, workspace, change)
+
+    assert not (workspace / "pkg/lines_test.go").exists()
+    assert record["tests_reset"] == {"restored": [], "removed": ["pkg/lines_test.go"]}
+    assert git(workspace, "status", "--porcelain") == " M lines.txt\n"
+
+
+def test_a_renamed_test_file_is_back_under_its_old_name_and_gone_from_its_new(
+    tmp_path, local_environment, workspace, found
+):
+    commit(workspace, {"tests/test_old.py": b"assert True\n" * 20})
+
+    def rename(repo: Path) -> None:
+        (repo / "tests/test_old.py").rename(repo / "tests/test_new.py")
+
+    record = regrade(tmp_path, local_environment, workspace, rename)
+
+    assert record["tests_reset"] == {
+        "restored": ["tests/test_old.py"],
+        "removed": ["tests/test_new.py"],
+    }
+    assert git(workspace, "status", "--porcelain") == ""
+
+
+def test_a_test_file_the_patch_replaced_with_a_directory_comes_back_as_a_file(
+    tmp_path, local_environment, workspace, found
+):
+    commit(workspace, {"tests/cases": b"case one\n"})
+
+    def replace(repo: Path) -> None:
+        (repo / "tests/cases").unlink()
+        write({"tests/cases/one_test.py": b"assert True\n"})(repo)
+
+    record = regrade(tmp_path, local_environment, workspace, replace)
+
+    assert (workspace / "tests/cases").read_bytes() == b"case one\n"
+    assert record["tests_reset"] == {
+        "restored": ["tests/cases"],
+        "removed": ["tests/cases/one_test.py"],
+    }
+
+
+def test_a_binary_test_file_is_restored_byte_for_byte(
+    tmp_path, local_environment, workspace, found
+):
+    fixture = bytes(range(256)) * 4
+    commit(workspace, {"tests/fixtures/image.bin": fixture})
+
+    record = regrade(
+        tmp_path, local_environment, workspace, write({"tests/fixtures/image.bin": fixture[::-1]})
+    )
+
+    assert (workspace / "tests/fixtures/image.bin").read_bytes() == fixture
+    assert record["tests_reset"]["restored"] == ["tests/fixtures/image.bin"]
+
+
+def test_a_test_file_whose_name_needs_quoting_is_restored_and_removed(
+    tmp_path, local_environment, workspace, found
+):
+    edited, added = "tests/[ab]* ü.py", 'tests/new "x"\t.py'
+    commit(workspace, {edited: b"base\n", "tests/a.py": b"untouched\n"})
+
+    record = regrade(
+        tmp_path, local_environment, workspace, write({edited: b"edited\n", added: b"added\n"})
+    )
+
+    assert (workspace / edited).read_bytes() == b"base\n"
+    assert (workspace / "tests/a.py").read_bytes() == b"untouched\n"
+    assert not (workspace / added).exists()
+    assert record["tests_reset"] == {"restored": [edited], "removed": [added]}
+    assert git(workspace, "status", "--porcelain") == ""
+
+
+def test_a_test_file_a_three_way_merge_staged_is_removed_from_the_index_too(
+    tmp_path, local_environment, workspace, found
+):
+    def change(repo: Path) -> None:
+        edit_line(13, "ours")(repo)
+        write({"tests/test_new.py": b"assert True\n"})(repo)
+
+    job = tmp_path / "agent-job"
+    trial(job, "t1", TASK, patch_of(workspace, change))
+    edit_line(10, "moved")(workspace)
+    git(workspace, "commit", "-qam", "moved")
+
+    record = replay(replay_agent(tmp_path, str(job)), local_environment)
+
+    assert methods_run(record) == ["git apply --verbose", "git apply --3way"]
+    assert record["tests_reset"] == {"restored": [], "removed": ["tests/test_new.py"]}
+    assert git(workspace, "status", "--porcelain") == "M  lines.txt\n"
+
+
+def test_a_test_file_the_image_had_changed_and_the_patch_did_not_touch_is_left_alone(
+    tmp_path, local_environment, workspace, found
+):
+    commit(workspace, {"tests/test_lines.py": b"base\n", "tests/test_other.py": b"other\n"})
+    job = tmp_path / "agent-job"
+    trial(job, "t1", TASK, patch_of(workspace, write({"lines.txt": b"fix\n"})))
+    # The image starts with these, before any patch.
+    write({"tests/test_lines.py": b"image\n", "tests/test_image.py": b"image\n"})(workspace)
+
+    record = replay(replay_agent(tmp_path, str(job)), local_environment)
+
+    assert (workspace / "tests/test_lines.py").read_bytes() == b"image\n"
+    assert (workspace / "tests/test_image.py").read_bytes() == b"image\n"
+    assert (workspace / "tests/test_other.py").read_bytes() == b"other\n"
+    assert record["tests_reset"] == {"restored": [], "removed": []}
+
+
+def test_a_patch_that_touches_no_test_file_records_two_empty_lists(
+    tmp_path, local_environment, workspace, found
+):
+    record = regrade(tmp_path, local_environment, workspace, edit_line(3, "ours"))
+
+    assert list(record) == ["task", "patch", "apply_rc", "apply_out", "tests_reset"]
+    assert record["apply_rc"] == 0
+    assert record["tests_reset"] == {"restored": [], "removed": []}
+    assert (workspace / "lines.txt").read_text().splitlines()[2] == "ours"
+
+
+def test_a_reset_git_refuses_is_an_error_naming_what_git_printed(
+    tmp_path, modal_environment, workspace, found, monkeypatch
+):
+    commit(workspace, {"tests/test_lines.py": b"base\n"})
+    job = tmp_path / "agent-job"
+    trial(job, "t1", TASK, patch_of(workspace, write({"tests/test_lines.py": b"edited\n"})))
+    agent = replay_agent(tmp_path, str(job))
+    exec_ = modal_environment.exec
+
+    async def lock_the_index_after_applying(command, **kwargs):
+        result = await exec_(command, **kwargs)
+        if "git apply --verbose" in command:
+            (workspace / ".git" / "index.lock").touch()
+        return result
+
+    monkeypatch.setattr(modal_environment, "exec", lock_the_index_after_applying)
+
+    with pytest.raises(ReplayError, match="index.lock"):
+        replay(agent, modal_environment)
+    assert not (agent.logs_dir / "replay.json").exists()

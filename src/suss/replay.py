@@ -3,10 +3,13 @@ ReplayAgent, the Harbor custom agent that regrades a trial of an agent job.
 
 It applies the trial's model.patch in a fresh sandbox, so that the task's
 verifier grades the change and nothing else the harness did to its sandbox.
-Harbor constructs it on the host, where the agent job is.
+Every test file the patch changed is then put back as it was at the base, so
+the change is graded against the tests and not against the harness's edits to
+them. Harbor constructs it on the host, where the agent job is.
 """
 
 import json
+import re
 import shlex
 from importlib.metadata import version
 from pathlib import Path
@@ -21,10 +24,19 @@ from suss.workspace import PATCH_NAME, find_workspace
 RECORD_NAME = "replay.json"
 APPLY_METHODS = ("git apply --verbose", "git apply --3way", "patch --fuzz=3 -p1 -i")
 APPLY_SECONDS = 300
+TEST_WORDS = frozenset({"test", "tests", "testdata", "mdtest"})
+JS_SPEC = re.compile(r"\.spec\.(?:js|jsx|ts|tsx|mjs|cjs|mts|cts)$")
+GIT_ESCAPES = {
+    "a": 0x07, "b": 0x08, "t": 0x09, "n": 0x0A, "v": 0x0B, "f": 0x0C, "r": 0x0D,
+    '"': 0x22, "\\": 0x5C,
+}
 
 
 class ReplayError(Exception):
-    """A source job in which the regrade cannot find the one trial of its task."""
+    """
+    A regrade that cannot find the one trial of its task in the source job, or
+    whose workspace git cannot read or put a test file back in.
+    """
 
 
 class ReplayAgent(BaseAgent):
@@ -71,11 +83,13 @@ class ReplayAgent(BaseAgent):
         context: AgentContext,
     ) -> None:
         """
-        Apply the source trial's patch in the workspace, and write replay.json.
+        Apply the source trial's patch in the workspace, put every test file
+        it changed back as it was at the base, and write replay.json.
 
         A patch that fails to apply is recorded, not raised, so the verifier
         still grades the workspace. Raises ReplayError when the source job holds
-        no trial of this task, or more than one.
+        no trial of this task, or more than one, and when git cannot read the
+        workspace or put a test file back.
         """
         # Harbor writes the trial's config.json before it starts the agent.
         task = _task(self.logs_dir.parent / "config.json")
@@ -83,7 +97,12 @@ class ReplayAgent(BaseAgent):
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         record: dict[str, Any] = {"task": task, "patch": None}
         if patch.is_file() and patch.stat().st_size > 0:
-            record = {"task": task, "patch": str(patch), **await self._apply(environment, patch)}
+            workspace = await find_workspace(environment)
+            # What the image itself changed is not the patch's, so it stays.
+            before = await _changed_from_base(environment, workspace)
+            applied = await self._apply(environment, patch, workspace)
+            tests_reset = await _reset_tests(environment, workspace, before)
+            record = {"task": task, "patch": str(patch), **applied, "tests_reset": tests_reset}
         (self.logs_dir / RECORD_NAME).write_text(json.dumps(record, indent=2) + "\n")
 
     def _source_trial(self, task: str) -> Path:
@@ -100,7 +119,9 @@ class ReplayAgent(BaseAgent):
             )
         return trials[0]
 
-    async def _apply(self, environment: BaseEnvironment, patch: Path) -> dict[str, Any]:
+    async def _apply(
+        self, environment: BaseEnvironment, patch: Path, workspace: str
+    ) -> dict[str, Any]:
         """
         Apply the patch with the first method that succeeds, and return its exit
         code and everything the methods tried printed.
@@ -115,12 +136,114 @@ class ReplayAgent(BaseAgent):
             f"{{ echo {shlex.quote('$ ' + method)}; {method} {target} 2>&1; }}"
             for method in APPLY_METHODS
         )
-        workspace = await find_workspace(environment)
         result = await environment.exec(command, cwd=workspace, timeout_sec=APPLY_SECONDS)
         return {
             "apply_rc": result.return_code,
             "apply_out": (result.stdout or "") + (result.stderr or ""),
         }
+
+
+def is_test_file(path: str) -> bool:
+    """
+    Whether `path`, relative to the workspace, names a test file.
+
+    A path's words are its runs of letters, each split before a capital that
+    starts a lowercase word, so `XMLTests` is `XML` and `Tests`. Their case is
+    ignored.
+    """
+    words = {word.lower() for word in re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+", path)}
+    return bool(words & TEST_WORDS) or bool(JS_SPEC.search(path))
+
+
+async def _changed_from_base(environment: BaseEnvironment, workspace: str) -> dict[str, bool]:
+    """
+    Every path in the workspace that differs from HEAD, mapped to whether HEAD
+    has it.
+
+    Ignored files are left out, as they are from the patch. Raises
+    ReplayError when git cannot read the workspace.
+    """
+    # Git's stderr goes to a file, since Docker would mix a warning into the
+    # paths. Every path comes back ASCII, quoted where it needs to be.
+    command = (
+        'err=$(mktemp) || exit 1; git -c core.quotePath=true status --porcelain=v1'
+        ' --untracked-files=all --no-renames 2>"$err"; rc=$?;'
+        ' [ $rc -eq 0 ] || cat "$err"; rm -f "$err"; exit $rc'
+    )
+    result = await environment.exec(command, cwd=workspace, timeout_sec=APPLY_SECONDS)
+    output = (result.stdout or "") + (result.stderr or "")
+    if result.return_code != 0:
+        raise ReplayError(f"git cannot list what changed in {workspace}: {output.strip()}")
+    # Each line is two status letters, a space and the path. The first letter
+    # compares the index with HEAD, where A is a file HEAD lacks.
+    return {
+        _unquote(line[3:]): line[0] not in "?A"
+        for line in output.splitlines()
+        if len(line) > 3
+    }
+
+
+async def _reset_tests(
+    environment: BaseEnvironment, workspace: str, before: dict[str, bool]
+) -> dict[str, list[str]]:
+    """
+    Restore from HEAD each test file the patch changed or deleted, remove each
+    one it added, and return the paths of both.
+
+    A path that differed from HEAD before the patch is left as it is. Raises
+    ReplayError naming git's output when git cannot read the workspace or put
+    a file back.
+    """
+    after = await _changed_from_base(environment, workspace)
+    tests = {path: in_base for path, in_base in after.items()
+             if path not in before and is_test_file(path)}
+    restored = sorted(path for path, in_base in tests.items() if in_base)
+    removed = sorted(path for path, in_base in tests.items() if not in_base)
+    # Literal, so a test file named with `*` or `[` names only itself.
+    git = "git --literal-pathspecs"
+    steps = []
+    # Removed first, since a file restored where the patch made a directory
+    # takes the directory's place, and the paths inside it with it.
+    if removed:
+        paths = " ".join(shlex.quote(path) for path in removed)
+        steps.append(f"{git} rm -q --cached --ignore-unmatch -- {paths} && rm -f -- {paths}")
+    if restored:
+        paths = " ".join(shlex.quote(path) for path in restored)
+        steps.append(f"{git} checkout HEAD -- {paths}")
+    if steps:
+        # Into stdout, because Modal keeps stderr apart and git explains a failure there.
+        result = await environment.exec(
+            f"{{ {' && '.join(steps)}; }} 2>&1", cwd=workspace, timeout_sec=APPLY_SECONDS
+        )
+        if result.return_code != 0:
+            raise ReplayError(
+                f"git cannot put the patch's test files back as they were at the base in"
+                f" {workspace}: {(result.stdout or '').strip()}"
+            )
+    return {"restored": restored, "removed": removed}
+
+
+def _unquote(path: str) -> str:
+    """
+    The path git printed, without the quotes and escapes it adds to a path
+    holding a quote, a backslash, a control character or a byte above 0x7f.
+    """
+    if not path.startswith('"'):
+        return path
+    raw = bytearray()
+    body = path[1:-1]
+    i = 0
+    while i < len(body):
+        if body[i] != "\\":
+            raw += body[i].encode()
+            i += 1
+        elif body[i + 1] in GIT_ESCAPES:
+            raw.append(GIT_ESCAPES[body[i + 1]])
+            i += 2
+        else:
+            raw.append(int(body[i + 1 : i + 4], 8))
+            i += 4
+    return raw.decode(errors="surrogateescape")
 
 
 def _task(config: Path) -> str:

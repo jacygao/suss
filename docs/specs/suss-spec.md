@@ -100,9 +100,10 @@ committed it or not.
 After each agent job, suss runs a second Harbor job over the same tasks, with
 suss's own `suss.replay:ReplayAgent` as the agent. For each trial, it starts a
 fresh sandbox from the task's image, applies the trial's `model.patch` in the
-workspace, found as the trial found it, and runs the verifier there. That
-verifier's reward is the trial's result. It applies the patch with the first of
-these that succeeds:
+workspace, found as the trial found it, puts every test file the patch changed
+back as it was at the base, and runs the verifier there. That verifier's reward
+is the trial's result. It applies the patch with the first of these that
+succeeds:
 
 ```bash
 git apply --verbose model.patch || git apply --3way model.patch || patch --fuzz=3 -p1 -i model.patch
@@ -111,12 +112,36 @@ git apply --verbose model.patch || git apply --3way model.patch || patch --fuzz=
 A harness cannot change its result by changing the sandbox it worked in, because
 the grading happens in another.
 
+After applying, `ReplayAgent` takes each test file that differs from the base
+and did not before the patch. It restores one the base has with
+`git checkout HEAD`, and removes one the base lacks. So the verifier grades
+every test file as it was at the base: an edit or a deletion is undone, a
+rename brings back the old name and removes the new one, and an added test file
+is gone. A file the image had already changed stays as the image had it.
+
+A path is a test file when one of its words is `test`, `tests`, `testdata` or
+`mdtest`, or its file name ends in `.spec.` followed by `js`, `jsx`, `ts`, `tsx`,
+`mjs`, `cjs`, `mts` or `cts`. A path's words are its runs of letters, each split
+before a capital that starts a lowercase word, compared ignoring case:
+
+| Path | Test file |
+|---|---|
+| `core/src/test/java/io/kestra/core/utils/LogsTest.java` | yes, by `test` |
+| `pkg/lines_test.go` | yes, by `test` |
+| `packages/api/src/agents/tools.spec.ts` | yes, by its name |
+| `internal/spec/spec.go` | no |
+| `server/handler/GetTimeSeriesLatestHandler.java` | no: `Latest` is one word |
+
+The rule reads the path alone, so a test inside a source file, such as a Rust
+`mod tests`, is graded as the patch left it.
+
 `ReplayAgent` finds a trial's patch by the task the trial ran, among every trial
 directory of the agent job. So an agent job holds one trial of each task, and
 suss runs K agent jobs for K trials, where K is `k` in `suss.toml`. When the
 agent job holds no trial of the task, or more than one, `ReplayAgent` fails the
 regrade's trial, and Harbor records the exception in that trial's
-`result.json`.
+`result.json`. It fails the trial the same way when git cannot list what
+changed in the workspace or put a test file back.
 
 It writes `agent/replay.json` in the regrade's trial. With no patch, or an empty
 one, it applies nothing and writes `"patch": null`:
@@ -126,7 +151,16 @@ one, it applies nothing and writes `"patch": null`:
 ```
 
 Otherwise it writes the patch's path, the exit code of applying it, as
-`apply_rc`, and what applying it printed, as `apply_out`.
+`apply_rc`, what applying it printed, as `apply_out`, and the test files it put
+back, as `tests_reset`. Both lists are empty when the patch changed no test
+file:
+
+```json
+"tests_reset": {
+  "restored": ["tests/features/migrations/Migrator.sqlite.test.ts"],
+  "removed": []
+}
+```
 
 ### The trial record
 
