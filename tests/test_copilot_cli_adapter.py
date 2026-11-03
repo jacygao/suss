@@ -1,6 +1,6 @@
 """
-Run `adapters/copilot-cli/` against stand-ins for `copilot`, `curl`, `wget`
-and `uname`, which record the arguments they receive.
+Run `adapters/copilot-cli/` against stand-ins for `copilot`, `curl`, `wget`,
+`python3` and `uname`, which record the arguments they receive.
 
 PATH holds the stand-ins and the system directories only, so the scripts are
 tested without `jq` or Python, as a task image may lack both.
@@ -11,6 +11,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -168,20 +169,21 @@ def install(box: Path, env: dict[str, str] | None = None) -> subprocess.Complete
 
 
 RELEASE = "https://github.com/github/copilot-cli/releases/download/v1.0.105"
+DOWNLOADERS = ("curl", "wget", "python3", "python")
 COPILOT = "#!/bin/sh\necho 'GitHub Copilot CLI 1.0.105'\n"
 
 
 def install_environment(box: Path) -> dict[str, str]:
     """
-    The stand-ins, then the system's tools without `curl` or `wget`, so each
-    test stands in exactly the downloaders it means the image to have.
+    The stand-ins, then the system's tools without `curl`, `wget` or Python,
+    so each test stands in exactly the downloaders it means the image to have.
     """
     tools = box / "tools"
     if not tools.exists():
         tools.mkdir()
         for directory in ("/usr/bin", "/bin", "/usr/sbin", "/sbin"):
             for tool in Path(directory).iterdir():
-                if tool.name not in ("curl", "wget") and not (tools / tool.name).exists():
+                if tool.name not in DOWNLOADERS and not (tools / tool.name).exists():
                     (tools / tool.name).symlink_to(tool)
         # macOS before 15 has only shasum, which prints the same line.
         if not (tools / "sha256sum").exists():
@@ -240,6 +242,21 @@ def stand_in_downloader(box: Path, name: str, exit_code: int = 0) -> None:
     )
 
 
+def stand_in_python(box: Path, name: str = "python3") -> None:
+    """
+    A `python3` or `python` that runs install.sh's own download code in this
+    test's Python, with the URL turned into a `file:` URL for the file of
+    `box/release` its last part names, and logs each URL to `records/<name>-urls`.
+    """
+    urls = box / "records" / f"{name}-urls"
+    stand_in(
+        box,
+        name,
+        f"echo \"$3\" >> '{urls}'\n"
+        f"exec '{sys.executable}' \"$1\" \"$2\" \"file://{box / 'release'}/${{3##*/}}\" \"$4\"\n",
+    )
+
+
 def installed(box: Path) -> Path:
     return box / "home" / ".local" / "bin" / "copilot"
 
@@ -276,14 +293,43 @@ def test_install_prefers_curl_when_both_are_there(box):
     assert not (box / "records" / "wget").exists()
 
 
-def test_install_fails_naming_curl_and_wget_when_the_image_has_neither(box):
+@pytest.mark.parametrize("name", ["python3", "python"])
+def test_install_downloads_with_python_when_the_image_has_neither_curl_nor_wget_113(box, name):
+    publish(box)
+    stand_in_uname(box)
+    stand_in_python(box, name)
+
+    result = install(box)
+
+    assert result.returncode == 0, result.stderr
+    assert sorted(recorded(box / "records" / f"{name}-urls")) == [
+        f"{RELEASE}/SHA256SUMS.txt",
+        f"{RELEASE}/copilot-linux-x64.tar.gz",
+    ]
+    assert installed(box).read_text() == COPILOT
+
+
+def test_install_prefers_wget_to_python(box):
+    publish(box)
+    stand_in_uname(box)
+    stand_in_downloader(box, "wget")
+    stand_in_python(box)
+
+    result = install(box)
+
+    assert result.returncode == 0, result.stderr
+    assert (box / "records" / "wget").exists()
+    assert not (box / "records" / "python3").exists()
+
+
+def test_install_fails_naming_each_downloader_when_the_image_has_none(box):
     publish(box)
     stand_in_uname(box)
 
     result = install(box)
 
     assert result.returncode != 0
-    assert "curl" in result.stderr and "wget" in result.stderr
+    assert all(name in result.stderr for name in ("curl", "wget", "Python")), result.stderr
     assert not installed(box).exists()
 
 
@@ -389,6 +435,19 @@ def test_install_fails_when_a_download_fails(box, downloader):
 
     assert result.returncode != 0
     assert f"cannot download {RELEASE}/SHA256SUMS.txt" in result.stderr
+    assert not installed(box).exists()
+
+
+def test_install_fails_when_python_cannot_download_the_build(box):
+    release = publish(box)
+    (release / "copilot-linux-x64.tar.gz").unlink()
+    stand_in_uname(box)
+    stand_in_python(box)
+
+    result = install(box)
+
+    assert result.returncode != 0
+    assert f"cannot download {RELEASE}/copilot-linux-x64.tar.gz" in result.stderr
     assert not installed(box).exists()
 
 
