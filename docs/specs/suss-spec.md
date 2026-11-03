@@ -32,9 +32,10 @@ peer-review - claude-code   +6% [+1%, +11%]
 | Dependency | Version | Needed for |
 |---|---|---|
 | Harbor | 0.22.0 | Runs each task in a sandbox, runs suss in it, and grades the result with the task's own verifier. |
-| Docker | Docker Desktop 4.86.0 or later on macOS. On Linux and Windows, a Docker engine whose kernel has `CONFIG_NFT_FIB_INET`. | The sandboxes, including every SWE-bench Pro lane's, with `environment = "docker"` in `suss.toml`. Without `CONFIG_NFT_FIB_INET`, Harbor refuses every SWE-bench Pro task. |
+| Docker | Docker Desktop 4.86.0 or later on macOS. On Linux and Windows, a Docker engine whose kernel has `CONFIG_NFT_FIB_INET`. | The sandboxes, with `environment = "docker"` in `suss.toml`. Without `CONFIG_NFT_FIB_INET`, Harbor refuses every task, because every lane's agent phase has no network. |
 | Modal | 1.5.1 or later, and the account Harbor's `modal` environment uses. `uv sync --extra modal` installs its client into suss's environment, through Harbor's own `modal` extra at the Harbor version above. A plain `uv sync` leaves it out. | The sandboxes, when `environment` is `modal`. Versions before 1.5.1 cannot take a network policy per phase. |
-| SWE-bench Pro | a checkout of `scaleapi/SWE-bench_Pro-os` | The tasks, under `v2/tasks/`, and the regrading agent, under `v2/tooling/`. |
+| SWE-bench Pro | a checkout of `scaleapi/SWE-bench_Pro-os` | The `pro-` lanes' tasks, under `v2/tasks/`. |
+| SWE-rebench | `ibragim-badertdinov/swe-rebench-07-2026` from Harbor Hub, as `harbor download` writes it | The `rebench` lanes' tasks. |
 | Python | 3.12 | Suss itself, which Harbor loads as a custom agent. |
 | `uv` | any | Installs suss and Harbor. |
 
@@ -68,8 +69,10 @@ reaches only the hosts the harness's manifest lists in `allowed_hosts`.
 
 In the setup phase, suss:
 
-1. **finds the workspace and records the base.** The workspace is `/app`, or
-   `/testbed` where `/app` does not exist. The base is `git rev-parse HEAD`.
+1. **finds the workspace and records the base.** The workspace is `/app`;
+   where `/app` does not exist, `/testbed`; and where neither does, the
+   directory the sandbox starts in, which is the image's `WORKDIR`, when it holds
+   a git repository. The base is `git rev-parse HEAD`.
 2. **uploads the harness's adapter** to `/opt/suss/adapter/`.
 3. **installs the harness**, if the adapter's manifest names an `install` command.
 
@@ -96,16 +99,33 @@ committed it or not.
 ### Regrading
 
 After each agent job, suss runs a second Harbor job over the same tasks, with
-SWE-bench Pro's own `patch_replay:PatchReplayAgent` as the agent. For each
-trial, it starts a fresh sandbox from the task's image, applies the trial's
-`model.patch`, and runs the verifier there. That verifier's reward is the
-trial's result.
+suss's own `suss.replay:ReplayAgent` as the agent. For each trial, it starts a
+fresh sandbox from the task's image, applies the trial's `model.patch` in the
+workspace, found as the trial found it, and runs the verifier there. That
+verifier's reward is the trial's result. It applies the patch as SWE-bench Pro's
+`PatchReplayAgent` does, so trials regraded by either are graded alike:
+
+```bash
+git apply --verbose model.patch || git apply --3way model.patch || patch --fuzz=3 -p1 -i model.patch
+```
 
 A harness cannot change its result by changing the sandbox it worked in, because
 the grading happens in another.
 
-`PatchReplayAgent` finds a patch by task name, so an agent job holds one trial
-of each task, and suss runs K agent jobs for K trials, where K is `k` in `suss.toml`.
+`ReplayAgent` finds a trial's patch by the task the trial ran, among every trial
+directory of the agent job, whatever the task is named. So an agent job holds
+one trial of each task, and suss runs K agent jobs for K trials, where K is `k`
+in `suss.toml`.
+
+It writes `agent/replay.json` in the regrade's trial. With no patch, or an empty
+one, it applies nothing and writes `"patch": null`:
+
+```json
+{ "task": "gleam-lang__gleam-5797", "patch": null }
+```
+
+Otherwise it writes the patch's path, the exit code of applying it, as
+`apply_rc`, and what applying it printed, as `apply_out`.
 
 ### The trial record
 
@@ -133,8 +153,12 @@ directory as `agent/` in the trial's directory under `results/`.
 }
 ```
 
-- `grader` is the `dataset` that `suss.toml` names, and the commit of the
-  checkout `suss run` used.
+- `grader` names the dataset the trial's task came from, and its version. For a
+  `pro-` lane, it is the `dataset` that `suss.toml` names, and the commit of the
+  checkout `suss run` used. For a `rebench` lane, it is
+  `{ "dataset": "swe-rebench-07-2026", "digest": "<sha256>" }`, where the digest
+  covers every file of every task in the directory `swe_rebench` names, by path
+  and content, so two downloads of the same tasks have the same digest.
 - `status` is `ok`, `harness-failed` or `timed-out`. A trial is `timed-out`
   when suss stops `run` at `max_seconds`, and when Harbor's agent timeout stops
   the trial while `run` is going. Either way, suss stops the harness inside the
@@ -225,34 +249,62 @@ the coding agent starts.
 
 ## 5. Lanes
 
-Suss runs SWE-bench Pro V2: 642 tasks from 11 repositories, in `v2/tasks/` of the
-checkout. Each task gives the agent a repository at the commit before a real
-change, and an instruction written from that change: what it does, its
+Every task gives the agent a repository at the commit before a real change, and
+an instruction about that change. The task's hidden tests grade it. A trial
+resolves when the tests the real change made pass now pass, and the tests that
+passed before still pass. The share of trials that resolve is the measure suss
+compares arms on.
+
+Suss takes tasks from two datasets, and splits each into lanes:
+
+| Lane | Tasks | Which |
+|---|---|---|
+| `pro-go` | 256 | SWE-bench Pro, owners `flipt-io`, `gravitational`, `future-architect`, `navidrome` |
+| `pro-python` | 237 | SWE-bench Pro, owners `ansible`, `internetarchive`, `qutebrowser` |
+| `pro-js` | 149 | SWE-bench Pro, owners `protonmail`, `element-hq`, `NodeBB`, `tutao` |
+| `pro-hard51` | 51 | SWE-bench Pro, the tasks listed in `v2/hard51_ids.txt` |
+| `rebench` | 111 | SWE-rebench, every task |
+| `rebench-go` | 21 | SWE-rebench, `language` `go` |
+| `rebench-java` | 21 | SWE-rebench, `language` `java` |
+| `rebench-python` | 20 | SWE-rebench, `language` `python` |
+| `rebench-rust` | 25 | SWE-rebench, `language` `rust` |
+| `rebench-ts` | 24 | SWE-rebench, `language` `typescript` |
+
+### SWE-bench Pro
+
+SWE-bench Pro V2 holds 642 tasks from 11 repositories, in `v2/tasks/` of the
+checkout. Each instruction is written from the real change: what it does, its
 requirements, and any interfaces it adds. The change is a bug fix or a feature.
 
-The task's hidden tests grade it. A trial resolves when the tests the real
-change made pass now pass, and the tests that passed before still pass. The share
-of trials that resolve is the measure suss compares arms on.
-
-Suss splits the tasks into lanes, so that a run can cover one language:
-
-| Lane | Tasks | Repositories, by the owner in the task's name |
-|---|---|---|
-| `pro-go` | 256 | `flipt-io`, `gravitational`, `future-architect`, `navidrome` |
-| `pro-python` | 237 | `ansible`, `internetarchive`, `qutebrowser` |
-| `pro-js` | 149 | `protonmail`, `element-hq`, `NodeBB`, `tutao` |
-| `pro-hard51` | 51 | the tasks listed in `v2/hard51_ids.txt` |
-
 A task's owner is the first part of its directory name,
-`instance_<owner>__<repo>-<commit>…`.
+`instance_<owner>__<repo>-<commit>…`. A lane's result is a result for its
+repositories. With three or four per language, a harness that does better on
+`pro-go` may be doing better on gravitational's Teleport and flipt-io's Flipt
+rather than on Go.
 
-A lane's result is a result for its repositories. With three or four per
-language, a harness that does better on `pro-go` may be doing better on
-gravitational's Teleport and flipt-io's Flipt rather than on Go.
+### SWE-rebench
 
-Every task's agent phase has no network (`network_mode = "no-network"`). Suss
-passes each host in the harness's `allowed_hosts` to Harbor as
-`--allow-agent-host`, and nothing else.
+SWE-rebench's July 2026 snapshot holds 111 tasks from 65 repositories, made from
+pull requests merged between 15 May and 15 June 2026. Each instruction is the
+issue the pull request closed, and an `Interface` section naming any interface
+it adds. A task's `language` is in its `tests/config.json`.
+
+Each task's image is built from the `Dockerfile` in its `environment/`, and the
+build downloads from the network. Its repository is in the image's `WORKDIR`,
+such as `/gleam`.
+
+### Network
+
+Every lane's agent phase has no network. Suss passes each host in the harness's
+`allowed_hosts` to Harbor as `--allow-agent-host`, and nothing else, so a harness
+cannot fetch a task's real change from the web.
+
+SWE-bench Pro's tasks set `[agent] network_mode = "no-network"` themselves.
+SWE-rebench's tasks set only `[environment] network_mode = "public"`, under
+which Harbor ignores `--allow-agent-host`. So a `rebench` lane holds a copy of
+each task, whose `task.toml` adds `[agent] network_mode = "no-network"` and is
+otherwise unchanged. The verifier keeps the task's own network, which it uses to
+download a Python on an image that has none.
 
 ## 6. Commands
 
@@ -264,17 +316,23 @@ suss run peer-review pro-go pro-python
 ```
 
 It reads the arm from `suss.toml` in the current directory. For each lane, it
-builds `lanes/<lane>/` as a directory of links to the lane's task directories in
-the checkout.
+builds `lanes/<lane>/`. A `pro-` lane is a directory of links to its task
+directories in the checkout. A `rebench` lane is a directory of copies of its
+task directories from the directory `swe_rebench` names, each with
+`[agent] network_mode = "no-network"` added to its `task.toml`. A build removes
+what an earlier build of the lane left.
 
 When `environment` is `docker`, it then pulls the image each of the lane's tasks
-names in `[environment] docker_image` of its `task.toml`. The V2 images are
-built for amd64 only, so on a Docker engine that runs on arm64, such as Docker
+names in `[environment] docker_image` of its `task.toml`. The images are built
+for amd64 only, so on a Docker engine that runs on arm64, such as Docker
 Desktop on Apple Silicon, it pulls them for amd64:
 
 ```bash
 docker pull --platform linux/amd64 <docker_image>
 ```
+
+A task that names no `docker_image`, as no SWE-rebench task does, has nothing
+pulled. Harbor builds its image from its `Dockerfile` when its trial starts.
 
 Then, K times, it runs an agent job and its regrade:
 
@@ -285,20 +343,19 @@ Then, K times, it runs an agent job and its regrade:
   --disable-verification \
   --jobs-dir results/pro-go/peer-review --job-name <stamp>-1
 
-PYTHONPATH=<checkout>/v2/tooling <env>/bin/harbor run -p lanes/pro-go -e docker -n 16 -k 1 \
-  -a patch_replay:PatchReplayAgent -m replay \
+<env>/bin/harbor run -p lanes/pro-go -e docker -n 16 -k 1 \
+  -a suss.replay:ReplayAgent -m replay \
   --ak source_job=<dir>/results/pro-go/peer-review/<stamp>-1 \
   --jobs-dir results/pro-go/peer-review --job-name <stamp>-1-regrade
 ```
 
 `<stamp>` is the time `suss run` started, in UTC, as `20261031T142500Z`. Every
 job of the run shares it, and `-1` to `-K` tell its agent jobs apart. Suss
-forms three absolute paths itself:
+forms two absolute paths itself:
 
 - `<env>` is the Python environment suss is installed in. Its `harbor` is the
-  one that can import `suss.agent`, which a `harbor` elsewhere on `PATH` may
-  not be.
-- `<checkout>` is the SWE-bench Pro checkout that `swe_bench_pro` names.
+  one that can import `suss.agent` and `suss.replay`, which a `harbor` elsewhere
+  on `PATH` may not be.
 - `<dir>` is the directory holding `suss.toml`, so the regrade's `source_job`
   is the agent job's directory.
 
@@ -349,12 +406,13 @@ writes both to `checks/<lane>/<arm>/` instead of `results/`:
 suss run peer-review pro-go --check
 ```
 
-`suss.toml` names the SWE-bench Pro checkout and its dataset, where the
-sandboxes run, the cap on each trial, and the arms:
+`suss.toml` names where the tasks are, where the sandboxes run, the cap on each
+trial, and the arms:
 
 ```toml
 swe_bench_pro = "../SWE-bench_Pro-os"
 dataset = "swe-bench-pro-v2"
+swe_rebench = "../swe-rebench-07-2026"
 environment = "docker"
 k = 1
 concurrency = 16
@@ -375,8 +433,13 @@ baseline = "claude-code"
 params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "deepseek/deepseek-v3.2" }
 ```
 
+- `swe_bench_pro` and `dataset` are needed for a `pro-` lane, and `swe_rebench`
+  for a `rebench` lane. A lane whose key is missing makes `suss run` exit with
+  an error naming the key, before it builds any lane or runs any job.
 - `dataset` names the dataset the checkout holds. Suss copies it into each
-  trial's `grader` as it stands.
+  `pro-` trial's `grader` as it stands.
+- `swe_rebench` is `<dir>/swe-rebench-07-2026`, the directory of tasks that
+  `harbor download ibragim-badertdinov/swe-rebench-07-2026 -o <dir>` writes.
 - `harness` is the path to an adapter, relative to the directory holding
   `suss.toml`.
 - `params` is passed to the harness as it stands, as the JSON file `--params`
@@ -416,8 +479,8 @@ params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "d
   `concurrency`.
 - `max_seconds` caps each trial: suss stops `run` after it. Set at the top, it
   applies to every arm, and an arm may set its own. It must be under the task's
-  agent timeout, 3000 seconds in every V2 task, so that suss captures the patch
-  before Harbor stops the trial. When it is not under the agent timeout of every
+  agent timeout, 3000 seconds in every task of both datasets, so that suss
+  captures the patch before Harbor stops the trial. When it is not under the agent timeout of every
   task in a lane, `suss run` exits with an error before running any job:
 
   ```
@@ -490,8 +553,9 @@ src/suss/
   agent.py        SussAgent, the Harbor custom agent
   workspace.py    finding the workspace, and capturing the patch
   harness.py      reading a manifest, installing, and running a harness
-  lanes.py        building a lane's directory from the checkout
+  lanes.py        building a lane's directory from its dataset
   config.py       suss.toml
+  replay.py       ReplayAgent, the regrading agent
   compare.py      suss compare
   cli.py          the suss command
 adapters/
