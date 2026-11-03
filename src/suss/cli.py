@@ -22,7 +22,8 @@ import typer.main
 from harbor.cli.main import app as harbor_app
 from harbor.cli.utils import parse_kwargs
 
-from suss import config, lanes
+from suss import compare, config, lanes
+from suss.compare import CompareError
 from suss.config import Config, ConfigError
 from suss.harness import Manifest, ManifestError, load_manifest
 from suss.lanes import LaneError
@@ -296,7 +297,7 @@ def main(
             str(docker),
             clock,
         )
-    except (_Stop, ConfigError, LaneError, ManifestError) as error:
+    except (_Stop, ConfigError, LaneError, ManifestError, CompareError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
@@ -326,6 +327,16 @@ def _parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         action="store_true",
         help="run one agent job and its regrade on each lane's first task, under checks/",
     )
+    compare_ = commands.add_parser(
+        "compare",
+        allow_abbrev=False,
+        usage="suss compare <lane> <arm> <arm>...",
+        help="compare arms' results on a lane, each against its baseline",
+        description="Print each arm's resolved, failed and timed-out shares, and each "
+        "arm's resolved difference from its baseline where that is given too.",
+    )
+    compare_.add_argument("lane", help=", ".join(lanes.LANES))
+    compare_.add_argument("arms", nargs="+", metavar="arm", help="an arm defined in suss.toml")
     return parser.parse_args(argv), harbor_args
 
 
@@ -338,6 +349,8 @@ def _dry_run() -> bool:
 
 def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> int:
     args, harbor_args = _parse(argv)
+    if args.command == "compare":
+        return _compare(args.lane, args.arms, harbor_args, directory)
     dry_run = _dry_run()
     run_stamp = stamp(clock())
     settings = config.load(directory / "suss.toml", args.arm)
@@ -394,6 +407,19 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
     for failure in failed_regrades:
         print(f"error: {failure}, so its trials may not be graded", file=sys.stderr)
     return 1 if failed_regrades else 0
+
+
+def _compare(lane: str, arms: list[str], harbor_args: list[str], directory: Path) -> int:
+    if harbor_args:
+        raise _Stop("suss compare takes nothing after --")
+    if len(arms) < 2:
+        raise _Stop("suss compare takes a lane and at least two arms")
+    for at, arm in enumerate(arms):
+        if arm in arms[:at]:
+            raise _Stop(f"{arm} is named twice: each arm is compared once")
+    # Printed whole, after every check, so that an error leaves no partial table.
+    print(compare.report(directory, lane, arms), end="")
+    return 0
 
 
 def _require_modal() -> None:

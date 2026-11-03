@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from suss import compare
+from suss import cli, compare
 from suss.compare import Difference, Trial, read_trials, resolved_difference
 
 LANE = "pro-go"
@@ -406,3 +406,219 @@ def test_a_task_with_no_trials_is_refused():
 def test_arms_with_no_tasks_are_refused():
     with pytest.raises(ValueError, match="no tasks"):
         resolved_difference({}, {})
+
+
+# Defined out of the order the tests give them in, and with none of what only a
+# run needs, including a max_cost_usd that a run refuses.
+SUSS_TOML = """\
+max_cost_usd = 20
+
+[arms.alpha]
+baseline = "omega"
+
+[arms.base]
+
+[arms.beta]
+baseline = "base"
+
+[arms.gamma]
+baseline = "beta"
+
+[arms.omega]
+"""
+
+UNRECORDED = "unrecorded"
+
+
+def write_arm(root: Path, arm: str, tasks: dict[str, list]) -> None:
+    """
+    The arm's results: each task's trials, the i-th in agent job `S-<i>` and
+    graded in `S-<i>-regrade`.
+
+    A trial is whether its regrade resolved it, or a (status, resolved) pair.
+    The status UNRECORDED leaves the trial no suss.json.
+    """
+    for task, trials in tasks.items():
+        for i, trial in enumerate(trials, start=1):
+            status, resolved = trial if isinstance(trial, tuple) else ("ok", trial)
+            job = root / "results" / LANE / arm / f"S-{i}"
+            write_agent_trial(job, task, f"agent{i}", status=status, record=status != UNRECORDED)
+            write_regrade_trial(
+                job.with_name(f"{job.name}{compare.REGRADE}"),
+                task,
+                f"regrd{i}",
+                RESOLVED if resolved else UNRESOLVED,
+            )
+
+
+def run_compare(root: Path, capsys, *argv: str) -> tuple[int, str, str]:
+    code = cli.main(["compare", *argv], directory=root)
+    out, err = capsys.readouterr()
+    return code, out, err
+
+
+@pytest.fixture
+def results(tmp_path) -> Path:
+    """
+    Four arms over tasks t1 to t4, with 2, 4, 2 and 4 trials, and two tasks
+    that not every arm has.
+
+    beta resolves half of each task's trials more than base does, so every
+    resample of tasks gives beta - base exactly +50%. gamma is base again. alpha
+    has t5, which no other arm has, and lacks t6, which the others resolve.
+    """
+    (tmp_path / "suss.toml").write_text(SUSS_TOML)
+    F, T = False, True
+    base = {
+        "t1": [F, F],
+        "t2": [T, F, F, F],
+        "t3": [F, F],
+        "t4": [F, F, F, F],
+        "t6": [T],
+    }
+    write_arm(tmp_path, "base", base)
+    write_arm(tmp_path, "gamma", base)
+    write_arm(
+        tmp_path,
+        "beta",
+        {
+            "t1": [T, F],
+            "t2": [T, T, T, F],
+            "t3": [T, F],
+            "t4": [T, T, F, F],
+            "t6": [T],
+        },
+    )
+    write_arm(
+        tmp_path,
+        "alpha",
+        {
+            "t1": [(UNRECORDED, F), ("timed-out", T)],
+            "t2": [F, T, ("timed-out", T), F],
+            "t3": [F, ("harness-failed", T)],
+            "t4": [F, F, F, F],
+            "t5": [("timed-out", T)],
+        },
+    )
+    return tmp_path
+
+
+def test_compare_prints_both_tables_over_the_tasks_every_arm_has(results, capsys):
+    code, out, err = run_compare(results, capsys, LANE, "base", "gamma", "beta", "alpha")
+
+    # alpha's own t5 and the others' t6 count nowhere. Shares are over trials:
+    # base resolves 1 of 12 trials, where a share over tasks would be 1 of 4.
+    # alpha's baseline, omega, is not given, so alpha has no row.
+    assert (code, err) == (0, "")
+    assert out == (
+        "arm    trials  resolved  failed  timed out\n"
+        "base       12        8%      0%         0%\n"
+        "gamma      12        8%      0%         0%\n"
+        "beta       12       58%      0%         0%\n"
+        "alpha      12       33%     17%        17%\n"
+        "\n"
+        "vs. baseline   resolved\n"
+        "gamma - beta   -50% [-50%, -50%]\n"
+        "beta - base    +50% [+50%, +50%]\n"
+    )
+
+
+def test_shares_and_differences_print_as_whole_percents_and_every_difference_is_signed():
+    shares = {"a": compare.Shares(trials=8, resolved=0.125, failed=0.0049, timed_out=0.375)}
+    differences = [
+        ("b", "a", Difference(0.03, -0.02, 0.08)),
+        # Rounds to zero from below, and prints as +0%.
+        ("c", "a", Difference(-0.004, -0.0251, 0.11)),
+    ]
+
+    assert compare.render(shares, differences) == (
+        "arm  trials  resolved  failed  timed out\n"
+        "a         8       13%      0%        38%\n"
+        "\n"
+        "vs. baseline   resolved\n"
+        "b - a          +3% [-2%, +8%]\n"
+        "c - a          +0% [-3%, +11%]\n"
+    )
+
+
+def test_only_the_first_table_prints_when_no_arms_baseline_is_given(results, capsys):
+    code, out, err = run_compare(results, capsys, LANE, "alpha", "base")
+
+    assert (code, err) == (0, "")
+    assert out == (
+        "arm    trials  resolved  failed  timed out\n"
+        "alpha      12       33%     17%        17%\n"
+        "base       12        8%      0%         0%\n"
+    )
+
+
+def leave_no_trials(root: Path, how: str) -> None:
+    arm = root / "results" / LANE / "omega"
+    checks = root / "checks" / LANE / "omega"
+    if how == "empty":
+        arm.mkdir(parents=True)
+    elif how == "regrade-only":
+        write_regrade_trial(arm / f"S-1{compare.REGRADE}", "t1", "regrd1")
+    elif how == "only-under-checks":
+        write_agent_trial(checks / "S-1", "t1", "agent1")
+        write_regrade_trial(checks / f"S-1{compare.REGRADE}", "t1", "regrd1")
+
+
+@pytest.mark.parametrize("how", ["missing", "empty", "regrade-only", "only-under-checks"])
+def test_an_arm_with_no_trials_is_an_error_and_prints_nothing_else(results, capsys, how):
+    leave_no_trials(results, how)
+
+    code, out, err = run_compare(results, capsys, LANE, "base", "omega")
+
+    assert code != 0
+    assert (out, err) == ("", f"error: no results for arm omega under results/{LANE}/\n")
+
+
+def test_an_arm_not_in_suss_toml_is_an_error_naming_it_and_the_file(results, capsys):
+    code, out, err = run_compare(results, capsys, LANE, "base", "zeta")
+
+    assert code != 0
+    assert (out, err) == ("", f"error: arm zeta is not defined in {results / 'suss.toml'}\n")
+
+
+def test_no_suss_toml_is_an_error(results, capsys):
+    (results / "suss.toml").unlink()
+
+    code, out, err = run_compare(results, capsys, LANE, "base", "beta")
+
+    assert code != 0
+    assert out == ""
+    assert err.startswith("error: ") and "suss.toml: no such file" in err
+
+
+def test_arms_with_no_task_in_common_are_an_error(results, capsys):
+    write_arm(results, "omega", {"t7": [True]})
+
+    code, out, err = run_compare(results, capsys, LANE, "base", "omega")
+
+    assert code != 0
+    assert (out, err) == (
+        "",
+        f"error: arms base and omega have no task in common under results/{LANE}/\n",
+    )
+
+
+def test_an_arm_given_twice_is_an_error(results, capsys):
+    code, out, err = run_compare(results, capsys, LANE, "base", "beta", "base")
+
+    assert code != 0
+    assert (out, err) == ("", "error: base is named twice: each arm is compared once\n")
+
+
+def test_compare_takes_at_least_two_arms(results, capsys):
+    code, out, err = run_compare(results, capsys, LANE, "base")
+
+    assert code != 0
+    assert (out, err) == ("", "error: suss compare takes a lane and at least two arms\n")
+
+
+def test_arguments_after_the_separator_are_refused(results, capsys):
+    code, out, err = run_compare(results, capsys, LANE, "base", "beta", "--", "-k", "2")
+
+    assert code != 0
+    assert (out, err) == ("", "error: suss compare takes nothing after --\n")
