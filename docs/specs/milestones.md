@@ -119,8 +119,8 @@ each arm did and how it differs from its baseline.
       peer-review     256       44%      1%         2%
 
       vs. baseline                resolved
-      self-review − claude-code   +3% [−2%, +8%]
-      peer-review − claude-code   +6% [+1%, +11%]
+      self-review - claude-code   +3% [-2%, +8%]
+      peer-review - claude-code   +6% [+1%, +11%]
       ```
 - [ ] Only tasks that every given arm has trials for are counted, and nothing
       under `checks/` is read
@@ -134,8 +134,12 @@ each arm did and how it differs from its baseline.
       the arms given
 - [ ] The interval is a 95% bootstrap interval that resamples tasks, keeping each
       task's K trials together, and a fixture with a known difference lands
-      inside it
+      inside it. The same results always print the same interval
+- [ ] An arm with no results under the lane, or not defined in `suss.toml`,
+      makes the command exit non-zero and print only an error naming the arm
 - [ ] When the arms' trials that have a `suss.json` do not all carry the same
       `grader`, the command exits non-zero and prints only the error. A trial
       with no `suss.json` takes no part in that check
+- [ ] A trial whose `suss.json` has `patch_bytes` above 0, and whose regrade
+      applied no patch, makes the command exit non-zero and print only the error
 - [ ] `uv run pytest` passes

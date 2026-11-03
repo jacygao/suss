@@ -23,8 +23,8 @@ self-review     256       41%      1%         1%
 peer-review     256       44%      1%         2%
 
 vs. baseline                resolved
-self-review − claude-code   +3% [−2%, +8%]
-peer-review − claude-code   +6% [+1%, +11%]
+self-review - claude-code   +3% [-2%, +8%]
+peer-review - claude-code   +6% [+1%, +11%]
 ```
 
 ## 2. Dependencies
@@ -461,12 +461,20 @@ baseline, with an interval.
 - `failed` is the share of trials whose status is `harness-failed`, and
   `timed out` the share whose status is `timed-out`.
 - Each arm whose `baseline` is among the arms given gets a row in the second
-  table. The bracketed range is a 95% interval from a bootstrap that resamples
-  tasks, so that each task's K trials stay together.
+  table. The bracketed range is a 95% interval from a bootstrap of 10,000
+  resamples, each drawing tasks so that a task's K trials stay together. The
+  same results always print the same interval.
+- Shares print as whole percents, and every difference and interval end
+  carries a sign.
 
-It exits with an error, and prints nothing else, if the arms' trials that have a
-`suss.json` do not all carry the same `grader`. A trial with no `suss.json` has
-no `grader` to compare, and still counts as `harness-failed`.
+It exits with an error, and prints nothing else, when:
+
+- An arm it is given has no `results/<lane>/<arm>/`, or is not in `suss.toml`.
+- The arms' trials that have a `suss.json` do not all carry the same `grader`.
+  A trial with no `suss.json` has no `grader` to compare, and still counts as
+  `harness-failed`.
+- A trial whose `suss.json` has `patch_bytes` above 0 has a regrade whose
+  `agent/replay.json` has `"patch": null`.
 
 ## 7. The project
 
