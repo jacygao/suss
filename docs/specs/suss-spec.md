@@ -484,10 +484,20 @@ job, `<stamp>-<i>`, with the trial for the same task in `<stamp>-<i>-regrade`.
 It compares the arms over the tasks every one of them has trials for. It prints
 two tables. The first gives each arm's trials and its resolved, failed and
 timed-out shares. The second gives each arm's resolved difference from its
-baseline, with an interval.
+baseline, with an interval. After the tables, it names each trial whose regrade
+recorded no test result, by arm, job and task:
+
+```
+These trials' regrades recorded no test result, so their grading may have broken:
+  claude-code  20261103T204423Z-2  marimo-team__marimo-9766
+```
 
 - Every trial counts as its regrade graded it, `harness-failed` and `timed-out`
   ones included.
+- A regrade records no test result when its trial has no
+  `verifier/report.json`, as the verifier of every `rebench` task writes it, or
+  when that report's `parsed_counts` counts no test as `PASSED`, `FAILED`,
+  `SKIPPED` or `ERROR`. A trial with no regrade trial records none either.
 - A trial whose regrade has no reward counts as unresolved. A trial with no
   `suss.json`, which a sandbox that never started or a Harbor exception leaves,
   counts as `harness-failed`.
