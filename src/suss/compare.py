@@ -1,6 +1,6 @@
 """
 suss compare: reading an arm's trials under `results/`, each with its regrade's
-result.
+result, and the difference between two arms' resolved shares, with an interval.
 
 Reading never raises on what a trial left or failed to leave. A trial with no
 readable record is `harness-failed`, and one whose regrade has no readable
@@ -8,6 +8,9 @@ reward is unresolved.
 """
 
 import json
+import random
+import statistics
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -130,3 +133,62 @@ def _json(path: Path):
         return json.loads(path.read_text())
     except (OSError, ValueError):
         return None
+
+
+RESAMPLES = 10_000
+
+# Fixed, so the same results always print the same interval.
+SEED = 0
+
+
+@dataclass(frozen=True)
+class Difference:
+    """An arm's resolved share minus its baseline's, and a 95% interval on it."""
+
+    estimate: float
+    low: float
+    high: float
+
+
+def resolved_difference(
+    arm: Mapping[str, Sequence[bool]], baseline: Mapping[str, Sequence[bool]]
+) -> Difference:
+    """
+    The arm's resolved share minus the baseline's, with a 95% interval.
+
+    Each arm maps a task to its trials' outcomes, True where the trial resolved.
+    The estimate comes from the outcomes as given. The interval comes from a
+    bootstrap: each resample draws tasks with replacement, once for both arms,
+    and takes every trial of each task drawn. A share is resolved trials over
+    trials, so a task with fewer trials than another weighs less.
+
+    Raises ValueError when the arms are not over the same tasks, have no tasks,
+    or a task has no trials in one of them.
+    """
+    if arm.keys() != baseline.keys():
+        raise ValueError("the arms must be over the same tasks")
+    if not arm:
+        raise ValueError("the arms have no tasks")
+    names = list(arm)
+    for name in names:
+        if not arm[name] or not baseline[name]:
+            raise ValueError(f"task {name} has no trials in one of the arms")
+
+    # Per task: resolved and trials in the arm, then in the baseline.
+    counts = [
+        (sum(arm[n]), len(arm[n]), sum(baseline[n]), len(baseline[n])) for n in names
+    ]
+    estimate = _difference(counts)
+
+    rng = random.Random(SEED)
+    resampled = [
+        _difference(rng.choices(counts, k=len(counts))) for _ in range(RESAMPLES)
+    ]
+    # Cut points at every 2.5%: the first is the 2.5th percentile, the last the 97.5th.
+    cuts = statistics.quantiles(resampled, n=40, method="inclusive")
+    return Difference(estimate, cuts[0], cuts[-1])
+
+
+def _difference(counts: Sequence[tuple[int, int, int, int]]) -> float:
+    resolved, trials, base_resolved, base_trials = map(sum, zip(*counts))
+    return resolved / trials - base_resolved / base_trials
