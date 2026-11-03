@@ -8,6 +8,7 @@ holds copies of the downloaded tasks, since each task.toml must change.
 
 import re
 import shutil
+import stat
 import tomllib
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -291,7 +292,7 @@ def build_rebench(swe_rebench: Path, lanes: Path, check: bool = False) -> Path:
         raise LaneError(f"{directory}: a link, so the rebench lane is not built through it")
     tomls = {task: _without_network(task / "task.toml") for task in found}
     if directory.is_dir():
-        shutil.rmtree(directory)
+        shutil.rmtree(directory, onexc=_remove_from_read_only)
     directory.mkdir(parents=True)
     for task, toml in tomls.items():
         copy = directory / task.name
@@ -302,9 +303,21 @@ def build_rebench(swe_rebench: Path, lanes: Path, check: bool = False) -> Path:
             symlinks=True,
             ignore=lambda at, names: ["task.toml"] if at == str(task) else [],
         )
+        mode = copy.stat().st_mode
+        copy.chmod(mode | stat.S_IWUSR)
         (copy / "task.toml").write_bytes(toml)
         shutil.copymode(task / "task.toml", copy / "task.toml")
+        copy.chmod(mode)
     return directory
+
+
+def _remove_from_read_only(function, path: str, error: BaseException) -> None:
+    """Retry a removal that a read-only directory, copied from the download, refused."""
+    if not isinstance(error, PermissionError):
+        raise error
+    parent = Path(path).parent
+    parent.chmod(parent.stat().st_mode | stat.S_IWUSR)
+    function(path)
 
 
 def _without_network(path: Path) -> bytes:

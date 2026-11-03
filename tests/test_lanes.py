@@ -515,6 +515,27 @@ def test_file_modes_are_kept_so_executable_scripts_stay_executable(tmp_path: Pat
         assert oct((built / path).stat().st_mode) == oct((task / path).stat().st_mode), path
 
 
+def test_read_only_task_directories_are_copied_with_their_modes_and_rebuilt_over(
+    tmp_path: Path,
+):
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"])
+    task = source / "owner__repo-1"
+    (task / "tests").chmod(0o555)
+    task.chmod(0o555)
+    try:
+        lanes.build_rebench(source, tmp_path / "lanes")
+        built = lanes.build_rebench(source, tmp_path / "lanes") / "owner__repo-1"
+
+        for path in ("", "tests"):
+            assert oct((built / path).stat().st_mode) == oct((task / path).stat().st_mode), path
+        assert toml_of(built)["agent"]["network_mode"] == "no-network"
+    finally:
+        # Left read-only, they would stop pytest removing tmp_path.
+        for directory in tmp_path.rglob("*"):
+            if directory.is_dir():
+                directory.chmod(0o755)
+
+
 def test_a_rebuild_leaves_only_the_tasks_of_the_latest_download(tmp_path: Path):
     source = make_rebench(tmp_path / "source", ["owner__repo-1", "owner__repo-2"])
     built = lanes.build_rebench(source, tmp_path / "lanes")
