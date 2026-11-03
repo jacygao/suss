@@ -32,9 +32,12 @@ class Trial:
     grader: dict | None
     patch_bytes: int
     resolved: bool
-    # False when the regrade's replay.json has `"patch": null`. None when no
-    # replay.json says either way, as when there is no regrade trial.
+    # False when the regrade's replay.json has `"patch": null`, or when it has
+    # no replay.json and raised. None when nothing says either way, as when
+    # there is no regrade trial.
     regrade_applied: bool | None
+    # The type of the exception the regrade raised, when it wrote no replay.json.
+    regrade_raised: str | None
     # The agent trial's directory.
     path: Path
 
@@ -68,7 +71,15 @@ def _trial(job: str, task: str, trial: Path, regrade: Path | None) -> Trial:
     if not isinstance(record, dict):
         record = {"status": "harness-failed"}
     patch_bytes = record.get("patch_bytes")
-    replay = _json(regrade / "agent" / "replay.json") if regrade else None
+    replay_path = regrade / "agent" / "replay.json" if regrade else None
+    replay = _json(replay_path) if replay_path else None
+    # ReplayAgent writes replay.json last, so a regrade that raised before
+    # writing it counts as applying nothing.
+    raised = _exception(regrade) if replay_path and not replay_path.exists() else None
+    if isinstance(replay, dict) and "patch" in replay:
+        applied = replay["patch"] is not None
+    else:
+        applied = False if raised is not None else None
     return Trial(
         job=job,
         task=task,
@@ -76,9 +87,8 @@ def _trial(job: str, task: str, trial: Path, regrade: Path | None) -> Trial:
         grader=record.get("grader"),
         patch_bytes=patch_bytes if isinstance(patch_bytes, int) else 0,
         resolved=regrade is not None and _reward(regrade) == 1,
-        regrade_applied=(
-            replay["patch"] is not None if isinstance(replay, dict) and "patch" in replay else None
-        ),
+        regrade_applied=applied,
+        regrade_raised=raised,
         path=trial,
     )
 
@@ -130,6 +140,19 @@ def _reward(trial: Path) -> float | int | None:
     rewards = verifier.get("rewards") if isinstance(verifier, dict) else None
     reward = rewards.get("reward") if isinstance(rewards, dict) else None
     return reward if isinstance(reward, int | float) and not isinstance(reward, bool) else None
+
+
+def _exception(trial: Path) -> str | None:
+    """
+    The type of the exception Harbor recorded as `exception_info` in the
+    trial's result.json, `an exception` when it names none, or None.
+    """
+    result = _json(trial / "result.json")
+    info = result.get("exception_info") if isinstance(result, dict) else None
+    if info is None:
+        return None
+    kind = info.get("exception_type") if isinstance(info, dict) else None
+    return kind if isinstance(kind, str) and kind else "an exception"
 
 
 def _json(path: Path):
@@ -258,12 +281,13 @@ def _read(directory: Path, lane: str, arms: Sequence[str]) -> dict[str, list[Tri
         if not trials[arm]:
             raise CompareError(f"no results for arm {arm} under results/{lane}/")
         for trial in trials[arm]:
-            # That regrade graded the unchanged repository, so its 0 is not the trial's result.
+            # That regrade did not grade the patch, so its 0 is not the trial's result.
             if trial.patch_bytes > 0 and trial.regrade_applied is False:
+                raised = f"raised {trial.regrade_raised} and " if trial.regrade_raised else ""
                 raise CompareError(
                     f"the trial of {trial.task} in results/{lane}/{arm}/{trial.job} made a "
                     f"{trial.patch_bytes}-byte patch, but its regrade in "
-                    f"{trial.job}{REGRADE} applied none"
+                    f"{trial.job}{REGRADE} {raised}applied none"
                 )
     return trials
 

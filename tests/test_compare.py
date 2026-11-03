@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 from harbor.models.agent.context import AgentContext
+from harbor.models.trial.result import ExceptionInfo
+from harbor.trial.errors import VerifierTimeoutError
 
 from suss import cli, compare, replay
 from suss.compare import Difference, Trial, read_trials, resolved_difference
@@ -107,6 +109,29 @@ def write_regrade_trial(
         }
     write_json(trial / "agent" / "replay.json", replay)
     return trial
+
+
+def record_exception(trial: Path, error: Exception) -> None:
+    """
+    Give the regrade's result.json the exception, as Harbor's Trial.run records
+    one: `exception_info` set and no reward.
+    """
+    try:
+        raise error
+    except Exception as raised:
+        info = ExceptionInfo.from_exception(raised).model_dump(mode="json")
+    result = json.loads((trial / "result.json").read_text())
+    write_json(trial / "result.json", dict(result, verifier_result=None, exception_info=info))
+
+
+def regrade_raised(trial: Path) -> None:
+    """
+    Make the regrade's trial one whose ReplayAgent raised before writing
+    replay.json, as a real `harbor run` left it: no `agent/` at all, and the
+    exception in result.json.
+    """
+    shutil.rmtree(trial / "agent")
+    record_exception(trial, replay.ReplayError("source_job must hold one trial of the task"))
 
 
 @pytest.fixture
@@ -317,6 +342,25 @@ def test_a_regrade_that_applied_no_patch_says_so(tmp_path, arm):
     assert trials["S-1", FLIPT].regrade_applied is False
     assert trials["S-1", FLIPT].patch_bytes == 6490
     assert trials["S-1", NAVIDROME].regrade_applied is True
+
+
+def test_a_regrade_that_raised_before_writing_replay_json_applied_no_patch(tmp_path, arm):
+    write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
+    regrade_raised(write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK"))
+
+    [trial] = read_trials(tmp_path, LANE, ARM)
+
+    assert (trial.resolved, trial.regrade_applied) == (False, False)
+
+
+def test_a_regrade_whose_verifier_timed_out_after_replay_json_applied_its_patch(tmp_path, arm):
+    write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
+    regrade = write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK")
+    record_exception(regrade, VerifierTimeoutError("Verifier execution timed out after 3000.0 seconds"))
+
+    [trial] = read_trials(tmp_path, LANE, ARM)
+
+    assert (trial.resolved, trial.regrade_applied) == (False, True)
 
 
 def test_nothing_under_checks_is_read(tmp_path, arm):
@@ -738,6 +782,58 @@ def test_a_patch_whose_regrade_says_nothing_of_it_counts_as_unresolved(results, 
 
     assert (code, err) == (0, "")
     assert "beta      13       54%      0%         0%\n" in out
+
+
+def regrade_of(root: Path, arm: str, task: str, i: int) -> Path:
+    """write_arm's i-th regrade trial of the task."""
+    return trial_directory(root / "results" / LANE / arm / f"S-{i}{compare.REGRADE}", task, f"regrd{i}")
+
+
+@pytest.mark.parametrize("task", ["t2", "t5"], ids=["shared", "alphas-own"])
+def test_a_regrade_that_raised_before_applying_a_trials_patch_is_an_error_naming_both(
+    results, capsys, task
+):
+    regrade_raised(regrade_of(results, "alpha", task, 1))
+
+    code, out, err = run_compare(results, capsys, LANE, "base", "alpha")
+
+    assert code != 0
+    assert (out, err) == (
+        "",
+        f"error: the trial of {task} in results/{LANE}/alpha/S-1 made a 4182-byte patch, "
+        "but its regrade in S-1-regrade raised ReplayError and applied none\n",
+    )
+
+
+def test_a_regrade_whose_verifier_timed_out_counts_as_unresolved(results, capsys):
+    regrade = regrade_of(results, "beta", "t1", 1)
+    record_exception(regrade, VerifierTimeoutError("Verifier execution timed out after 3000.0 seconds"))
+
+    code, out, err = run_compare(results, capsys, LANE, "beta", "base")
+
+    assert (code, err) == (0, "")
+    assert "beta      13       54%      0%         0%\n" in out
+
+
+def test_an_empty_patch_whose_regrade_raised_counts_as_unresolved(results, capsys):
+    trial = trial_directory(results / "results" / LANE / "beta" / "S-1", "t1", "agent1")
+    write_json(trial / "agent" / "suss.json", {"grader": GRADER, "status": "ok", "patch_bytes": 0})
+    regrade_raised(regrade_of(results, "beta", "t1", 1))
+
+    code, out, err = run_compare(results, capsys, LANE, "beta", "base")
+
+    assert (code, err) == (0, "")
+    assert "beta      13       54%      0%         0%\n" in out
+
+
+def test_a_trial_with_no_record_whose_regrade_raised_is_compared(results, capsys):
+    # alpha's first trial of t1 has no suss.json, so no patch_bytes.
+    regrade_raised(regrade_of(results, "alpha", "t1", 1))
+
+    code, out, err = run_compare(results, capsys, LANE, "alpha", "base")
+
+    assert (code, err) == (0, "")
+    assert "alpha      12       33%     17%        17%\n" in out
 
 
 def add_trial(root: Path, arm: str, job: str, task: str, grader) -> None:
