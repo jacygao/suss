@@ -1,3 +1,4 @@
+import asyncio
 import json
 import random
 import shutil
@@ -5,8 +6,9 @@ import time
 from pathlib import Path
 
 import pytest
+from harbor.models.agent.context import AgentContext
 
-from suss import cli, compare
+from suss import cli, compare, replay
 from suss.compare import Difference, Trial, read_trials, resolved_difference
 
 LANE = "pro-go"
@@ -76,11 +78,11 @@ def write_agent_trial(
 
 
 def write_regrade_trial(
-    job: Path, task: str, suffix: str, verifier_result=RESOLVED, *, patch="model.patch"
+    job: Path, task: str, suffix: str, verifier_result=RESOLVED, *, applied: bool = True
 ) -> Path:
     """
-    The regrade's trial of the task. `patch` is what `replay.json` names, None
-    when the regrade applied nothing.
+    The regrade's trial of the task, with the replay.json ReplayAgent writes
+    when it applied the trial's patch, or when it found none.
     """
     trial = trial_directory(write_job(job), task, suffix)
     write_json(trial / "config.json", {"task": {"path": f"lanes/{LANE}/{task}"}})
@@ -89,13 +91,19 @@ def write_regrade_trial(
         {
             "task_name": f"swebench-pro/{task}",
             "trial_name": trial.name,
-            "agent_info": {"name": "patch-replay-agent"},
+            "agent_info": {"name": "suss-replay"},
             "verifier_result": verifier_result,
         },
     )
-    replay = {"task": task, "patch": patch}
-    if patch is not None:
-        replay["apply_rc"] = 0
+    replay = {"task": task, "patch": None}
+    if applied:
+        source = job.parent / job.name.removesuffix(compare.REGRADE) / task / "agent"
+        replay = {
+            "task": task,
+            "patch": str(source / "model.patch"),
+            "apply_rc": 0,
+            "apply_out": "$ git apply --verbose\nApplied patch cleanly.\n",
+        }
     write_json(trial / "agent" / "replay.json", replay)
     return trial
 
@@ -122,6 +130,34 @@ def test_a_trial_carries_its_record_and_its_regrades_result(tmp_path, arm):
     assert trial.patch_bytes == 6490
     assert trial.resolved is True
     assert trial.regrade_applied is True
+
+
+@pytest.mark.parametrize("patch", [True, False], ids=["found", "missing"])
+def test_reads_whether_the_regrade_applied_the_patch_from_what_replay_agent_wrote(
+    tmp_path, arm, local_environment, monkeypatch, patch
+):
+    trial = write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
+    if not patch:
+        (trial / "agent" / "model.patch").unlink()
+    regrade = write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK", UNRESOLVED)
+    (regrade / "agent" / "replay.json").unlink()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    async def find_workspace(environment):
+        return str(workspace)
+
+    monkeypatch.setattr(replay, "find_workspace", find_workspace)
+    agent = replay.ReplayAgent(
+        source_job=str(arm / "S-1"),
+        patch_target=str(tmp_path / "replay.patch"),
+        logs_dir=regrade / "agent",
+    )
+    asyncio.run(agent.run("an instruction", local_environment, AgentContext()))
+
+    [read] = read_trials(tmp_path, LANE, ARM)
+
+    assert read.regrade_applied is patch
 
 
 def test_trials_pair_with_their_regrade_by_task_name_and_not_by_directory(tmp_path, arm):
@@ -184,7 +220,7 @@ def test_a_job_directorys_own_files_are_not_trials(tmp_path, arm):
 
 def test_a_trial_with_no_record_is_harness_failed_with_no_grader(tmp_path, arm):
     write_agent_trial(arm / "S-1", FLIPT, "kY8wt23", record=False)
-    write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK", UNRESOLVED, patch=None)
+    write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK", UNRESOLVED, applied=False)
 
     [trial] = read_trials(tmp_path, LANE, ARM)
 
@@ -272,7 +308,7 @@ def test_a_reward_short_of_one_is_unresolved(tmp_path, arm):
 def test_a_regrade_that_applied_no_patch_says_so(tmp_path, arm):
     write_agent_trial(arm / "S-1", FLIPT, "kY8wt23", patch_bytes=6490)
     write_agent_trial(arm / "S-1", NAVIDROME, "Qp3rT9a")
-    write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK", UNRESOLVED, patch=None)
+    write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK", UNRESOLVED, applied=False)
     write_regrade_trial(arm / "S-1-regrade", NAVIDROME, "Lm8vB2c")
 
     trials = by_job(read_trials(tmp_path, LANE, ARM))
@@ -638,7 +674,7 @@ def test_arguments_after_the_separator_are_refused(results, capsys):
 def regrade_applies_nothing(root: Path, arm: str, task: str, i: int) -> Path:
     """
     Make write_arm's i-th regrade of the task one that found no patch, as
-    PatchReplayAgent leaves it: replay.json naming none, and reward 0.
+    ReplayAgent leaves it: replay.json naming none, and reward 0.
     """
     job = root / "results" / LANE / arm / f"S-{i}{compare.REGRADE}"
     regrade = trial_directory(job, task, f"regrd{i}")
