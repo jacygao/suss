@@ -183,6 +183,10 @@ def install_environment(box: Path) -> dict[str, str]:
             for tool in Path(directory).iterdir():
                 if tool.name not in ("curl", "wget") and not (tools / tool.name).exists():
                     (tools / tool.name).symlink_to(tool)
+        # macOS before 15 has only shasum, which prints the same line.
+        if not (tools / "sha256sum").exists():
+            (tools / "sha256sum").write_text('#!/bin/sh\nexec shasum -a 256 "$@"\n')
+            (tools / "sha256sum").chmod(0o755)
     return {**environment(box), "PATH": f"{box / 'bin'}:{tools}"}
 
 
