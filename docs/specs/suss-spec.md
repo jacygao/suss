@@ -515,6 +515,9 @@ It exits with an error, and prints nothing else, when:
 - A trial whose `suss.json` has `patch_bytes` above 0 has a regrade that
   applied no patch: its `agent/replay.json` has `"patch": null`, or it has no
   `agent/replay.json` and its `result.json` records an exception.
+- A trial's regrade applied only part of its patch: its `agent/replay.json`
+  names a patch, and `apply_rc` is not 0, or `apply_out` has a line from
+  `git apply --3way` that ends `with conflicts.`.
 
 ## 7. The project
 

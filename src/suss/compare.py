@@ -39,6 +39,9 @@ class Trial:
     # no replay.json and raised. None when nothing says either way, as when
     # there is no regrade trial.
     regrade_applied: bool | None
+    # True when the regrade applied a patch and its replay.json does not show
+    # that all of it applied.
+    regrade_partial: bool
     # The type of the exception the regrade raised, when it wrote no replay.json.
     regrade_raised: str | None
     # Whether the regrade's verifier/report.json counts a test as passed,
@@ -95,10 +98,26 @@ def _trial(job: str, task: str, trial: Path, regrade: Path | None) -> Trial:
         patch_bytes=patch_bytes if isinstance(patch_bytes, int) else 0,
         resolved=regrade is not None and _reward(regrade) == 1,
         regrade_applied=applied,
+        regrade_partial=applied is True and not _applied_whole(replay),
         regrade_raised=raised,
         regrade_tested=regrade is not None and _tested(regrade),
         path=trial,
     )
+
+
+def _applied_whole(replay: dict) -> bool:
+    """
+    Whether the replay.json of a regrade that applied a patch shows that all of
+    it applied.
+
+    Every method that exits 0 applied all of the patch, and the first that does
+    ends the apply, so `apply_rc` is 0 exactly when one did. The exception is
+    `git apply --3way`, which writes conflict markers before it exits 1, and
+    `patch` can then apply every hunk over them and exit 0.
+    """
+    code, output = replay.get("apply_rc"), replay.get("apply_out")
+    conflicted = isinstance(output, str) and "' with conflicts." in output
+    return type(code) is int and code == 0 and not conflicted
 
 
 def _by_task(job: Path) -> dict[str, Path]:
@@ -273,8 +292,9 @@ def report(directory: Path, lane: str, arms: Sequence[str]) -> str:
     job and task.
 
     Raises ConfigError when suss.toml does not define every arm, and
-    CompareError when an arm has no trials, a trial's regrade applied none of
-    its patch, two trials carry different graders, or the arms share no task.
+    CompareError when an arm has no trials, a trial's regrade applied none or
+    only part of its patch, two trials carry different graders, or the arms
+    share no task.
     """
     baselines = config.baselines(Path(directory) / "suss.toml", list(arms))
     trials = _read(directory, lane, arms)
@@ -302,8 +322,8 @@ def report(directory: Path, lane: str, arms: Sequence[str]) -> str:
 def _read(directory: Path, lane: str, arms: Sequence[str]) -> dict[str, list[Trial]]:
     """
     Every trial of each arm, raising CompareError for an arm with none, and
-    for any trial with a patch whose regrade applied none, so that nothing is
-    compared that cannot be.
+    for the first trial with a patch whose regrade applied none or only part
+    of it, so that nothing is compared that cannot be.
     """
     trials = {}
     for arm in arms:
@@ -318,6 +338,12 @@ def _read(directory: Path, lane: str, arms: Sequence[str]) -> dict[str, list[Tri
                     f"the trial of {trial.task} in results/{lane}/{arm}/{trial.job} made a "
                     f"{trial.patch_bytes}-byte patch, but its regrade in "
                     f"{trial.job}{REGRADE} {raised}applied none"
+                )
+            # Its result is the grade of a change the harness did not make.
+            if trial.regrade_partial:
+                raise CompareError(
+                    f"the trial of {trial.task} in results/{lane}/{arm}/{trial.job} made a "
+                    f"patch, but its regrade in {trial.job}{REGRADE} applied only part of it"
                 )
     return trials
 
