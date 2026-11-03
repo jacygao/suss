@@ -72,10 +72,9 @@ In the setup phase, suss:
 1. **finds the workspace, and records the base and the starting tree.** The
    workspace is the directory the sandbox starts in, which is the image's
    `WORKDIR`, such as `/gleam`. It must be the top level of a git repository,
-   or the trial fails naming it. The base is `git rev-parse HEAD`. The starting
-   tree is built with `git add -A` and `git write-tree` in a copy of the index,
-   so the harness starts with the index, `HEAD`, the refs and `git status` as
-   the image left them.
+   or the trial fails naming it. The base is `git rev-parse HEAD`. Recording the
+   starting tree leaves the index, `HEAD`, the refs and `git status` as the
+   image left them.
 2. **uploads the harness's adapter** to `/opt/suss/adapter/`.
 3. **installs the harness**, if the adapter's manifest names an `install` command.
 
@@ -99,12 +98,8 @@ git diff --cached --binary <starting tree> > /logs/agent/model.patch
 The diff runs from the starting tree, so it holds the whole change the harness
 made, whether it committed it or not, and none of the changes the image already
 had. A regrade starts from the same image, so the patch applies there with
-`git apply`.
-
-Before the diff, suss also stages each file of the starting tree that git now
-ignores and that still exists, as `git add -A` does for a tracked file. A
-harness that only ignores a file the image left untracked leaves it out of the
-patch.
+`git apply`. A file of the starting tree that the harness made git ignore, but
+left in place, stays out of the patch.
 
 ### Regrading
 
