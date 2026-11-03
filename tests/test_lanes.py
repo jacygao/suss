@@ -426,6 +426,27 @@ def test_the_task_toml_keeps_its_text_and_gains_one_line_in_its_agent_table(tmp_
     assert copied[copied.index("[agent]") + 1] == NO_NETWORK
 
 
+@pytest.mark.parametrize(
+    ("original", "copied"),
+    [
+        (
+            "[agent]\ntimeout_sec = 3000.0",
+            '[agent]\nnetwork_mode = "no-network"\ntimeout_sec = 3000.0',
+        ),
+        ("x = 1\n[agent]", 'x = 1\n[agent]\nnetwork_mode = "no-network"\n'),
+        ("x = 1", 'x = 1\n\n[agent]\nnetwork_mode = "no-network"\n'),
+    ],
+)
+def test_a_task_toml_with_no_final_newline_changes_only_where_the_line_goes(
+    tmp_path: Path, original: str, copied: str
+):
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"], original)
+
+    built = lanes.build_rebench(source, tmp_path / "lanes")
+
+    assert (built / "owner__repo-1" / "task.toml").read_bytes() == copied.encode()
+
+
 def test_a_task_with_no_agent_table_gains_one(tmp_path: Path):
     toml = REBENCH_TOML.replace("[agent]\ntimeout_sec = 3000.0\n", "")
     source = make_rebench(tmp_path / "source", ["owner__repo-1"], toml)

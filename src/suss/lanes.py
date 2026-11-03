@@ -338,14 +338,19 @@ def _without_network(path: Path) -> bytes:
             "rebench lane must set to no-network itself"
         )
     lines = path.read_bytes().decode().splitlines(keepends=True)
-    if lines and not lines[-1].endswith("\n"):
-        lines[-1] += "\n"
     headers = [number for number, line in enumerate(lines) if AGENT_HEADER.match(line)]
     if len(headers) == 1:
         header = lines[headers[0]]
-        # The added line ends as the header does, \r\n or \n.
-        lines.insert(headers[0] + 1, NO_NETWORK + header[len(header.rstrip("\r\n")) :])
+        # The added line ends as the header does, \r\n or \n, and a header
+        # ending the file without one gains one.
+        newline = header[len(header.rstrip("\r\n")) :]
+        if not newline:
+            lines[headers[0]] += "\n"
+            newline = "\n"
+        lines.insert(headers[0] + 1, NO_NETWORK + newline)
     else:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
         lines.append(f"\n[agent]\n{NO_NETWORK}\n")
     text = "".join(lines)
     if not isinstance(agent, dict):
