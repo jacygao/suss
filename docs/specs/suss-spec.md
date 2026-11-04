@@ -182,8 +182,8 @@ SSB_OVERRIDE_ALL_JUDGE_MODEL = "${SSB_OVERRIDE_ALL_JUDGE_MODEL:-}"
 Suss runs the regrade's Harbor with each variable the lane's tasks name this
 way that the `.env` beside `suss.toml` sets, with its value there. Neither job's
 Harbor takes these variables from suss's own environment. So a variable `.env`
-leaves out or leaves empty takes the task's default, and the agent phase never
-gets a grading key.
+leaves out or leaves empty takes the task's default, and the agent phase gets
+one only when the harness's manifest names it in `env`.
 
 A task whose `[verifier.env]` names `SSB_OVERRIDE_ALL_JUDGE_MODEL` has Senior
 SWE-Bench's verifier. It calls LLM judges, and when it cannot reach their
