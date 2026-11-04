@@ -22,7 +22,7 @@ from harbor.models.agent.context import AgentContext
 from suss.workspace import PATCH_NAME, find_workspace, read_start_tree
 
 RECORD_NAME = "replay.json"
-APPLY_METHODS = ("git apply --verbose", "git apply --3way", "patch --fuzz=3 -p1 -i")
+APPLY_METHOD = "git apply --verbose"
 APPLY_SECONDS = 300
 TEST_WORDS = frozenset({"test", "tests", "testdata", "mdtest"})
 JS_SPEC = re.compile(r"\.spec\.(?:js|jsx|ts|tsx|mjs|cjs|mts|cts)$")
@@ -128,19 +128,17 @@ class ReplayAgent(BaseAgent):
         self, environment: BaseEnvironment, patch: Path, workspace: str
     ) -> dict[str, Any]:
         """
-        Apply the patch with the first method that succeeds, and return its exit
-        code and everything the methods tried printed.
+        Apply the patch, and return git's exit code and everything it printed.
 
-        Each method's output, stderr too, follows a line naming it, so apply_out
-        shows which ran and what each printed. The patch goes in as a file,
-        since exec passes text, which corrupts bytes that are not valid UTF-8.
+        Git applies the whole patch or none of it. The patch runs from the
+        starting tree this sandbox holds, so a patch suss captured applies
+        whole. The output follows a line naming the command, stderr too. The patch goes
+        in as a file, since exec passes text, which corrupts bytes that are not
+        valid UTF-8.
         """
         await environment.upload_file(patch, self.patch_target)
         target = shlex.quote(self.patch_target)
-        command = " || ".join(
-            f"{{ echo {shlex.quote('$ ' + method)}; {method} {target} 2>&1; }}"
-            for method in APPLY_METHODS
-        )
+        command = f"{{ echo {shlex.quote('$ ' + APPLY_METHOD)}; {APPLY_METHOD} {target} 2>&1; }}"
         result = await environment.exec(command, cwd=workspace, timeout_sec=APPLY_SECONDS)
         return {
             "apply_rc": result.return_code,

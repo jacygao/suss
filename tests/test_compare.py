@@ -395,6 +395,68 @@ def test_a_regrade_whose_verifier_timed_out_after_replay_json_applied_its_patch(
     assert (trial.resolved, trial.regrade_applied) == (False, True)
 
 
+# What applying a patch printed in a real regrade, whose patch skipped a hunk
+# that git apply had refused, and exited 1.
+SKIPPED_A_HUNK = {
+    "apply_rc": 1,
+    "apply_out": (
+        "$ git apply --verbose\n"
+        "Checking patch package.json...\n"
+        "error: while searching for:\n"
+        "  },\n"
+        '  "engines": {\n'
+        '    "node": ">=18.0.0"\n'
+        "  }\n"
+        "}\n"
+        "\n"
+        "error: patch failed: package.json:136\n"
+        "error: package.json: patch does not apply\n"
+        "Checking patch src/__tests__/useForm/valuesWithShouldUnregister.test.tsx...\n"
+        "Checking patch src/logic/createFormControl.ts...\n"
+        "$ git apply --3way\n"
+        "error: package.json: does not match index\n"
+        "Falling back to direct application...\n"
+        "error: src/logic/createFormControl.ts: does not match index\n"
+        "$ patch --fuzz=3 -p1 -i\n"
+        "patching file package.json\n"
+        "Reversed (or previously applied) patch detected!  Assume -R? [n] \n"
+        "Apply anyway? [n] \n"
+        "Skipping patch.\n"
+        "1 out of 1 hunk ignored -- saving rejects to file package.json.rej\n"
+        "patching file src/__tests__/useForm/valuesWithShouldUnregister.test.tsx\n"
+        "patching file src/logic/createFormControl.ts\n"
+    ),
+}
+def applied_part(trial: Path, applying: dict) -> None:
+    """Make the regrade trial's replay.json record its patch applied as `applying` says."""
+    replay = trial / "agent" / "replay.json"
+    task = json.loads(replay.read_text())["task"]
+    write_json(replay, {"task": task, "patch": "model.patch", **applying})
+
+
+@pytest.mark.parametrize(
+    "applying",
+    [SKIPPED_A_HUNK, {}, {"apply_rc": None, "apply_out": ""}],
+    ids=["skipped-a-hunk", "no-exit-code", "null-exit-code"],
+)
+def test_a_regrade_that_does_not_show_it_applied_all_of_its_patch_applied_part(
+    tmp_path, arm, applying
+):
+    write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
+    write_agent_trial(arm / "S-1", NAVIDROME, "Qp3rT9a")
+    write_agent_trial(arm / "S-1", FLIPT_TOO, "Zz9yX8w")
+    applied_part(write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK"), applying)
+    write_regrade_trial(arm / "S-1-regrade", NAVIDROME, "Lm8vB2c")
+    write_regrade_trial(arm / "S-1-regrade", FLIPT_TOO, "Hh7gG6f", UNRESOLVED, applied=False)
+
+    trials = by_job(read_trials(tmp_path, LANE, ARM))
+
+    assert trials["S-1", FLIPT].regrade_refused is True
+    # A clean apply, and a regrade that applied no patch, applied no part.
+    assert trials["S-1", NAVIDROME].regrade_refused is False
+    assert trials["S-1", FLIPT_TOO].regrade_refused is False
+
+
 def counts(**given) -> dict:
     """NO_TEST_RESULT, with the given counts in its parsed_counts."""
     return dict(NO_TEST_RESULT, parsed_counts=dict(NO_TEST_RESULT["parsed_counts"], **given))
@@ -910,6 +972,43 @@ def test_a_regrade_that_raised_before_applying_a_trials_patch_is_an_error_naming
         "",
         f"error: the trial of {task} in results/{LANE}/alpha/S-1 made a 4182-byte patch, "
         "but its regrade in S-1-regrade raised ReplayError and applied none\n",
+    )
+
+
+@pytest.mark.parametrize(
+    "arm, task",
+    [("alpha", "t2"), ("alpha", "t5"), ("alpha", "t1"), ("base", "t3")],
+    ids=["shared", "alphas-own", "no-record", "baseline"],
+)
+def test_a_regrade_that_applied_part_of_a_trials_patch_is_an_error_naming_both(
+    results, capsys, arm, task
+):
+    # alpha's first trial of t1 has no suss.json, and its patch still counts.
+    applied_part(regrade_of(results, arm, task, 1), SKIPPED_A_HUNK)
+
+    code, out, err = run_compare(results, capsys, LANE, "base", "alpha")
+
+    assert code != 0
+    assert (out, err) == (
+        "",
+        f"error: the trial of {task} in results/{LANE}/{arm}/S-1 made a patch, "
+        "but its regrade in S-1-regrade could not apply it\n",
+    )
+
+
+def test_the_first_regrade_that_applied_part_of_a_patch_is_the_one_named(results, capsys):
+    applied_part(regrade_of(results, "alpha", "t3", 2), SKIPPED_A_HUNK)
+    applied_part(regrade_of(results, "alpha", "t4", 1), SKIPPED_A_HUNK)
+    applied_part(regrade_of(results, "base", "t4", 3), SKIPPED_A_HUNK)
+
+    code, out, err = run_compare(results, capsys, LANE, "alpha", "base")
+
+    # By arm in the order given, then by job and task.
+    assert code != 0
+    assert (out, err) == (
+        "",
+        f"error: the trial of t4 in results/{LANE}/alpha/S-1 made a patch, "
+        "but its regrade in S-1-regrade could not apply it\n",
     )
 
 
