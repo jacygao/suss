@@ -33,9 +33,11 @@ recheck-when: an arm pins another hve-core commit, Copilot CLI version or model,
 ## Needs your input
 
 - **Whether to run `hve-sol` and `copilot-gpt` again, k = 2 or more, before
-  concluding.** A second trial per task would roughly halve the interval's
-  width. I recommend it before anything rests on RPI being worse; it costs about
-  $190 in AI credits and $15–25 of Modal per arm.
+  concluding.** The interval resamples tasks with their trials together, so a
+  second trial narrows it only by the share that comes from each trial's own
+  randomness; the variation between tasks remains. I recommend it before
+  anything rests on RPI being worse; it costs about $190 in AI credits and
+  $15–25 of Modal per arm.
 
 ## Reference
 
