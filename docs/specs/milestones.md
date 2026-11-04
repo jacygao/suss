@@ -175,30 +175,7 @@ regrading agent are gone.
       has `status` `ok`, and the regrade's reward is the trial's result
 - [ ] `uv run pytest` passes
 
-## M5 — Claude Code on a subscription
-
-`adapters/claude-code/` runs Claude Code on a Claude subscription as well as on
-an API key, so a Claude Code arm can be measured on a plan, as a `copilot-cli`
-arm is on a Copilot plan.
-
-### Acceptance criteria
-
-- [ ] The adapter takes the token `claude setup-token` makes, as
-      `CLAUDE_CODE_OAUTH_TOKEN`, or `ANTHROPIC_API_KEY`, from the run's `.env`,
-      and `run` exits 1 naming the problem when both are set or neither is,
-      before Claude Code starts
-- [ ] An arm on a subscription refuses `max_budget_usd`, and its trials record
-      each call's token usage as an API-key arm's trials do
-- [ ] A trial that stops at the plan's usage limit has `status`
-      `usage-limited`, not `harness-failed`. It counts in no share, and
-      `suss compare` names it
-- [ ] On Modal, in the agent phase of a `rebench` task, a subscription arm
-      reaches each host in the manifest's `allowed_hosts` and no other host
-- [ ] `suss run <arm> rebench --check` on Modal, with only the subscription
-      token in `.env`, leaves a trial with `status` `ok` and its regrade
-- [ ] `uv run pytest` passes
-
-## M6 — The Senior SWE-Bench lane
+## M5 — The Senior SWE-Bench lane
 
 Suss runs a second lane, `senior`, built from Snorkel's Senior SWE-Bench
 snapshot `senior-swe-bench-v2026.06`, which holds 50 tasks. Each task's verifier
