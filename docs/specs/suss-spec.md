@@ -65,7 +65,8 @@ docker run --rm alpine:3.19 sh -c 'zcat /proc/config.gz | grep NFT_FIB_INET'
 
 Suss is a Harbor custom agent, `suss.agent:SussAgent`. Harbor runs it once per
 trial, in two phases. The setup phase has network access. The agent phase
-reaches only the hosts the harness's manifest lists in `allowed_hosts`.
+reaches only the hosts the harness's manifest lists in `allowed_hosts`, and
+those its task lists in `[agent] allowed_hosts`.
 
 In the setup phase, suss:
 
@@ -316,16 +317,31 @@ build downloads from the network. Its repository is in the image's `WORKDIR`.
 
 ### Network
 
-The agent phase has no network. Suss passes each host in the harness's
-`allowed_hosts` to Harbor as `--allow-agent-host`, and nothing else, so a harness
-cannot fetch a task's real change from the web.
+In the agent phase, a trial reaches the hosts in the harness's `allowed_hosts`
+and the hosts in its own task's `[agent] allowed_hosts`, and no other host, so a
+harness cannot fetch a task's real change from the web. A `rebench` task names
+no hosts of its own, so its trials reach the harness's alone.
 
-The tasks give the network to the whole trial, with
-`[environment] network_mode = "public"`, or with `allow_internet = true` in
-one, and Harbor ignores `--allow-agent-host` under either. So the lane holds a copy of each task, whose
-`task.toml` adds `[agent] network_mode = "no-network"` and is otherwise
-unchanged. The verifier keeps the task's own network, which it uses to download
-a Python on an image that has none.
+Suss passes each host in the harness's `allowed_hosts` to Harbor as
+`--allow-agent-host`, and nothing else. Harbor adds them, trial by trial, to the
+hosts of that trial's own task. A host that one task names stays closed to
+every other task's trials in the same job, and a host the harness and the task
+both name is opened once. A task allowing `pypi.org`
+and `clickhouse.com`, under a harness allowing `api.anthropic.com` and
+`pypi.org`, has an agent phase that reaches `pypi.org`, `clickhouse.com` and
+`api.anthropic.com`.
+
+Harbor ignores `--allow-agent-host` when the agent's network is public, which
+it is when a task's `[agent]` sets no `network_mode` and the task gives the
+network to the whole trial, with `[environment] network_mode = "public"` or with
+`allow_internet = true`. Every `rebench` task does. So the lane holds a copy of
+each task, and the copy's `task.toml` adds `[agent] network_mode = "no-network"`
+where `[agent]` sets no `network_mode`. A `task.toml` whose `[agent]` sets
+`no-network` or `allowlist` is copied unchanged. One whose `[agent]` sets any
+other `network_mode`, or sets `allowed_hosts` with no `network_mode`, makes
+`suss run` exit with an error naming it before it builds any lane or runs any
+job. The verifier keeps the task's own network, which it uses to download a
+Python on an image that has none.
 
 ## 6. Commands
 
@@ -339,7 +355,8 @@ suss run peer-review rebench
 It reads the arm from `suss.toml` in the current directory. For each lane, it
 builds `lanes/<lane>/`, a directory of copies of the lane's task directories
 from the directory `swe_rebench` names, each with
-`[agent] network_mode = "no-network"` added to its `task.toml`. A build removes
+`[agent] network_mode = "no-network"` added to its `task.toml` where its
+`[agent]` sets no `network_mode`. A build removes
 what an earlier build of the lane left. Harbor builds each task's image from its
 `Dockerfile` when its trial starts.
 
