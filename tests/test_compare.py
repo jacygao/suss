@@ -1325,3 +1325,232 @@ def test_an_invalid_trial_on_a_task_not_every_arm_has_is_not_named(results, caps
 
     assert (code, err) == (0, "")
     assert INVALID not in out
+
+
+SENIOR = "senior"
+
+# verifier_result.rewards of a senior regrade whose judges both ran, as a real
+# regrade of paperless-ngx-perf-workflow-queries wrote it.
+JUDGED = {
+    "reward": 1.0,
+    "correctness": 1.0,
+    "verifier_score": 1.0,
+    "rubric_score": 1.0,
+    "rubric_f2p_score": 1.0,
+    "rubric_p2p_score": 1.0,
+    "taste_patch_bloat": 1.984,
+    "taste_practice_alignment": 4.0,
+    "taste_relative_taste": 3.0,
+    "rubric_judge_ok": 1,
+    "taste_judge_ok": 1,
+}
+# As a real regrade wrote it when both judges failed: the patch bloat is still
+# there, measured without the classifier the taste judge needs.
+JUDGES_FAILED = {
+    "reward": 1.0,
+    "correctness": 1.0,
+    "verifier_score": 1.0,
+    "taste_patch_bloat": 1.984,
+    "rubric_judge_ok": 0,
+    "taste_judge_ok": 0,
+}
+# A task with no rubric criteria: the rubric judge records skipped:no_criteria,
+# so its flag is 0 and it has no score.
+NO_CRITERIA = {key: value for key, value in JUDGED.items() if not key.startswith("rubric_")} | {
+    "rubric_judge_ok": 0,
+}
+OK = {"rubric_status": "ok", "taste_status": "ok"}
+STATUS_NO_CRITERIA = {"rubric_status": "skipped:no_criteria", "taste_status": "ok"}
+
+SENIOR_TOML = """\
+[arms.base]
+
+[arms.beta]
+baseline = "base"
+"""
+
+
+def judged(rubric=None, practice=None, relative=None, bloat=None, base=JUDGED) -> dict:
+    """The rewards of a judged regrade, with the scores given in place of JUDGED's."""
+    given = {
+        "rubric_score": rubric,
+        "taste_practice_alignment": practice,
+        "taste_relative_taste": relative,
+        "taste_patch_bloat": bloat,
+    }
+    return base | {key: value for key, value in given.items() if value is not None}
+
+
+def write_senior_arm(root: Path, arm: str, tasks: dict[str, list[tuple[dict, dict | None]]]) -> None:
+    """
+    The arm's senior results: each task's trials, the i-th in agent job `S-<i>`.
+    Each is its regrade's rewards and judge_output.json, where None writes no
+    judge_output.json.
+    """
+    for task, trials in tasks.items():
+        for i, (rewards, judge_output) in enumerate(trials, start=1):
+            job = root / "results" / SENIOR / arm / f"S-{i}"
+            write_agent_trial(job, task, f"agent{i}")
+            # With a rebench report, so no trial here is named for recording no test result.
+            regrade = write_regrade_trial(
+                job.with_name(f"{job.name}{compare.REGRADE}"), task, f"regrd{i}", {"rewards": rewards}
+            )
+            if judge_output is not None:
+                write_json(regrade / "verifier" / "judge_output.json", judge_output)
+
+
+def regrade_of_senior(root: Path, arm: str, task: str, i: int) -> Path:
+    """write_senior_arm's i-th regrade trial of the task."""
+    return trial_directory(root / "results" / SENIOR / arm / f"S-{i}{compare.REGRADE}", task, f"regrd{i}")
+
+
+@pytest.fixture
+def senior(tmp_path) -> Path:
+    """
+    Two arms on senior over s1 to s3, where s3 has no rubric criteria, and an
+    s9 only beta has, whose low scores would drag beta's means down.
+
+    base's first trial of s2 is the failed regrade, with stale scores added
+    under its 0 flags.
+    """
+    (tmp_path / "suss.toml").write_text(SENIOR_TOML)
+    failed = {"rubric_status": "failed:api_error", "taste_status": "failed:api_error"}
+    stale = JUDGES_FAILED | {"rubric_score": 1.0, "taste_practice_alignment": 5.0, "taste_relative_taste": 5.0}
+    no_criteria = (judged(None, 5.0, 4.0, 2.0, base=NO_CRITERIA), STATUS_NO_CRITERIA)
+    write_senior_arm(
+        tmp_path,
+        "base",
+        {
+            "s1": [(judged(1.0, 4.0, 3.0, 1.984), OK), (judged(0.5, 2.0, 3.0, 1.0), OK)],
+            "s2": [(stale, failed), (judged(0.25, 3.0, 2.0, 0.5), OK)],
+            "s3": [no_criteria, no_criteria],
+        },
+    )
+    write_senior_arm(
+        tmp_path,
+        "beta",
+        {
+            "s1": [(judged(1.0, 4.0, 4.0, 1.0), OK)],
+            "s2": [(judged(0.5, 2.0, 2.0, 3.0), OK)],
+            "s3": [(judged(None, 3.0, 3.0, 1.0, base=NO_CRITERIA), STATUS_NO_CRITERIA)],
+            "s9": [(judged(0.0, 1.0, 1.0, 9.0), OK)],
+        },
+    )
+    return tmp_path
+
+
+JUDGES_NAMED = "These trials' judges failed or were skipped, so the means leave out their scores:\n"
+
+
+def test_compare_gives_each_arms_mean_judges_scores_on_senior(senior, capsys):
+    code, out, err = run_compare(senior, capsys, SENIOR, "base", "beta")
+
+    # base's rubric mean is over s1's two trials and s2's second: s2's first
+    # trial's judges failed, and s3 has no criteria. Counting either as 0 gives
+    # 0.29, and counting the stale scores gives 0.69, with a bloat of 1.58.
+    # beta's s9 counts nowhere.
+    assert (code, err) == (0, "")
+    assert out == (
+        "arm   trials  resolved  failed  timed out\n"
+        "base       6      100%      0%         0%\n"
+        "beta       3      100%      0%         0%\n"
+        "\n"
+        "vs. baseline   resolved\n"
+        "beta - base    +0% [+0%, +0%]\n"
+        "\n"
+        "mean (trials)    rubric  practice alignment  relative taste  patch bloat\n"
+        "base           0.58 (3)            3.80 (5)        3.20 (5)     1.50 (5)\n"
+        "beta           0.75 (2)            3.00 (3)        3.00 (3)     1.67 (3)\n"
+        "\n" + JUDGES_NAMED + "  base  S-1  s2  rubric, taste\n"
+    )
+
+
+def test_a_mean_with_no_trial_to_count_prints_a_dash():
+    means = {
+        "a": compare.Means(
+            rubric=compare.Mean(None, 0),
+            practice=compare.Mean(3.125, 8),
+            relative=compare.Mean(2.0, 8),
+            bloat=compare.Mean(1.0049, 7),
+        )
+    }
+
+    assert compare.render_means(means) == [
+        "mean (trials)  rubric  practice alignment  relative taste  patch bloat",
+        "a               - (0)            3.13 (8)        2.00 (8)     1.00 (7)",
+    ]
+
+
+def set_rewards(regrade: Path, rewards: dict) -> None:
+    result = json.loads((regrade / "result.json").read_text())
+    write_json(regrade / "result.json", result | {"verifier_result": {"rewards": rewards}})
+
+
+def test_a_mean_half_way_between_two_places_rounds_up_however_floats_add_it(senior, capsys):
+    # 0.7 + 0.11 over 2 is 0.40499999999999997 in floats.
+    set_rewards(regrade_of_senior(senior, "beta", "s1", 1), judged(bloat=0.7))
+    set_rewards(regrade_of_senior(senior, "beta", "s2", 1), judged(bloat=0.11))
+    set_rewards(regrade_of_senior(senior, "beta", "s3", 1), JUDGES_FAILED)
+
+    code, out, err = run_compare(senior, capsys, SENIOR, "base", "beta")
+
+    assert (code, err) == (0, "")
+    assert "beta           1.00 (2)            4.00 (2)        3.00 (2)     0.41 (2)\n" in out
+
+
+def test_a_judge_with_no_status_to_say_it_had_no_criteria_is_named(senior, capsys):
+    # With no judge_output.json, a rubric flag of 0 cannot be told from a failure.
+    (regrade_of_senior(senior, "beta", "s3", 1) / "verifier" / "judge_output.json").unlink()
+
+    code, out, err = run_compare(senior, capsys, SENIOR, "base", "beta")
+
+    assert (code, err) == (0, "")
+    assert out.endswith(JUDGES_NAMED + "  base  S-1  s2  rubric, taste\n  beta  S-1  s3  rubric\n")
+
+
+def test_a_regrade_with_a_reward_and_no_judges_flags_is_named(senior, capsys):
+    # As when the verifier wrote reward.txt, and its aggregate step no reward.json.
+    regrade = regrade_of_senior(senior, "beta", "s1", 1)
+    result = json.loads((regrade / "result.json").read_text())
+    write_json(regrade / "result.json", result | {"verifier_result": {"rewards": {"reward": 1.0}}})
+
+    code, out, err = run_compare(senior, capsys, SENIOR, "base", "beta")
+
+    assert (code, err) == (0, "")
+    assert "beta           0.50 (1)            2.50 (2)        2.50 (2)     2.00 (2)\n" in out
+    assert out.endswith("  base  S-1  s2  rubric, taste\n  beta  S-1  s1  rubric, taste\n")
+
+
+def test_a_regrade_with_no_reward_has_no_scores_and_is_not_named_for_its_judges(senior, capsys):
+    record_exception(regrade_of_senior(senior, "beta", "s1", 1), RuntimeError("Reward file is empty"))
+
+    code, out, err = run_compare(senior, capsys, SENIOR, "base", "beta")
+
+    assert (code, err) == (0, "")
+    assert "beta           0.50 (1)            2.50 (2)        2.50 (2)     2.00 (2)\n" in out
+    assert out.endswith(JUDGES_NAMED + "  base  S-1  s2  rubric, taste\n")
+
+
+def test_another_lane_prints_no_means_whatever_its_rewards_hold(senior, capsys):
+    (senior / "results" / SENIOR).rename(senior / "results" / "rebench")
+
+    code, out, err = run_compare(senior, capsys, "rebench", "base", "beta")
+
+    assert (code, err) == (0, "")
+    assert out.endswith("beta - base    +0% [+0%, +0%]\n")
+
+
+def test_a_task_whose_every_trial_in_one_arm_is_invalid_leaves_the_means(senior, capsys):
+    regrade_wrote_an_empty_reward(regrade_of_senior(senior, "beta", "s1", 1))
+
+    code, out, err = run_compare(senior, capsys, SENIOR, "base", "beta")
+
+    # base's two judged trials of s1 count nowhere, since beta has none to compare them with.
+    assert (code, err) == (0, "")
+    assert out.endswith(
+        "mean (trials)    rubric  practice alignment  relative taste  patch bloat\n"
+        "base           0.25 (1)            4.33 (3)        3.33 (3)     1.50 (3)\n"
+        "beta           0.50 (1)            2.50 (2)        2.50 (2)     2.00 (2)\n"
+        "\n" + INVALID + "  beta  S-1  s1\n"
+        "\n" + JUDGES_NAMED + "  base  S-1  s2  rubric, taste\n"
+    )
