@@ -309,15 +309,55 @@ def test_a_task_toml_the_key_cannot_be_added_to_is_an_error_naming_it(tmp_path: 
         lanes.build_rebench(source, tmp_path / "lanes")
 
 
-@pytest.mark.parametrize("mode", ["no-network", "public"])
-def test_a_task_that_sets_the_agents_network_mode_is_an_error_naming_it(tmp_path: Path, mode: str):
-    toml = REBENCH_TOML.replace("[agent]\n", f'[agent]\nnetwork_mode = "{mode}"\n')
+def test_a_task_that_opens_the_agents_network_is_an_error_naming_it(tmp_path: Path):
+    toml = REBENCH_TOML.replace("[agent]\n", '[agent]\nnetwork_mode = "public"\n')
     source = make_rebench(tmp_path / "source", ["owner__repo-1", "owner__repo-2"])
     (source / "owner__repo-2" / "task.toml").write_text(toml)
 
     with pytest.raises(LaneError, match=re.escape(str(source / "owner__repo-2" / "task.toml"))):
         lanes.build_rebench(source, tmp_path / "lanes")
     assert (source / "owner__repo-2" / "task.toml").read_text() == toml
+
+
+# An [agent] table as Senior SWE-Bench's v2026.06 tasks write it, with fewer hosts.
+ALLOWLIST_AGENT = """\
+[agent]
+timeout_sec = 3000.0
+network_mode = "allowlist"
+allowed_hosts = [
+    "api.portkey.ai",
+    "pypi.org",
+    "*.pythonhosted.org",
+    "clickhouse.com",
+    "*.clickhouse.com",
+]
+"""
+
+
+@pytest.mark.parametrize(
+    "agent",
+    [ALLOWLIST_AGENT, '[agent]\ntimeout_sec = 3000.0\nnetwork_mode = "no-network"\n'],
+    ids=["allowlist", "no-network"],
+)
+def test_a_task_whose_agent_already_has_a_closed_network_is_copied_unchanged(
+    tmp_path: Path, agent: str
+):
+    toml = REBENCH_TOML.replace("[agent]\ntimeout_sec = 3000.0\n", agent)
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"], toml)
+
+    built = lanes.build_rebench(source, tmp_path / "lanes")
+
+    original = (source / "owner__repo-1" / "task.toml").read_bytes()
+    assert (built / "owner__repo-1" / "task.toml").read_bytes() == original
+
+
+def test_a_task_with_agent_hosts_and_no_allowlist_is_an_error_naming_it(tmp_path: Path):
+    # Harbor refuses allowed_hosts without network_mode = "allowlist" when it loads the task.
+    toml = REBENCH_TOML.replace("[agent]\n", '[agent]\nallowed_hosts = ["pypi.org"]\n')
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"], toml)
+
+    with pytest.raises(LaneError, match=re.escape(str(source / "owner__repo-1" / "task.toml"))):
+        lanes.build_rebench(source, tmp_path / "lanes")
 
 
 def test_a_failed_build_leaves_the_earlier_lane_as_it_was(tmp_path: Path):

@@ -10,6 +10,12 @@ from importlib.machinery import ModuleSpec
 from pathlib import Path
 
 import pytest
+import typer.main
+from harbor.cli.main import app as harbor_app
+from harbor.models.task.config import NetworkMode, TaskConfig
+from harbor.models.trial.config import AgentConfig as TrialAgentConfig
+from harbor.models.trial.config import EnvironmentConfig as TrialEnvironmentConfig
+from harbor.trial.network_policy import resolve_agent_env_baseline, resolve_agent_phase_policy
 
 from suss import cli, lanes
 
@@ -204,6 +210,77 @@ def test_the_lane_holds_a_copy_of_each_downloaded_task_with_the_agents_network_o
     for name in TASKS:
         assert not (lane / name).is_symlink()
         assert 'network_mode = "no-network"' in (lane / name / "task.toml").read_text()
+
+
+def agent_phase_hosts(task: Path, agent_argv: list[str]) -> list[str]:
+    """
+    The hosts Harbor 0.22.0 opens in the agent phase of a trial of `task`, a
+    task directory, in the agent job run as `agent_argv`, by Harbor's own code.
+
+    Fails the test when that phase's network is not an allowlist.
+    """
+    run = typer.main.get_command(harbor_app).commands["run"]
+    parser = run.make_parser(run.context_class(run, info_name="run"))
+    given, _, _ = parser.parse_args(agent_argv[1:])
+    task_config = TaskConfig.model_validate_toml((task / "task.toml").read_text())
+    agent = TrialAgentConfig(extra_allowed_hosts=list(given.get("allow_agent_hosts") or []))
+    baseline = resolve_agent_env_baseline(task_config, TrialEnvironmentConfig())
+    policy = resolve_agent_phase_policy(task_config, agent, baseline)
+    assert policy.network_mode == NetworkMode.ALLOWLIST, f"{task.name}: {policy}"
+    return policy.allowed_hosts
+
+
+# Every Senior SWE-Bench v2026.06 task allows these in its agent phase.
+SENIOR_HOSTS = [
+    "api.portkey.ai", "pypi.org", "*.pythonhosted.org", "*.pypa.io", "astral.sh",
+    "*.astral.sh", "pypi-mirror.modal.local", "*.python.org", "registry.npmjs.org",
+    "www.npmjs.com", "registry.yarnpkg.com", "pnpm.io", "get.pnpm.io", "nodejs.org",
+    "deb.nodesource.com", "www.typescriptlang.org", "sh.rustup.rs", "*.rust-lang.org",
+    "crates.io", "*.crates.io", "hex.pm", "*.hex.pm", "elixir-lang.org", "www.erlang.org",
+    "developer.mozilla.org", "archive.ubuntu.com", "security.ubuntu.com", "*.ubuntu.com",
+    "deb.debian.org", "*.debian.org", "apt.postgresql.org", "download.redis.io",
+]
+
+
+def write_allowlist_task(tasks: Path, name: str, hosts: list[str]) -> Path:
+    task = write_task(tasks, name)
+    listed = "".join(f'    "{host}",\n' for host in hosts)
+    toml = task / "task.toml"
+    toml.write_text(
+        toml.read_text().replace(
+            "[agent]\n", f'[agent]\nnetwork_mode = "allowlist"\nallowed_hosts = [\n{listed}]\n'
+        )
+    )
+    return task
+
+
+def test_each_trials_agent_phase_reaches_its_tasks_hosts_and_the_manifests_and_no_other(project):
+    write_allowlist_task(
+        project.tasks, "posthog-fix-a", [*SENIOR_HOSTS, "clickhouse.com", "*.clickhouse.com"]
+    )
+    write_allowlist_task(project.tasks, "prefect-fix-b", [*SENIOR_HOSTS, "docs.sqlalchemy.org"])
+    # pypi.org is the tasks' as well, and must be opened once.
+    (project.directory / "adapter" / "suss-harness.toml").write_text(
+        '[harness]\nname = "peer-review"\nversion = "0.1.0"\nrun = "run.sh"\n'
+        'allowed_hosts = ["api.anthropic.com", "pypi.org"]\n'
+    )
+
+    assert project.run("peer-review", "rebench") == 0
+
+    lane = project.directory / "lanes" / "rebench"
+    agent = project.records("harbor")[0]["argv"]
+    assert [host for flag, host in zip(agent, agent[1:]) if flag == "--allow-agent-host"] == [
+        "api.anthropic.com",
+        "pypi.org",
+    ]
+    assert agent_phase_hosts(lane / "posthog-fix-a", agent) == [
+        *SENIOR_HOSTS, "clickhouse.com", "*.clickhouse.com", "api.anthropic.com",
+    ]
+    assert agent_phase_hosts(lane / "prefect-fix-b", agent) == [
+        *SENIOR_HOSTS, "docs.sqlalchemy.org", "api.anthropic.com",
+    ]
+    for name in TASKS:
+        assert agent_phase_hosts(lane / name, agent) == ["api.anthropic.com", "pypi.org"]
 
 
 def test_swe_rebench_is_read_from_the_directory_holding_suss_toml_not_the_current_one(
