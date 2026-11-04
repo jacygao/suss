@@ -386,8 +386,8 @@ Every litellm from 1.106.0, on PyPI since 18 October 2026, raises
 `No module named 'mcp'` on every judge call. The verifier still writes a reward
 from the tests, so without the pin no trial's judges would score it and nothing
 would fail. A `test.sh` with no line that is exactly `litellm>=1.0,<2.0`, or
-with more than one, makes `suss run` exit with an error naming it before it
-builds any lane or runs any job.
+with more than one, or in a `tests` directory that is a link, makes `suss run`
+exit with an error naming it before it builds any lane or runs any job.
 
 ### Network
 

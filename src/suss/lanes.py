@@ -378,6 +378,12 @@ def _plan_build(
     for task in found:
         rewritten[task] = {"task.toml": _without_network(task / "task.toml")}
         if lane == SENIOR:
+            # The copy keeps the link, so the pinned test.sh would be written through it.
+            tests = (task / TEST_SH).parent
+            if tests.is_symlink():
+                raise LaneError(
+                    f"{tests}: a link, so the lane cannot pin litellm in a copy of it"
+                )
             rewritten[task][TEST_SH] = _pinned(task / TEST_SH)
     return directory, rewritten
 

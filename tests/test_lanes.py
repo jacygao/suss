@@ -1026,6 +1026,26 @@ def test_a_test_sh_without_the_one_litellm_line_is_refused_naming_it_and_changes
     assert {str(path): path.read_bytes() for path in earlier.rglob("*") if path.is_file()} == before
 
 
+@pytest.mark.parametrize("absolute", [True, False], ids=["absolute", "relative"])
+def test_a_tests_directory_that_is_a_link_is_refused_and_the_download_left_alone(
+    tmp_path: Path, absolute: bool
+):
+    source = make_senior(tmp_path / "source")
+    earlier = lanes.build(lanes.SENIOR, source, tmp_path / "lanes")
+    tests = source / DESIGN / "tests"
+    shutil.move(tests, source / DESIGN / "real-tests")
+    tests.symlink_to(source / DESIGN / "real-tests" if absolute else "real-tests")
+    downloaded = every_file(source)
+    built = every_file(earlier)
+
+    with pytest.raises(LaneError) as error:
+        lanes.build(lanes.SENIOR, source, tmp_path / "lanes")
+
+    assert str(error.value).startswith(f"{tests}: ")
+    assert every_file(source) == downloaded
+    assert every_file(earlier) == built
+
+
 def test_the_senior_check_lane_holds_only_the_first_task_by_name(tmp_path: Path):
     source = make_senior(tmp_path / "source")
 
