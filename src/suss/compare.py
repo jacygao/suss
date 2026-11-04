@@ -4,8 +4,8 @@ result, the difference between two arms' resolved shares, with an interval, and
 the tables the command prints.
 
 Reading never raises on what a trial left or failed to leave. A trial with no
-readable record is `harness-failed`, and one whose regrade has no readable
-reward is unresolved.
+readable record is `harness-failed`. One whose regrade has no readable reward
+is unresolved, unless its verifier judged it invalid.
 """
 
 import json
@@ -48,6 +48,10 @@ class Trial:
     # failed, skipped or errored. When it counts none, a 0 cannot tell a wrong
     # patch from grading that broke.
     regrade_tested: bool
+    # True when the regrade's verifier judged the trial invalid by writing an
+    # empty reward, which Harbor records as RewardFileEmptyError. A timeout or
+    # a crash also leaves no reward, and is not this.
+    invalid: bool
     # The agent trial's directory.
     path: Path
 
@@ -101,6 +105,7 @@ def _trial(job: str, task: str, trial: Path, regrade: Path | None) -> Trial:
         regrade_refused=applied is True and not _applied_whole(replay),
         regrade_raised=raised,
         regrade_tested=regrade is not None and _tested(regrade),
+        invalid=regrade is not None and _exception(regrade) == "RewardFileEmptyError",
         path=trial,
     )
 
@@ -279,27 +284,29 @@ def report(directory: Path, lane: str, arms: Sequence[str]) -> str:
     What `suss compare` prints for the arms on the lane, run in `directory`,
     the directory holding suss.toml.
 
-    Both tables count only the tasks every arm has trials for. The second has
-    a row for each arm whose baseline is among `arms`, in the order given, and
-    is left out when no arm has one. After them come the trials of those tasks
-    whose regrade recorded no test result, by arm in the order given, then by
-    job and task.
+    Both tables leave out every invalid trial, and count only the tasks every
+    arm has a valid trial of. The second has a row for each arm whose baseline
+    is among `arms`, in the order given, and is left out when no arm has one.
+    After them come the counted trials whose regrade recorded no test result,
+    then the invalid trials of tasks every arm has a trial of, valid or not.
+    Each list goes by arm in the order given, then by job and task.
 
     Raises ConfigError when suss.toml does not define every arm, and
-    CompareError when an arm has no trials, a trial's regrade applied none of
-    its patch or could not apply it, two trials carry different graders, or the arms
-    share no task.
+    CompareError when an arm has no trials or only invalid ones, a trial's
+    regrade applied none of its patch or could not apply it, two trials carry
+    different graders, or the arms share no task.
     """
     baselines = config.baselines(Path(directory) / "suss.toml", list(arms))
     trials = _read(directory, lane, arms)
     _one_grader(lane, trials)
-    common = set.intersection(*({trial.task for trial in found} for found in trials.values()))
+    valid = {arm: [trial for trial in found if not trial.invalid] for arm, found in trials.items()}
+    common = set.intersection(*({trial.task for trial in found} for found in valid.values()))
     if not common:
         raise CompareError(
             f"arms {', '.join(arms[:-1])} and {arms[-1]} have no task in common "
             f"under results/{lane}/"
         )
-    kept = {arm: [trial for trial in found if trial.task in common] for arm, found in trials.items()}
+    kept = {arm: [trial for trial in found if trial.task in common] for arm, found in valid.items()}
     shares = {arm: _shares(kept[arm]) for arm in arms}
     outcomes = {arm: _outcomes(kept[arm]) for arm in arms}
     differences = [
@@ -310,13 +317,20 @@ def report(directory: Path, lane: str, arms: Sequence[str]) -> str:
     untested = [
         (arm, trial.job, trial.task) for arm in arms for trial in kept[arm] if not trial.regrade_tested
     ]
-    return render(shares, differences, untested)
+    shared = set.intersection(*({trial.task for trial in found} for found in trials.values()))
+    invalid = [
+        (arm, trial.job, trial.task)
+        for arm in arms
+        for trial in trials[arm]
+        if trial.invalid and trial.task in shared
+    ]
+    return render(shares, differences, untested, invalid)
 
 
 def _read(directory: Path, lane: str, arms: Sequence[str]) -> dict[str, list[Trial]]:
     """
-    Every trial of each arm, raising CompareError for an arm with none, and
-    for the first trial with a patch whose regrade applied none of it or
+    Every trial of each arm, raising CompareError for an arm with none or with
+    only invalid ones, and for the first trial with a patch whose regrade applied none of it or
     could not apply it, so that nothing is compared that cannot be.
     """
     trials = {}
@@ -339,6 +353,12 @@ def _read(directory: Path, lane: str, arms: Sequence[str]) -> dict[str, list[Tri
                     f"the trial of {trial.task} in results/{lane}/{arm}/{trial.job} made a "
                     f"patch, but its regrade in {trial.job}{REGRADE} could not apply it"
                 )
+        # Such an arm has no share to print.
+        if all(trial.invalid for trial in trials[arm]):
+            raise CompareError(
+                f"every trial of arm {arm} under results/{lane}/ is invalid: "
+                "its regrade wrote an empty reward"
+            )
     return trials
 
 
@@ -406,11 +426,13 @@ def render(
     shares: Mapping[str, Shares],
     differences: Sequence[tuple[str, str, Difference]],
     untested: Sequence[tuple[str, str, str]] = (),
+    invalid: Sequence[tuple[str, str, str]] = (),
 ) -> str:
     """
     The first table, of each arm's shares, and the second, of each
     (arm, baseline, difference), unless there are none. Then each
-    (arm, job, task) in `untested`, unless there are none.
+    (arm, job, task) in `untested`, and then in `invalid`, under its own
+    heading, unless there are none.
     """
     header = ["arm", "trials", "resolved", "failed", "timed out"]
     rows = [
@@ -435,13 +457,22 @@ def render(
                 f"{label.ljust(label_width)}   {estimate.rjust(estimate_width)} "
                 f"[{_signed(difference.low)}, {_signed(difference.high)}]"
             )
-    if untested:
-        arm_width = max(len(arm) for arm, _, _ in untested)
-        job_width = max(len(job) for _, job, _ in untested)
-        lines += ["", "These trials' regrades recorded no test result, so their grading may have broken:"]
-        for arm, job, task in untested:
-            lines.append(f"  {arm.ljust(arm_width)}  {job.ljust(job_width)}  {task}")
+    lines += _named(
+        "These trials' regrades recorded no test result, so their grading may have broken:", untested
+    )
+    lines += _named("These trials' regrades judged them invalid, so neither table counts them:", invalid)
     return "\n".join(lines) + "\n"
+
+
+def _named(heading: str, trials: Sequence[tuple[str, str, str]]) -> list[str]:
+    """The lines naming each (arm, job, task) under the heading, or none when there are none."""
+    if not trials:
+        return []
+    arm_width = max(len(arm) for arm, _, _ in trials)
+    job_width = max(len(job) for _, job, _ in trials)
+    return ["", heading] + [
+        f"  {arm.ljust(arm_width)}  {job.ljust(job_width)}  {task}" for arm, job, task in trials
+    ]
 
 
 def _whole(share: float) -> int:
