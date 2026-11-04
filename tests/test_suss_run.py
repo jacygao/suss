@@ -67,6 +67,7 @@ class Project:
         environment: str = "docker",
         k: str = "2",
         max_seconds: str | None = "2700",
+        lane_tables: str = "",
     ) -> None:
         cap = f"max_seconds = {max_seconds}\n" if max_seconds else ""
         (self.directory / "suss.toml").write_text(
@@ -75,6 +76,7 @@ class Project:
             f"k = {k}\n"
             "concurrency = 4\n"
             f"{cap}\n"
+            f"{lane_tables}\n"
             "[arms.peer-review]\n"
             'harness = "adapter"\n'
             f"{arm_extra}\n"
@@ -522,6 +524,60 @@ def test_the_max_seconds_error_is_printed_as_the_spec_shows(project, capfd):
     assert_nothing_ran(project)
 
 
+@pytest.fixture
+def two_lanes(monkeypatch) -> None:
+    """A second lane beside rebench, built from the same download."""
+    monkeypatch.setattr(lanes, "LANES", ("rebench", "senior"))
+
+
+# Either lane alone over the timeout, so that a value read once for the run,
+# from the first lane or the last, passes one of them.
+@pytest.mark.parametrize("over", ["rebench", "senior"])
+@pytest.mark.parametrize("check", [False, True], ids=["run", "check"])
+def test_each_lane_in_a_run_is_checked_against_its_own_max_seconds(
+    project, capfd, two_lanes, over, check
+):
+    project.write_toml(lane_tables=f"[lanes.{over}]\nmax_seconds = 3000\n")
+
+    code = project.run("peer-review", "rebench", "senior", *(["--check"] if check else []))
+
+    assert code != 0
+    assert capfd.readouterr().err == (
+        "error: arm peer-review sets max_seconds = 3000, which must be under the "
+        f"3000-second agent timeout of the tasks in {over}\n"
+    )
+    assert_nothing_ran(project)
+
+
+def test_an_arms_own_max_seconds_is_checked_in_place_of_its_lanes(project, capfd):
+    project.write_toml(
+        arm_extra="max_seconds = 1800", lane_tables="[lanes.rebench]\nmax_seconds = 3000\n"
+    )
+
+    assert project.run("peer-review", "rebench") == 0, capfd.readouterr().err
+
+
+@pytest.mark.parametrize("check", [False, True], ids=["run", "check"])
+def test_each_lanes_agent_jobs_name_their_lane_to_the_agent(
+    project, capfd, monkeypatch, two_lanes, check
+):
+    monkeypatch.setenv("DRY_RUN", "1")
+
+    code = project.run("peer-review", "rebench", "senior", *(["--check"] if check else []))
+
+    out, err = capfd.readouterr()
+    assert code == 0, err
+    agents = [shlex.split(line) for line in out.splitlines() if "suss.agent:SussAgent" in line]
+    suffix = "-check" if check else ""
+    assert {
+        (value(argv, "-p"), tuple(token for flag, token in zip(argv, argv[1:]) if flag == "--ak"))
+        for argv in agents
+    } == {
+        (f"lanes/rebench{suffix}", ("arm=peer-review", "config=suss.toml", "lane=rebench")),
+        (f"lanes/senior{suffix}", ("arm=peer-review", "config=suss.toml", "lane=senior")),
+    }
+
+
 @pytest.mark.parametrize(
     "dry_run, check", [(False, False), (True, False), (False, True)], ids=["run", "dry-run", "check"]
 )
@@ -538,6 +594,28 @@ def test_an_old_max_cost_usd_is_refused_as_the_spec_shows(project, capfd, monkey
         f"error: {project.directory / 'suss.toml'}: [arms.peer-review] sets max_cost_usd, but suss "
         "does not read it; set the arm's spending limit in its params, under the name its "
         "adapter takes, such as max_budget_usd for adapters/claude-code\n"
+    )
+    assert out == ""
+    assert_nothing_ran(project)
+
+
+@pytest.mark.parametrize(
+    "dry_run, check", [(False, False), (True, False), (False, True)], ids=["run", "dry-run", "check"]
+)
+def test_a_lane_suss_does_not_have_in_suss_toml_is_refused_as_the_spec_shows(
+    project, capfd, monkeypatch, dry_run, check
+):
+    if dry_run:
+        monkeypatch.setenv("DRY_RUN", "1")
+    project.write_toml(lane_tables="[lanes.rebnech]\nmax_seconds = 2400\n")
+
+    code = project.run("peer-review", "rebench", *(["--check"] if check else []))
+
+    out, err = capfd.readouterr()
+    assert code != 0
+    assert err == (
+        f"error: {project.directory / 'suss.toml'}: sets [lanes.rebnech], but suss has no lane "
+        "named rebnech; its lanes are rebench\n"
     )
     assert out == ""
     assert_nothing_ran(project)
@@ -968,7 +1046,7 @@ def test_a_dry_run_prints_each_pair_in_run_order_and_runs_nothing(project, capfd
             common = f"{project.harbor} run -p lanes/{lane} -e docker -n 4 -k 1"
             expected.append(
                 f"{common} -a suss.agent:SussAgent --ak arm=peer-review --ak config=suss.toml "
-                f"--allow-agent-host api.anthropic.com --disable-verification "
+                f"--ak lane={lane} --allow-agent-host api.anthropic.com --disable-verification "
                 f"--jobs-dir {jobs} --job-name {STAMP}-{trial}"
             )
             expected.append(

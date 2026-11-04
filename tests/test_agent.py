@@ -91,9 +91,12 @@ class Trial:
         """Have the fake `command` run `script` once it has recorded how it was started."""
         (self.adapter / f"{command}.then").write_text(script + "\n")
 
-    def agent(self, arm: str = "fake", config: str | None = None) -> SussAgent:
+    def agent(
+        self, arm: str = "fake", config: str | None = None, lane: str = "rebench"
+    ) -> SussAgent:
         return SussAgent(
             arm=arm,
+            lane=lane,
             config=config if config is not None else str(self.config),
             logs_dir=self.host_logs,
             paths=self.paths,
@@ -286,6 +289,19 @@ def test_a_run_past_max_seconds_is_timed_out_and_its_change_is_captured(
     assert_patch_carries_the_known_change(trial, tmp_path)
 
 
+def test_a_lanes_max_seconds_stops_a_run_on_that_lane(
+    local_environment, trial, monkeypatch
+):
+    monkeypatch.setattr(lanes, "LANES", ("rebench", "senior"))
+    toml = trial.config.read_text()
+    trial.config.write_text(toml.replace("[arms.fake]", "[lanes.senior]\nmax_seconds = 1\n\n[arms.fake]"))
+    trial.then("run", "sleep 30")
+
+    record = trial.run(local_environment, trial.agent(lane="senior"))
+
+    assert record["status"] == "timed-out"
+
+
 def test_a_run_that_raises_still_captures_the_patch(local_environment, trial, monkeypatch):
     trial.then("run", KNOWN_CHANGE)
     exec_as_given = local_environment.exec
@@ -362,9 +378,11 @@ def test_config_is_read_relative_to_the_current_directory(
     assert record["params"] == PARAMS
 
 
-@pytest.mark.parametrize("key, value", [("arm", 2026), ("arm", True), ("config", 1.5)])
+@pytest.mark.parametrize(
+    "key, value", [("arm", 2026), ("arm", True), ("lane", 7), ("config", 1.5)]
+)
 def test_an_ak_value_harbor_parsed_as_json_is_refused_by_name(trial, key, value):
-    given = {"arm": "fake", "config": str(trial.config), key: value}
+    given = {"arm": "fake", "lane": "rebench", "config": str(trial.config), key: value}
 
     with pytest.raises(TypeError) as raised:
         SussAgent(**given, logs_dir=trial.host_logs)
@@ -376,7 +394,7 @@ def test_an_ak_value_harbor_parsed_as_json_is_refused_by_name(trial, key, value)
 @pytest.mark.parametrize("value", [2026, True, ["x"], {"it's": "a \"name\""}])
 def test_the_quoting_an_error_suggests_gives_harbor_a_string(trial, value):
     with pytest.raises(TypeError) as raised:
-        SussAgent(arm=value, config=str(trial.config), logs_dir=trial.host_logs)
+        SussAgent(arm=value, lane="rebench", config=str(trial.config), logs_dir=trial.host_logs)
 
     suggested = shlex.split(str(raised.value).split("--ak ")[-1])
     assert len(suggested) == 1, f"the suggestion is not one shell word: {suggested}"
@@ -387,6 +405,7 @@ def test_harbors_own_construction_keeps_the_specs_sandbox_paths(trial):
     # Harbor passes these keywords and no others.
     agent = SussAgent(
         arm="fake",
+        lane="rebench",
         config=str(trial.config),
         logs_dir=trial.host_logs,
         model_name=None,

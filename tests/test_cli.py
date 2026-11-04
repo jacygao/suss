@@ -93,7 +93,7 @@ def spec_config(tmp_path: Path) -> Config:
     path = tmp_path / "suss" / "suss.toml"
     path.parent.mkdir()
     path.write_text(examples[0])
-    return config.load(path, "peer-review")
+    return config.load(path, "peer-review", "rebench")
 
 
 def test_both_commands_match_the_spec_token_for_token(tmp_path):
@@ -187,7 +187,7 @@ def test_a_harness_with_no_allowed_hosts_gets_no_allow_agent_host(tmp_path):
     assert agent.argv == [
         "harbor", "run", "-p", "lanes/rebench", "-e", "docker", "-n", "16", "-k", "1",
         "-a", "suss.agent:SussAgent", "--ak", "arm=peer-review", "--ak", "config=suss.toml",
-        "--disable-verification",
+        "--ak", "lane=rebench", "--disable-verification",
         "--jobs-dir", "results/rebench/peer-review", "--job-name", f"{STAMP}-1",
     ]
 
@@ -574,14 +574,14 @@ def test_the_harbor_suss_runs_loads_the_regrades_agent_with_no_pythonpath(tmp_pa
 def test_every_ak_value_reaches_the_agent_as_the_string_it_was(arm, tmp_path):
     agent, regrade = harbor_commands(make_config(tmp_path, arm=arm), make_manifest(), "rebench", STAMP, 1)
 
-    assert harbor_parses(agent.argv) == {"arm": arm, "config": "suss.toml"}
+    assert harbor_parses(agent.argv) == {"arm": arm, "config": "suss.toml", "lane": "rebench"}
     assert harbor_parses(regrade.argv) == {"source_job": f"{tmp_path}/results/rebench/{arm}/{STAMP}-1"}
 
 
 def test_an_ordinary_ak_value_is_not_quoted(tmp_path):
     agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1)
 
-    assert ak_values(agent.argv) == {"arm": "peer-review", "config": "suss.toml"}
+    assert ak_values(agent.argv) == {"arm": "peer-review", "config": "suss.toml", "lane": "rebench"}
     assert ak_values(regrade.argv) == {"source_job": f"{tmp_path}/results/rebench/peer-review/{STAMP}-1"}
 
 

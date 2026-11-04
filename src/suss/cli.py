@@ -84,6 +84,7 @@ def harbor_commands(
         "-a", "suss.agent:SussAgent",
         "--ak", _kwarg("arm", config.arm.name),
         "--ak", _kwarg("config", "suss.toml"),
+        "--ak", _kwarg("lane", lane),
     ]
     for host in manifest.allowed_hosts:
         agent += ["--allow-agent-host", host]
@@ -347,7 +348,9 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
         return _compare(args.lane, args.arms, harbor_args, directory)
     dry_run = _dry_run()
     run_stamp = stamp(clock())
-    settings = config.load(directory / "suss.toml", args.arm)
+    # Per lane, since a lane may set its own max_seconds. Nothing else differs between them.
+    on_lane = {lane: config.load(directory / "suss.toml", args.arm, lane) for lane in args.lanes}
+    settings = on_lane[args.lanes[0]]
     if settings.environment == "modal":
         _require_modal()
     root = settings.path.parent
@@ -358,7 +361,7 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
 
     # Everything that can refuse the run does so here, before any lane is built.
     planned = [
-        _plan(settings, manifest, lane, run_stamp, harbor_args, args.check, harbor)
+        _plan(on_lane[lane], manifest, lane, run_stamp, harbor_args, args.check, harbor)
         for lane in args.lanes
     ]
     if settings.environment == "docker":

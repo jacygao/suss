@@ -51,7 +51,7 @@ def spec_timeout_error() -> str:
 def arm(tmp_path: Path, toml: str, name: str = "peer-review") -> config.Arm:
     path = tmp_path / "suss.toml"
     path.write_text(toml)
-    return config.load(path, name).arm
+    return config.load(path, name, "rebench").arm
 
 
 def timed_tasks(tmp_path: Path, *timeouts: object) -> dict[Path, dict]:

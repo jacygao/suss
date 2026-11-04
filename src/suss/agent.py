@@ -47,21 +47,22 @@ class SussAgent(BaseAgent):
         self,
         *,
         arm: Any,
+        lane: Any,
         config: Any,
         paths: SandboxPaths = SandboxPaths(),
         **kwargs: Any,
     ):
         """
-        Read the arm's settings from the suss.toml at `config`, a host path
-        relative to the directory `harbor run` started in.
+        Read the arm's settings on `lane` from the suss.toml at `config`, a
+        host path relative to the directory `harbor run` started in.
 
         `paths` is where the sandbox keeps things. Harbor never passes it, so
-        production gets the default. Raises TypeError when Harbor parsed `arm`
-        or `config` as something other than a string, ConfigError or
+        production gets the default. Raises TypeError when Harbor parsed `arm`,
+        `lane` or `config` as something other than a string, ConfigError or
         ManifestError when the settings cannot be read, and LaneError when the
         download `swe_rebench` names cannot be digested.
         """
-        for key, value in (("arm", arm), ("config", config)):
+        for key, value in (("arm", arm), ("lane", lane), ("config", config)):
             if not isinstance(value, str):
                 quoted = shlex.quote(f"{key}={json.dumps(json.dumps(value))}")
                 raise TypeError(
@@ -71,7 +72,7 @@ class SussAgent(BaseAgent):
                 )
         super().__init__(**kwargs)
         self.paths = paths
-        self._config = suss_config.load(Path(config), arm)
+        self._config = suss_config.load(Path(config), arm, lane)
         self._manifest = harness.load_manifest(self._config.arm.harness)
         self._grader = {"dataset": DATASET, "digest": lanes.digest(self._config.swe_rebench)}
         self._prepared: _Prepared | None = None
