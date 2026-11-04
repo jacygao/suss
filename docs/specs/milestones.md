@@ -191,7 +191,8 @@ the judges' scores beside each arm's resolved share.
 - [ ] `lanes/senior/` holds a copy of each task Harbor's oracle passes, and
       `suss.toml` names the download with `senior_swe_bench`
 - [ ] The regrade passes the verifier the grading keys and `SSB_OVERRIDE_*`
-      settings from the run's `.env`, and the agent phase gets none of them
+      settings from the run's `.env`. The agent phase gets only the variables
+      its manifest's `env` names, as on `rebench`
 - [ ] A `senior` trial's `grader` holds the dataset, its digest, and the judge
       and validation-agent models its regrade used
 - [ ] In the agent phase of a `senior` task, the harness reaches the hosts in
