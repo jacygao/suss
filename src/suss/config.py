@@ -227,13 +227,35 @@ def verifier_env(settings: Config, variables: Iterable[str]) -> dict[str, str]:
 
 # Read by Senior SWE-Bench's verifier alone, which grades with LLM judges.
 JUDGE_SETTING = "SSB_OVERRIDE_ALL_JUDGE_MODEL"
-# Each model the verifier calls, by the settings that choose it, the first set
-# one winning, and its default.
-GRADING_MODELS = (
-    ((JUDGE_SETTING,), "anthropic/claude-sonnet-4-6"),
-    (("SSB_OVERRIDE_CLASSIFIER_MODEL",), "anthropic/claude-haiku-4-5-20251001"),
-    (("SSB_OVERRIDE_VA_MODEL", "FORCE_VA_MODEL"), "anthropic/claude-sonnet-4-6"),
-)
+# Each model the verifier calls, by its name in a senior trial's grader: the
+# settings that choose it, the first set one winning, and its default.
+GRADING_MODELS = {
+    "judge_model": ((JUDGE_SETTING,), "anthropic/claude-sonnet-4-6"),
+    "classifier_model": (("SSB_OVERRIDE_CLASSIFIER_MODEL",), "anthropic/claude-haiku-4-5-20251001"),
+    "validation_model": (("SSB_OVERRIDE_VA_MODEL", "FORCE_VA_MODEL"), "anthropic/claude-sonnet-4-6"),
+}
+# The validation agent's harness, chosen as a model is. It calls no provider of its own.
+VALIDATION_HARNESS = (("SSB_OVERRIDE_VA_HARNESS", "FORCE_VA_HARNESS"), "miniswe")
+
+
+def _chosen(env: Mapping[str, str], names: tuple[str, ...], default: str) -> tuple[str | None, str]:
+    """The first of `names` that `env` sets non-empty, and its value, else None and `default`."""
+    setting = next((name for name in names if env.get(name)), None)
+    return setting, env[setting] if setting else default
+
+
+def grading_choices(env: Mapping[str, str]) -> dict[str, str]:
+    """
+    What the senior verifier, given `env`, grades with: each of GRADING_MODELS,
+    and the validation agent's harness as `validation_harness`.
+
+    `env` is what the regrade's Harbor holds, as `verifier_env` gives it.
+    """
+    choices = {**GRADING_MODELS, "validation_harness": VALIDATION_HARNESS}
+    order = ("judge_model", "classifier_model", "validation_harness", "validation_model")
+    return {name: _chosen(env, *choices[name])[1] for name in order}
+
+
 # The verifier sends every call through Portkey when this is set, whatever the model.
 ROUTER_KEY = "PORTKEY_API_KEY"
 PROVIDER_KEYS = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
@@ -254,9 +276,8 @@ def check_grading_keys(settings: Config, lane: str) -> None:
         return
     dotenv = settings.path.parent / ".env"
     needed: dict[str, list[str]] = {}
-    for names, default in GRADING_MODELS:
-        setting = next((name for name in names if settings.env.get(name)), None)
-        model = settings.env[setting] if setting else default
+    for names, default in GRADING_MODELS.values():
+        setting, model = _chosen(settings.env, names, default)
         key = PROVIDER_KEYS.get(model.partition("/")[0]) if "/" in model else None
         if key is None:
             raise ConfigError(

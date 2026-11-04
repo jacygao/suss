@@ -244,7 +244,7 @@ FILE = b"f"
 LINK = b"l"
 
 
-def digest(swe_rebench: Path) -> str:
+def digest(download: Path) -> str:
     """
     The sha256, in hex, of every file of every task in the download, by path
     and content.
@@ -267,7 +267,7 @@ def digest(swe_rebench: Path) -> str:
     neither a file, a directory nor a link.
     """
     entries: list[tuple[bytes, str]] = []
-    for task in download_tasks(swe_rebench):
+    for task in download_tasks(download):
         entries.extend(_task_entries(task, os.fsencode(task.name)))
     entries.sort()
     found = hashlib.sha256(DIGEST_PREFIX)

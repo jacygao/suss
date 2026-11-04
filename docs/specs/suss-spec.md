@@ -194,13 +194,14 @@ through Portkey, or else the key of each model the verifier calls:
 `ANTHROPIC_API_KEY` for an `anthropic/` model, and `OPENAI_API_KEY` for an
 `openai/` one. With every default, that is `ANTHROPIC_API_KEY` alone. A run of
 `rebench` needs none of them, whatever its tasks name. The settings that choose
-the models are optional:
+the models, and the validation agent's harness, are optional:
 
-| Model | Chosen by | Default |
-|---|---|---|
-| the rubric and taste judges | `SSB_OVERRIDE_ALL_JUDGE_MODEL` | `anthropic/claude-sonnet-4-6` |
-| the patch classifier | `SSB_OVERRIDE_CLASSIFIER_MODEL` | `anthropic/claude-haiku-4-5-20251001` |
-| the validation agent | `SSB_OVERRIDE_VA_MODEL`, else `FORCE_VA_MODEL` | `anthropic/claude-sonnet-4-6` |
+| Grades with | In `grader` as | Chosen by | Default |
+|---|---|---|---|
+| the rubric and taste judges' model | `judge_model` | `SSB_OVERRIDE_ALL_JUDGE_MODEL` | `anthropic/claude-sonnet-4-6` |
+| the patch classifier's model | `classifier_model` | `SSB_OVERRIDE_CLASSIFIER_MODEL` | `anthropic/claude-haiku-4-5-20251001` |
+| the validation agent's harness | `validation_harness` | `SSB_OVERRIDE_VA_HARNESS`, else `FORCE_VA_HARNESS` | `miniswe` |
+| the validation agent's model | `validation_model` | `SSB_OVERRIDE_VA_MODEL`, else `FORCE_VA_MODEL` | `anthropic/claude-sonnet-4-6` |
 
 ### The trial record
 
@@ -229,13 +230,32 @@ directory as `agent/` in the trial's directory under `results/`.
 ```
 
 - `grader` names the dataset the trial's task came from, and a sha256 digest of
-  every file of every task in the directory `swe_rebench` names, by path and
-  content. A link inside a task counts by its target, and is not followed. A
-  task directory that is a link counts as the task it names. File times, modes,
-  empty directories, and files outside every task, such as the download's
-  `README.md`, leave the digest unchanged, so two downloads of the same tasks
-  have the same digest. Suss records `grader` only on `rebench`, and fails a
-  trial on any other lane before its sandbox starts.
+  every file of every task in the lane's download, the directory `swe_rebench`
+  or `senior_swe_bench` names, by path and content. A link inside a task counts
+  by its target, and is not followed. A task directory that is a link counts as
+  the task it names. File times, modes, empty directories, and files outside
+  every task, such as the download's `README.md`, leave the digest unchanged, so
+  two downloads of the same tasks have the same digest. Suss fails a trial on a
+  lane with no dataset before its sandbox starts.
+- On `senior`, `grader` also holds the litellm requirement the lane's
+  `test.sh` installs, and the models and validation harness in the table
+  above. Each is what the regrade's verifier will be given: the value `.env`
+  sets, where the lane's tasks read that setting, or else the default. A
+  setting `.env` leaves empty takes the default.
+
+  ```json
+  {
+    "grader": {
+      "dataset": "senior-swe-bench-v2026.06",
+      "digest": "0e0174e2…",
+      "litellm": "litellm>=1.0,<1.106",
+      "judge_model": "anthropic/claude-sonnet-4-6",
+      "classifier_model": "anthropic/claude-haiku-4-5-20251001",
+      "validation_harness": "miniswe",
+      "validation_model": "anthropic/claude-sonnet-4-6"
+    }
+  }
+  ```
 - `base` is the commit. `model.patch` applies to the starting tree, which is
   the base only when the image left no change in the workspace.
 - `status` is `ok`, `harness-failed` or `timed-out`. A trial is `timed-out`
@@ -767,7 +787,14 @@ It exits with an error, and prints nothing else, when:
   ```
 - The arms' trials that have a `suss.json` do not all carry the same `grader`.
   A trial with no `suss.json` has no `grader` to compare, and still counts as
-  `harness-failed`.
+  `harness-failed`. Two `senior` graders are named by the fields they differ in:
+
+  ```
+  $ suss compare senior claude-code self-review
+  error: trials carry different graders: judge_model "anthropic/claude-sonnet-4-6"
+  in results/senior/claude-code/20261031T142500Z-1, judge_model "openai/gpt-5.5"
+  in results/senior/self-review/20261103T090000Z-1
+  ```
 - A trial whose `suss.json` has `patch_bytes` above 0 has a regrade that
   applied no patch: its `agent/replay.json` has `"patch": null`, or it has no
   `agent/replay.json` and its `result.json` records an exception.

@@ -26,8 +26,8 @@ from suss.harness import SandboxPaths
 from suss.workspace import capture_patch, find_workspace, read_base, read_start_tree
 
 RECORD_NAME = "suss.json"
-# The dataset every trial's task comes from, which names its grader.
-DATASET = "swe-rebench-07-2026"
+# The dataset each lane's tasks come from, which names its trials' grader.
+DATASETS = {lanes.REBENCH: "swe-rebench-07-2026", lanes.SENIOR: "senior-swe-bench-v2026.06"}
 # How long a cancelled run may take to capture the patch and write suss.json.
 CLEANUP_SECONDS = 60
 
@@ -60,8 +60,7 @@ class SussAgent(BaseAgent):
         production gets the default. Raises TypeError when Harbor parsed `arm`,
         `lane` or `config` as something other than a string, ConfigError or
         ManifestError when the settings cannot be read, and LaneError for a
-        lane other than rebench or when the download `swe_rebench` names cannot
-        be digested.
+        lane with no dataset in DATASETS, and as `grader` does.
         """
         for key, value in (("arm", arm), ("lane", lane), ("config", config)):
             if not isinstance(value, str):
@@ -75,12 +74,11 @@ class SussAgent(BaseAgent):
         self.paths = paths
         self._config = suss_config.load(Path(config), arm, lane)
         self._manifest = harness.load_manifest(self._config.arm.harness)
-        # DATASET and the digest name rebench's download, which grades no other lane's trials.
-        if lane != lanes.REBENCH:
+        if lane not in DATASETS:
             raise lanes.LaneError(
-                f"suss cannot yet name the grader of a trial on {lane}, so it runs none there"
+                f"suss cannot name the grader of a trial on {lane}, so it runs none there"
             )
-        self._grader = {"dataset": DATASET, "digest": lanes.digest(self._config.swe_rebench)}
+        self._grader = grader(self._config, lane)
         self._prepared: _Prepared | None = None
 
     @staticmethod
@@ -173,6 +171,26 @@ class SussAgent(BaseAgent):
             (json.dumps(record, indent=2) + "\n").encode(),
             f"{self.paths.logs.rstrip('/')}/{RECORD_NAME}",
         )
+
+
+def grader(settings: suss_config.Config, lane: str) -> dict[str, str]:
+    """
+    What grades a trial of `lane`, a lane in DATASETS: its dataset, and the
+    digest of the download it is built from.
+
+    On senior it adds the litellm requirement the lane's test.sh installs, and
+    the models and validation harness the regrade's verifier will use. Those
+    follow from the variables `suss run` gives the regrade's Harbor, which only
+    the settings the lane's tasks read can reach. Raises LaneError when the
+    download cannot be digested or a task.toml in it cannot be read.
+    """
+    download = settings.download(lane)
+    found = {"dataset": DATASETS[lane], "digest": lanes.digest(download)}
+    if lane == lanes.SENIOR:
+        reads = suss_config.host_variables(lanes.read_tasks(lanes.lane_tasks(lane, download)))
+        found["litellm"] = lanes.PINNED_LITELLM.decode()
+        found |= suss_config.grading_choices(suss_config.verifier_env(settings, reads))
+    return found
 
 
 async def _upload_bytes(env: BaseEnvironment, data: bytes, target: str) -> None:
