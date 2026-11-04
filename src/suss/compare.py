@@ -13,6 +13,7 @@ import random
 import statistics
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 from suss import config
@@ -50,6 +51,10 @@ class Trial:
     regrade_tested: bool
     # The agent trial's directory.
     path: Path
+    # The regrade's `verifier_result.rewards`, or None when it has none.
+    rewards: Mapping | None = None
+    # `rubric_status` in the regrade's verifier/judge_output.json, or None.
+    rubric_status: str | None = None
 
 
 def read_trials(directory: Path, lane: str, arm: str) -> list[Trial]:
@@ -102,6 +107,8 @@ def _trial(job: str, task: str, trial: Path, regrade: Path | None) -> Trial:
         regrade_raised=raised,
         regrade_tested=regrade is not None and _tested(regrade),
         path=trial,
+        rewards=_rewards(regrade) if regrade else None,
+        rubric_status=_rubric_status(regrade) if regrade else None,
     )
 
 
@@ -156,11 +163,27 @@ def _task(trial: Path) -> str | None:
 
 def _reward(trial: Path) -> float | int | None:
     """`verifier_result.rewards.reward` in the trial's result.json, or None."""
+    rewards = _rewards(trial)
+    return _number(rewards.get("reward")) if rewards is not None else None
+
+
+def _rewards(trial: Path) -> dict | None:
+    """`verifier_result.rewards` in the trial's result.json, or None."""
     result = _json(trial / "result.json")
     verifier = result.get("verifier_result") if isinstance(result, dict) else None
     rewards = verifier.get("rewards") if isinstance(verifier, dict) else None
-    reward = rewards.get("reward") if isinstance(rewards, dict) else None
-    return reward if isinstance(reward, int | float) and not isinstance(reward, bool) else None
+    return rewards if isinstance(rewards, dict) else None
+
+
+def _number(value) -> float | int | None:
+    return value if isinstance(value, int | float) and not isinstance(value, bool) else None
+
+
+def _rubric_status(trial: Path) -> str | None:
+    """`rubric_status` in the trial's verifier/judge_output.json, or None."""
+    output = _json(trial / "verifier" / "judge_output.json")
+    status = output.get("rubric_status") if isinstance(output, dict) else None
+    return status if isinstance(status, str) else None
 
 
 def _tested(trial: Path) -> bool:
@@ -264,6 +287,43 @@ class CompareError(Exception):
     """The arms' results cannot be compared, for the reason the message gives."""
 
 
+# The one lane whose regrades carry the judges' scores.
+SENIOR = "senior"
+
+# The rubric judge's status on a task with no rubric criteria, which no arm can be scored on.
+NO_CRITERIA = "skipped:no_criteria"
+
+
+@dataclass(frozen=True)
+class Mean:
+    """A mean over the trials that have the score, and how many those are."""
+
+    # None when no trial has the score.
+    value: float | None
+    trials: int
+
+
+@dataclass(frozen=True)
+class Means:
+    """An arm's mean score from each of a senior regrade's judges."""
+
+    rubric: Mean
+    practice: Mean
+    relative: Mean
+    bloat: Mean
+
+
+# Each mean's field, the score's key in a regrade's rewards, and the judge's
+# flag there. The patch bloat is under the taste judge's flag because, when that
+# judge fails, the bloat is measured without the classifier it relies on.
+SCORES = (
+    ("rubric", "rubric_score", "rubric_judge_ok"),
+    ("practice", "taste_practice_alignment", "taste_judge_ok"),
+    ("relative", "taste_relative_taste", "taste_judge_ok"),
+    ("bloat", "taste_patch_bloat", "taste_judge_ok"),
+)
+
+
 @dataclass(frozen=True)
 class Shares:
     """An arm's trials, and the share of them resolved, failed and timed out."""
@@ -283,7 +343,9 @@ def report(directory: Path, lane: str, arms: Sequence[str]) -> str:
     a row for each arm whose baseline is among `arms`, in the order given, and
     is left out when no arm has one. After them come the trials of those tasks
     whose regrade recorded no test result, by arm in the order given, then by
-    job and task.
+    job and task. On the senior lane, a third table gives each arm's mean
+    judges' scores over those tasks, and a last list names the trials whose
+    judges failed or were skipped, in the same order.
 
     Raises ConfigError when suss.toml does not define every arm, and
     CompareError when an arm has no trials, a trial's regrade applied none of
@@ -310,7 +372,53 @@ def report(directory: Path, lane: str, arms: Sequence[str]) -> str:
     untested = [
         (arm, trial.job, trial.task) for arm in arms for trial in kept[arm] if not trial.regrade_tested
     ]
-    return render(shares, differences, untested)
+    if lane != SENIOR:
+        return render(shares, differences, untested)
+    means = {arm: _means(kept[arm]) for arm in arms}
+    unjudged = [
+        (arm, trial.job, trial.task, judges)
+        for arm in arms
+        for trial in kept[arm]
+        if (judges := _unjudged(trial))
+    ]
+    return render(shares, differences, untested, means, unjudged)
+
+
+def _means(trials: Sequence[Trial]) -> Means:
+    """
+    Each score's mean over the trials whose regrade has it under a flag of 1.
+
+    A trial whose judge failed, was skipped, or never ran has no score, and
+    takes no part in that mean.
+    """
+    means = {}
+    for field, key, flag in SCORES:
+        scores = [
+            score
+            for trial in trials
+            if trial.rewards is not None
+            and _number(trial.rewards.get(flag)) == 1
+            and (score := _number(trial.rewards.get(key))) is not None
+        ]
+        means[field] = Mean(sum(scores) / len(scores) if scores else None, len(scores))
+    return Means(**means)
+
+
+def _unjudged(trial: Trial) -> list[str]:
+    """
+    The judges of the trial's regrade that failed or were skipped: `rubric`,
+    `taste`, both or neither.
+
+    A regrade with no rewards graded nothing, so none of its judges is named.
+    """
+    if trial.rewards is None:
+        return []
+    judges = []
+    if _number(trial.rewards.get("rubric_judge_ok")) != 1 and trial.rubric_status != NO_CRITERIA:
+        judges.append("rubric")
+    if _number(trial.rewards.get("taste_judge_ok")) != 1:
+        judges.append("taste")
+    return judges
 
 
 def _read(directory: Path, lane: str, arms: Sequence[str]) -> dict[str, list[Trial]]:
@@ -406,24 +514,21 @@ def render(
     shares: Mapping[str, Shares],
     differences: Sequence[tuple[str, str, Difference]],
     untested: Sequence[tuple[str, str, str]] = (),
+    means: Mapping[str, Means] | None = None,
+    unjudged: Sequence[tuple[str, str, str, Sequence[str]]] = (),
 ) -> str:
     """
     The first table, of each arm's shares, and the second, of each
-    (arm, baseline, difference), unless there are none. Then each
-    (arm, job, task) in `untested`, unless there are none.
+    (arm, baseline, difference), unless there are none. Then the table of
+    `means`, unless it is None. Then each (arm, job, task) in `untested`, and
+    each (arm, job, task, judges) in `unjudged`, unless there are none.
     """
     header = ["arm", "trials", "resolved", "failed", "timed out"]
     rows = [
         [arm, str(s.trials), _percent(s.resolved), _percent(s.failed), _percent(s.timed_out)]
         for arm, s in shares.items()
     ]
-    widths = [max(len(row[i]) for row in [header, *rows]) for i in range(len(header))]
-    lines = [
-        "  ".join(
-            [row[0].ljust(widths[0])] + [cell.rjust(width) for cell, width in zip(row[1:], widths[1:])]
-        )
-        for row in [header, *rows]
-    ]
+    lines = _table(header, rows)
     if differences:
         labels = [f"{arm} - {baseline}" for arm, baseline, _ in differences]
         estimates = [_signed(difference.estimate) for _, _, difference in differences]
@@ -435,13 +540,53 @@ def render(
                 f"{label.ljust(label_width)}   {estimate.rjust(estimate_width)} "
                 f"[{_signed(difference.low)}, {_signed(difference.high)}]"
             )
+    if means is not None:
+        lines += ["", *render_means(means)]
     if untested:
         arm_width = max(len(arm) for arm, _, _ in untested)
         job_width = max(len(job) for _, job, _ in untested)
         lines += ["", "These trials' regrades recorded no test result, so their grading may have broken:"]
         for arm, job, task in untested:
             lines.append(f"  {arm.ljust(arm_width)}  {job.ljust(job_width)}  {task}")
+    if unjudged:
+        arm_width = max(len(arm) for arm, _, _, _ in unjudged)
+        job_width = max(len(job) for _, job, _, _ in unjudged)
+        task_width = max(len(task) for _, _, task, _ in unjudged)
+        lines += ["", "These trials' judges failed or were skipped, so the means leave out their scores:"]
+        for arm, job, task, judges in unjudged:
+            lines.append(
+                f"  {arm.ljust(arm_width)}  {job.ljust(job_width)}  {task.ljust(task_width)}  "
+                f"{', '.join(judges)}"
+            )
     return "\n".join(lines) + "\n"
+
+
+def render_means(means: Mapping[str, Means]) -> list[str]:
+    """The lines of the table of each arm's mean judges' scores."""
+    header = ["mean (trials)", "rubric", "practice alignment", "relative taste", "patch bloat"]
+    rows = [
+        [arm] + [_mean(getattr(m, field)) for field, _, _ in SCORES] for arm, m in means.items()
+    ]
+    return _table(header, rows)
+
+
+def _table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> list[str]:
+    """The rows under the header, the first column to the left and the rest to the right."""
+    widths = [max(len(row[i]) for row in [header, *rows]) for i in range(len(header))]
+    return [
+        "  ".join(
+            [row[0].ljust(widths[0])] + [cell.rjust(width) for cell, width in zip(row[1:], widths[1:])]
+        )
+        for row in [header, *rows]
+    ]
+
+
+def _mean(mean: Mean) -> str:
+    """The mean to two places, a half rounded away from zero, then its trials."""
+    if mean.value is None:
+        return f"- ({mean.trials})"
+    places = Decimal(str(mean.value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return f"{places} ({mean.trials})"
 
 
 def _whole(share: float) -> int:

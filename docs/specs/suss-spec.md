@@ -566,6 +566,46 @@ These trials' regrades recorded no test result, so their grading may have broken
 - Shares print as whole percents, and every difference and interval end
   carries a sign.
 
+On the `senior` lane, a third table follows the second. It gives each arm's mean
+score from each of the regrade's judges, over the same tasks, and in parentheses
+how many trials each mean is over:
+
+```
+mean (trials)     rubric  practice alignment  relative taste  patch bloat
+claude-code    0.71 (34)           3.62 (47)       3.04 (47)    1.48 (47)
+self-review    0.78 (33)           3.81 (46)       3.17 (46)    1.31 (46)
+```
+
+After the list of trials that recorded no test result, it names each trial
+whose judges failed or were skipped, by arm, job and task, then the judges:
+
+```
+These trials' judges failed or were skipped, so the means leave out their scores:
+  claude-code  20261103T204423Z-1  posthog-feat-approval-gating         taste
+  self-review  20261103T204423Z-1  paperless-ngx-perf-workflow-queries  rubric, taste
+```
+
+- Each column is a key of the regrade's `verifier_result.rewards`:
+
+  | Column | Key | Scale |
+  |---|---|---|
+  | `rubric` | `rubric_score` | the share of the task's rubric criteria the patch meets, 0 to 1 |
+  | `practice alignment` | `taste_practice_alignment` | the median of five dimensions, each 1 to 5 |
+  | `relative taste` | `taste_relative_taste` | the median of five dimensions, each 1 to 5, against the task's reference patch |
+  | `patch bloat` | `taste_patch_bloat` | the patch's source lines over the reference patch's, so 1 is the same size |
+
+- A score counts only when its judge's flag is 1: `rubric_judge_ok` for the
+  rubric, and `taste_judge_ok` for the other three. A trial whose judge
+  failed, was skipped or never ran takes no part in that mean, whatever
+  scores its rewards hold. A task with no rubric criteria has no rubric score
+  in any arm.
+- A judge is named when its flag is not 1, except a rubric judge whose
+  `verifier/judge_output.json` gives `rubric_status` as `skipped:no_criteria`.
+  A trial whose regrade has no reward is not named.
+- Means print to two decimal places, a half rounded away from zero, and as `-`
+  when no trial has the score.
+- On every other lane, neither the third table nor the list prints.
+
 It exits with an error, and prints nothing else, when:
 
 - An arm it is given has no trials under `results/<lane>/<arm>/`, or is not in
