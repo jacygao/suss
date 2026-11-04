@@ -1,0 +1,110 @@
+version = "1.0"
+
+[task]
+name = "snorkel-ai/harbor-add-agent-file-retention"
+authors = [{name = "senior-swe-bench", email = "seniorswebench@snorkel.ai"}]
+keywords = ["senior-swe-bench", "harbor", "python-lib"]
+
+[environment]
+base_image = "harbor-add-agent-file-retention:latest"
+build_timeout_sec = 1200.0
+cpus = 2
+memory = "4G"
+storage = "20G"
+network_mode = "public"
+
+[verifier]
+timeout_sec = 1800.0
+network_mode = "public"
+
+[verifier.env]
+ANTHROPIC_API_KEY = "${ANTHROPIC_API_KEY:-}"
+OPENAI_API_KEY = "${OPENAI_API_KEY:-}"
+PORTKEY_API_KEY = "${PORTKEY_API_KEY:-}"
+SSB_OVERRIDE_ALL_JUDGE_MODEL = "${SSB_OVERRIDE_ALL_JUDGE_MODEL:-}"
+SSB_OVERRIDE_CLASSIFIER_MODEL = "${SSB_OVERRIDE_CLASSIFIER_MODEL:-}"
+SSB_OVERRIDE_VA_HARNESS = "${SSB_OVERRIDE_VA_HARNESS:-}"
+SSB_OVERRIDE_VA_MODEL = "${SSB_OVERRIDE_VA_MODEL:-}"
+FORCE_VA_HARNESS = "${FORCE_VA_HARNESS:-}"
+FORCE_VA_MODEL = "${FORCE_VA_MODEL:-}"
+REPO_NAME = "harbor"
+TIMEOUT_MULTIPLIER = "${TIMEOUT_MULTIPLIER:-1}"
+
+[agent]
+timeout_sec = 14400.0
+network_mode = "allowlist"
+allowed_hosts = [
+    "api.portkey.ai",
+    "pypi.org",
+    "*.pythonhosted.org",
+    "*.pypa.io",
+    "astral.sh",
+    "*.astral.sh",
+    "pypi-mirror.modal.local",
+    "*.python.org",
+    "registry.npmjs.org",
+    "www.npmjs.com",
+    "registry.yarnpkg.com",
+    "pnpm.io",
+    "get.pnpm.io",
+    "nodejs.org",
+    "deb.nodesource.com",
+    "www.typescriptlang.org",
+    "sh.rustup.rs",
+    "*.rust-lang.org",
+    "crates.io",
+    "*.crates.io",
+    "hex.pm",
+    "*.hex.pm",
+    "elixir-lang.org",
+    "www.erlang.org",
+    "developer.mozilla.org",
+    "archive.ubuntu.com",
+    "security.ubuntu.com",
+    "*.ubuntu.com",
+    "deb.debian.org",
+    "*.debian.org",
+    "apt.postgresql.org",
+    "download.redis.io",
+]
+
+[solution.env]
+REPO_NAME = "harbor"
+
+[metadata]
+family = "harbor-add-agent-file-retention"
+variant = "hard"
+segment = "design"
+repo = "harbor"
+tags = ["harbor", "python-lib"]
+visibility = "public"
+version = "2026.06"
+
+[metadata.narrative]
+description = """Stand-in for the task's description."""
+context = """Stand-in for the task's context."""
+solution = """Stand-in for the task's solution."""
+
+[metadata.taxonomy]
+task_type = "feature"
+stack = ["python-lib"]
+runtime_dependence = "runtime-helpful"
+skills = ["codebase-exploration", "framework-fluency", "interface-design", "cross-service-reasoning", "logic-fix"]
+skill_breadth = "moderate"
+
+[metadata.oracle_scope]
+sloc = 107
+files = 4
+hunks = 14
+scope = "broad"
+
+[metadata.origin]
+repo = "harbor-framework/harbor"
+pr_numbers = [1349]
+base_commit = "e371289fdf7aa2ee9534cc0c70af304a267ff0f2"
+base_commit_date = "2026-04-02"
+merged_at = "2026-04-02"
+
+
+
+

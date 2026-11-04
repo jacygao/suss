@@ -34,7 +34,8 @@ peer-review - claude-code   +8% [+1%, +15%]
 | Harbor | 0.22.0 | Runs each task in a sandbox, runs suss in it, and grades the result with the task's own verifier. |
 | Docker | Docker Desktop 4.86.0 or later on macOS. On Linux and Windows, a Docker engine whose kernel has `CONFIG_NFT_FIB_INET`. | The sandboxes, with `environment = "docker"` in `suss.toml`. Without `CONFIG_NFT_FIB_INET`, Harbor refuses every task, because the agent phase has no network. |
 | Modal | 1.5.1 or later, and the account Harbor's `modal` environment uses. `uv sync --extra modal` installs its client into suss's environment, through Harbor's own `modal` extra at the Harbor version above. A plain `uv sync` leaves it out. | The sandboxes, when `environment` is `modal`. Versions before 1.5.1 cannot take a network policy per phase. |
-| SWE-rebench | `ibragim-badertdinov/swe-rebench-07-2026` from Harbor Hub, as `harbor download` writes it | The tasks. |
+| SWE-rebench | `ibragim-badertdinov/swe-rebench-07-2026` from Harbor Hub, as `harbor download` writes it | The `rebench` lane's tasks. |
+| Senior SWE-Bench | `snorkel-ai/senior-swe-bench-v2026.06` from Harbor Hub, as `harbor download` writes it | The `senior` lane's tasks. |
 | Python | 3.12 | Suss itself, which Harbor loads as a custom agent. |
 | `uv` | any | Installs suss and Harbor. |
 
@@ -186,14 +187,14 @@ Harbor takes these variables from suss's own environment. So a variable `.env`
 leaves out or leaves empty takes the task's default, and the agent phase gets
 one only when the harness's manifest names it in `env`.
 
-A task whose `[verifier.env]` names `SSB_OVERRIDE_ALL_JUDGE_MODEL` has Senior
-SWE-Bench's verifier. It calls LLM judges, and when it cannot reach their
-models it still writes a reward. Its run needs
-`PORTKEY_API_KEY` in `.env`, which reaches every model through Portkey, or else
-the key of each model the verifier calls: `ANTHROPIC_API_KEY` for an
-`anthropic/` model, and `OPENAI_API_KEY` for an `openai/` one. With every
-default, that is `ANTHROPIC_API_KEY` alone. The settings that choose the models
-are optional:
+Every `senior` task has Senior SWE-Bench's verifier. It calls LLM judges, and
+when it cannot reach their models it still writes a reward. So a run of the
+`senior` lane needs `PORTKEY_API_KEY` in `.env`, which reaches every model
+through Portkey, or else the key of each model the verifier calls:
+`ANTHROPIC_API_KEY` for an `anthropic/` model, and `OPENAI_API_KEY` for an
+`openai/` one. With every default, that is `ANTHROPIC_API_KEY` alone. A run of
+`rebench` needs none of them, whatever its tasks name. The settings that choose
+the models are optional:
 
 | Model | Chosen by | Default |
 |---|---|---|
@@ -233,7 +234,8 @@ directory as `agent/` in the trial's directory under `results/`.
   task directory that is a link counts as the task it names. File times, modes,
   empty directories, and files outside every task, such as the download's
   `README.md`, leave the digest unchanged, so two downloads of the same tasks
-  have the same digest.
+  have the same digest. Suss records `grader` only on `rebench`, and fails a
+  trial on any other lane before its sandbox starts.
 - `base` is the commit. `model.patch` applies to the starting tree, which is
   the base only when the image left no change in the workspace.
 - `status` is `ok`, `harness-failed` or `timed-out`. A trial is `timed-out`
@@ -328,30 +330,73 @@ starts.
 
 ## 5. Lanes
 
-Every task gives the agent a repository at the commit before a real change, and
-an instruction about that change. The task's hidden tests grade it. A trial
-resolves when the tests the real change made pass now pass, and the tests that
-passed before still pass. The share of trials that resolve is the measure suss
-compares arms on.
+Suss has two lanes, `rebench` and `senior`. Every task gives the agent a
+repository at the commit before a real change, and an instruction about that
+change. The task's verifier grades it, and a trial resolves when its reward is
+1. The share of trials that resolve is the measure suss compares arms on.
 
-Suss has one lane, `rebench`: 108 of the 111 tasks of SWE-rebench's July 2026
-snapshot, from 64 repositories in Go (21), Java (18), Python (20), Rust (25) and
-TypeScript (24). It leaves out `langchain4j__langchain4j-5315`,
-`langchain4j__langchain4j-5367` and `openrewrite__rewrite-7784`, whose builds
-need Maven or Gradle artifacts that no longer exist, so no fix can pass their
-tests. A download that lacks any of the three still builds the lane. The tasks
-are made from pull requests merged between 15 May and 15 June 2026. Each instruction is the issue the pull request closed, and an
-`Interface` section naming any interface it adds.
+Each lane is a directory of copies of its tasks, built from the download that
+its key in `suss.toml` names. Each task's image is built from the `Dockerfile`
+in its `environment/`, and the build downloads from the network. Its repository
+is in the image's `WORKDIR`.
 
-Each task's image is built from the `Dockerfile` in its `environment/`, and the
-build downloads from the network. Its repository is in the image's `WORKDIR`.
+### `rebench`
+
+108 of the 111 tasks of SWE-rebench's July 2026 snapshot, from 64 repositories
+in Go (21), Java (18), Python (20), Rust (25) and TypeScript (24). It leaves out
+`langchain4j__langchain4j-5315`, `langchain4j__langchain4j-5367` and
+`openrewrite__rewrite-7784`, whose builds need Maven or Gradle artifacts that no
+longer exist, so no fix can pass their tests. A download that lacks any of the
+three still builds the lane. The tasks are made from pull requests merged
+between 15 May and 15 June 2026. Each instruction is the issue the pull request
+closed, and an `Interface` section naming any interface it adds.
+
+The verifier runs the task's hidden tests. A trial resolves when the tests the
+real change made pass now pass, and the tests that passed before still pass.
+
+### `senior`
+
+All 50 tasks of Snorkel's Senior SWE-Bench snapshot `senior-swe-bench-v2026.06`,
+from 12 repositories:
+
+| Language | Tasks | With no tests |
+|---|---|---|
+| Elixir | 10 | 2 |
+| Go | 8 | 0 |
+| Python | 18 | 4 |
+| Rust | 6 | 0 |
+| TypeScript | 8 | 0 |
+
+The verifier runs the task's tests, a validation agent on the 25 tasks whose
+`metadata.segment` is `design`, and LLM judges. The reward is 1 when the tests
+pass and, on a design task, the validation agent passes the change too. The
+judges' scores never change it. Six design tasks have no tests, so the
+validation agent alone sets their reward: `electric-feat-sync-service-start`,
+`harbor-add-windows-tasks-support`, `plausible-feat-shared-dashboard-deeplink`,
+`posthog-feat-prompt-versioning`, `posthog-feat-schema-ingestion-block` and
+`prefect-feat-dbt-per-node-hardening`.
+
+The agent timeout is 7200 seconds in 46 tasks and 14400 in the other four. The
+`Dockerfile`s of the 6 `gitea-*`, 2 `teleport-*` and 4 `turborepo-*` tasks
+download amd64 Go or Rust toolchains by name, whatever the host's architecture.
+
+Each copy's `tests/test.sh` installs `litellm>=1.0,<1.106` where the task's
+installs `litellm>=1.0,<2.0`, and nothing else in the task changes.
+Every litellm from 1.106.0, on PyPI since 18 October 2026, raises
+`No module named 'mcp'` on every judge call. The verifier still writes a reward
+from the tests, so without the pin no trial's judges would score it and nothing
+would fail. A `test.sh` with no line that is exactly `litellm>=1.0,<2.0`, or
+with more than one, or in a `tests` directory that is a link, makes `suss run`
+exit with an error naming it before it builds any lane or runs any job.
 
 ### Network
 
 In the agent phase, a trial reaches the hosts in the harness's `allowed_hosts`
 and the hosts in its own task's `[agent] allowed_hosts`, and no other host, so a
 harness cannot fetch a task's real change from the web. A `rebench` task names
-no hosts of its own, so its trials reach the harness's alone.
+no hosts of its own, so its trials reach the harness's alone. Every `senior`
+task names 32, such as `pypi.org` and `registry.npmjs.org`, and 19 of them name
+a few more for their repository.
 
 Suss passes each host in the harness's `allowed_hosts` to Harbor as
 `--allow-agent-host`, and nothing else. Harbor adds them, trial by trial, to the
@@ -365,10 +410,10 @@ and `clickhouse.com`, under a harness allowing `api.anthropic.com` and
 Harbor ignores `--allow-agent-host` when the agent's network is public, which
 it is when a task's `[agent]` sets no `network_mode` and the task gives the
 network to the whole trial, with `[environment] network_mode = "public"` or with
-`allow_internet = true`. Every `rebench` task does. So the lane holds a copy of
-each task, and the copy's `task.toml` adds `[agent] network_mode = "no-network"`
-where `[agent]` sets no `network_mode`. A `task.toml` whose `[agent]` sets
-`no-network` or `allowlist` is copied unchanged. One whose `[agent]` sets any
+`allow_internet = true`. Every `rebench` task does. So the copy's `task.toml`
+adds `[agent] network_mode = "no-network"` where `[agent]` sets no
+`network_mode`. A `task.toml` whose `[agent]` sets `no-network` or `allowlist`,
+as every `senior` task's does, is copied unchanged. One whose `[agent]` sets any
 other `network_mode`, or sets `allowed_hosts` with no `network_mode`, makes
 `suss run` exit with an error naming it before it builds any lane or runs any
 job. The verifier keeps the task's own network, which it uses to download a
@@ -385,10 +430,12 @@ suss run peer-review rebench
 
 It reads the arm from `suss.toml` in the current directory. For each lane, it
 builds `lanes/<lane>/`, a directory of copies of the lane's task directories
-from the directory `swe_rebench` names, each with
+from the directory its key names: `swe_rebench` for `rebench`, and
+`senior_swe_bench` for `senior`. Each copy has
 `[agent] network_mode = "no-network"` added to its `task.toml` where its
-`[agent]` sets no `network_mode`. A build removes
-what an earlier build of the lane left. Harbor builds each task's image from its
+`[agent]` sets no `network_mode`, and on `senior`, `litellm>=1.0,<1.106` in
+place of `litellm>=1.0,<2.0` in its `tests/test.sh`. A build removes what an
+earlier build of the lane left. Harbor builds each task's image from its
 `Dockerfile` when its trial starts.
 
 Then, K times, it runs an agent job and its regrade:
@@ -425,7 +472,7 @@ only the values suss gives it: none in the agent job, and those `.env` sets in
 the regrade. `-y` also agrees, without asking, to share an uploaded job with an
 organization you are not a member of.
 
-A run whose `.env` lacks a key the regrade's verifier needs exits with an error
+A run of `senior` whose `.env` lacks a key the judges need exits with an error
 naming it before it builds any lane or runs any job, with `DRY_RUN=1` and
 `--check` too. A key set to an empty value counts as missing:
 
@@ -497,6 +544,7 @@ trial, and the arms:
 
 ```toml
 swe_rebench = "../tasks/swe-rebench-07-2026"
+senior_swe_bench = "../tasks/senior/senior-swe-bench-v2026.06"
 environment = "docker"
 k = 1
 concurrency = 16
@@ -517,9 +565,15 @@ baseline = "claude-code"
 params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "deepseek/deepseek-v3.2" }
 ```
 
-- `swe_rebench` is `<dir>/swe-rebench-07-2026`, the directory of tasks that
-  `harbor download ibragim-badertdinov/swe-rebench-07-2026 -o <dir>` writes,
-  relative to the directory holding `suss.toml`.
+- `swe_rebench` and `senior_swe_bench` name the directories of tasks that
+  `harbor download` writes, relative to the directory holding `suss.toml`.
+  `swe_rebench` is `<dir>/swe-rebench-07-2026` after
+  `harbor download ibragim-badertdinov/swe-rebench-07-2026 -o <dir>`, and
+  `senior_swe_bench` is `<dir>/senior-swe-bench-v2026.06` after
+  `harbor download snorkel-ai/senior-swe-bench-v2026.06 -o <dir>`. Each is
+  required only by a run of its lane, `rebench` or `senior`. A run of a lane
+  whose key is missing exits with an error naming it before it builds any lane
+  or runs any job.
 - `harness` is the path to an adapter, relative to the directory holding
   `suss.toml`.
 - `params` is passed to the harness as it stands, as the JSON file `--params`
@@ -542,11 +596,12 @@ params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "d
   `docker info --format '{{.NCPU}} {{.MemTotal}}'` reports. An
   `--override-cpus` or `--override-memory-mb` passed after `--` counts in place
   of the tasks' own where it is larger. Memory is counted in MiB, as
-  `memory_mb` is, and Docker's is rounded down. When either does not
-  fit, `suss run` exits with an error before it builds any lane or runs any
-  job, and does so under `DRY_RUN=1` too. A task that names
-  no `cpus` or no `memory_mb` is an error that names it. A `--check` counts
-  only its one task, and one trial at a time.
+  `memory_mb` is, and Docker's is rounded down. A task that gives `memory`, as
+  every `senior` task does, counts as Harbor reads it: `"8G"` is 8192 MiB. When
+  either does not fit, `suss run` exits with an error before it builds any lane
+  or runs any job, and does so under `DRY_RUN=1` too. A task that names no
+  `cpus`, or neither `memory_mb` nor a `memory` Harbor reads, is an error that
+  names it. A `--check` counts only its one task, and one trial at a time.
 
   ```
   $ suss run peer-review rebench
@@ -577,12 +632,13 @@ params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "d
   ```
   $ suss run peer-review rebench
   error: /home/me/evals/suss.toml: sets [lanes.rebnech], but suss has no lane
-  named rebnech; its lanes are rebench
+  named rebnech; its lanes are rebench, senior
   ```
 
-  The value must be under the agent timeout of every task in the lane, 3000
-  seconds in every `rebench` task, so that suss captures the patch before
-  Harbor stops the trial. Each lane is checked against its own value. When one
+  The value must be under the agent timeout of every task in the lane, so that
+  suss captures the patch before Harbor stops the trial: under 3000 seconds on
+  `rebench`, and under 7200 on `senior`, its shortest. Each lane is checked
+  against its own value. When one
   is not under the timeout, `suss run` exits with an error before running any
   job:
 

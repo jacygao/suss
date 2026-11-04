@@ -13,22 +13,24 @@ from suss.lanes import LaneError
 
 SPEC = Path(__file__).resolve().parent.parent / "docs" / "specs" / "suss-spec.md"
 
-def test_the_only_lane_is_the_specs():
-    named = re.findall(r"Suss has one lane, `([^`]+)`", SPEC.read_text())
+def test_the_lanes_are_the_specs():
+    section = SPEC.read_text().split("\n## 5. Lanes\n", 1)[1].split("\n## ", 1)[0]
+    named = re.findall(r"^### `([^`]+)`$", section, re.MULTILINE)
 
     assert named == list(lanes.LANES)
 
 
-@pytest.mark.parametrize("lane", ["pro-go", "pro-hard51", "rebench-check", "Rebench"])
-def test_a_lane_other_than_rebench_is_an_error_naming_the_only_lane(lane: str):
+@pytest.mark.parametrize("lane", ["pro-go", "pro-hard51", "rebench-check", "Rebench", "Senior"])
+def test_a_lane_suss_does_not_have_is_an_error_naming_its_lanes(lane: str):
     with pytest.raises(LaneError) as error:
         lanes.check_lane(lane)
 
-    assert str(error.value) == f"no lane named {lane}; the only lane is rebench"
+    assert str(error.value) == f"suss has no lane named {lane}; its lanes are rebench, senior"
 
 
-def test_rebench_is_a_lane():
-    lanes.check_lane("rebench")
+@pytest.mark.parametrize("lane", ["rebench", "senior"])
+def test_rebench_and_senior_are_lanes(lane: str):
+    lanes.check_lane(lane)
 
 
 TOP = """\
@@ -217,7 +219,7 @@ def test_the_rebench_lane_holds_a_copy_of_each_task_and_nothing_else(tmp_path: P
     (source / "notes").mkdir()
     (source / "notes" / "todo.md").write_text("not a task\n")
 
-    built = lanes.build_rebench(source, tmp_path / "lanes")
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
     assert built == tmp_path / "lanes" / "rebench"
     assert sorted(entry.name for entry in built.iterdir()) == sorted(names)
@@ -229,7 +231,7 @@ def test_the_rebench_lane_holds_a_copy_of_each_task_and_nothing_else(tmp_path: P
 def test_each_task_toml_parses_to_the_downloads_plus_the_agents_network_mode(tmp_path: Path):
     source = make_rebench(tmp_path / "source", ["owner__repo-1"])
 
-    built = lanes.build_rebench(source, tmp_path / "lanes")
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
     expected = toml_of(source / "owner__repo-1")
     expected["agent"]["network_mode"] = "no-network"
@@ -239,7 +241,7 @@ def test_each_task_toml_parses_to_the_downloads_plus_the_agents_network_mode(tmp
 def test_the_task_toml_keeps_its_text_and_gains_one_line_in_its_agent_table(tmp_path: Path):
     source = make_rebench(tmp_path / "source", ["owner__repo-1"])
 
-    built = lanes.build_rebench(source, tmp_path / "lanes")
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
     original = (source / "owner__repo-1" / "task.toml").read_text().splitlines()
     copied = (built / "owner__repo-1" / "task.toml").read_text().splitlines()
@@ -264,7 +266,7 @@ def test_a_task_toml_with_no_final_newline_changes_only_where_the_line_goes(
 ):
     source = make_rebench(tmp_path / "source", ["owner__repo-1"], original)
 
-    built = lanes.build_rebench(source, tmp_path / "lanes")
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
     assert (built / "owner__repo-1" / "task.toml").read_bytes() == copied.encode()
 
@@ -273,7 +275,7 @@ def test_a_task_with_no_agent_table_gains_one(tmp_path: Path):
     toml = REBENCH_TOML.replace("[agent]\ntimeout_sec = 3000.0\n", "")
     source = make_rebench(tmp_path / "source", ["owner__repo-1"], toml)
 
-    built = lanes.build_rebench(source, tmp_path / "lanes")
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
     expected = toml_of(source / "owner__repo-1")
     expected["agent"] = {"network_mode": "no-network"}
@@ -285,7 +287,7 @@ def test_an_agent_header_spelled_otherwise_gains_the_key_inside_it(tmp_path: Pat
     toml = REBENCH_TOML.replace("[agent]\n", f"{header}\n")
     source = make_rebench(tmp_path / "source", ["owner__repo-1"], toml)
 
-    built = lanes.build_rebench(source, tmp_path / "lanes")
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
     expected = toml_of(source / "owner__repo-1")
     expected["agent"]["network_mode"] = "no-network"
@@ -306,7 +308,7 @@ def test_a_task_toml_the_key_cannot_be_added_to_is_an_error_naming_it(tmp_path: 
     source = make_rebench(tmp_path / "source", ["owner__repo-1"], toml)
 
     with pytest.raises(LaneError, match=re.escape(str(source / "owner__repo-1" / "task.toml"))):
-        lanes.build_rebench(source, tmp_path / "lanes")
+        lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
 
 def test_a_task_that_opens_the_agents_network_is_an_error_naming_it(tmp_path: Path):
@@ -315,7 +317,7 @@ def test_a_task_that_opens_the_agents_network_is_an_error_naming_it(tmp_path: Pa
     (source / "owner__repo-2" / "task.toml").write_text(toml)
 
     with pytest.raises(LaneError, match=re.escape(str(source / "owner__repo-2" / "task.toml"))):
-        lanes.build_rebench(source, tmp_path / "lanes")
+        lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
     assert (source / "owner__repo-2" / "task.toml").read_text() == toml
 
 
@@ -345,7 +347,7 @@ def test_a_task_whose_agent_already_has_a_closed_network_is_copied_unchanged(
     toml = REBENCH_TOML.replace("[agent]\ntimeout_sec = 3000.0\n", agent)
     source = make_rebench(tmp_path / "source", ["owner__repo-1"], toml)
 
-    built = lanes.build_rebench(source, tmp_path / "lanes")
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
     original = (source / "owner__repo-1" / "task.toml").read_bytes()
     assert (built / "owner__repo-1" / "task.toml").read_bytes() == original
@@ -357,19 +359,19 @@ def test_a_task_with_agent_hosts_and_no_allowlist_is_an_error_naming_it(tmp_path
     source = make_rebench(tmp_path / "source", ["owner__repo-1"], toml)
 
     with pytest.raises(LaneError, match=re.escape(str(source / "owner__repo-1" / "task.toml"))):
-        lanes.build_rebench(source, tmp_path / "lanes")
+        lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
 
 def test_a_failed_build_leaves_the_earlier_lane_as_it_was(tmp_path: Path):
     source = make_rebench(tmp_path / "source", ["owner__repo-1"])
-    built = lanes.build_rebench(source, tmp_path / "lanes")
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
     before = toml_of(built / "owner__repo-1")
     make_rebench(source, ["owner__repo-2"])
     toml = REBENCH_TOML.replace("[agent]\n", '[agent]\nnetwork_mode = "public"\n')
     (source / "owner__repo-2" / "task.toml").write_text(toml)
 
     with pytest.raises(LaneError):
-        lanes.build_rebench(source, tmp_path / "lanes")
+        lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
     assert sorted(entry.name for entry in built.iterdir()) == ["owner__repo-1"]
     assert toml_of(built / "owner__repo-1") == before
@@ -378,7 +380,7 @@ def test_a_failed_build_leaves_the_earlier_lane_as_it_was(tmp_path: Path):
 def test_every_other_file_is_copied_byte_for_byte(tmp_path: Path):
     source = make_rebench(tmp_path / "source", ["owner__repo-1"])
 
-    built = lanes.build_rebench(source, tmp_path / "lanes")
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
     assert files_of(built / "owner__repo-1") == files_of(source / "owner__repo-1")
 
@@ -392,7 +394,7 @@ def test_file_modes_are_kept_so_executable_scripts_stay_executable(tmp_path: Pat
     # Read-only, so a build that copies it and then writes into the copy fails.
     (task / "task.toml").chmod(0o444)
 
-    built = lanes.build_rebench(source, tmp_path / "lanes") / "owner__repo-1"
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes") / "owner__repo-1"
 
     for path in ("tests/test.sh", "solution/solve.sh", "instruction.md", "task.toml"):
         assert oct((built / path).stat().st_mode) == oct((task / path).stat().st_mode), path
@@ -406,8 +408,8 @@ def test_read_only_task_directories_are_copied_with_their_modes_and_rebuilt_over
     (task / "tests").chmod(0o555)
     task.chmod(0o555)
     try:
-        lanes.build_rebench(source, tmp_path / "lanes")
-        built = lanes.build_rebench(source, tmp_path / "lanes") / "owner__repo-1"
+        lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
+        built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes") / "owner__repo-1"
 
         for path in ("", "tests"):
             assert oct((built / path).stat().st_mode) == oct((task / path).stat().st_mode), path
@@ -421,12 +423,12 @@ def test_read_only_task_directories_are_copied_with_their_modes_and_rebuilt_over
 
 def test_a_rebuild_leaves_only_the_tasks_of_the_latest_download(tmp_path: Path):
     source = make_rebench(tmp_path / "source", ["owner__repo-1", "owner__repo-2"])
-    built = lanes.build_rebench(source, tmp_path / "lanes")
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
     (built / "owner__repo-1" / "left-by-a-trial.txt").write_text("stale\n")
     shutil.rmtree(source / "owner__repo-2")
     (source / "owner__repo-1" / "tests" / "config.json").write_text("{}\n")
 
-    lanes.build_rebench(source, tmp_path / "lanes")
+    lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
     assert [entry.name for entry in built.iterdir()] == ["owner__repo-1"]
     assert files_of(built / "owner__repo-1") == files_of(source / "owner__repo-1")
@@ -438,7 +440,7 @@ def test_the_rebench_check_lane_holds_only_the_first_task_by_name(tmp_path: Path
     names = ["owner__repo-9", "owner__repo-10", "apache__pulsar-1", "ArcadeData__arcadedb-2"]
     source = make_rebench(tmp_path / "source", names)
 
-    built = lanes.build_rebench(source, tmp_path / "lanes", check=True)
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes", check=True)
 
     assert built == tmp_path / "lanes" / "rebench-check"
     assert [entry.name for entry in built.iterdir()] == ["ArcadeData__arcadedb-2"]
@@ -448,9 +450,9 @@ def test_the_rebench_check_lane_holds_only_the_first_task_by_name(tmp_path: Path
 def test_building_the_rebench_check_lane_leaves_the_full_lane_as_it_was(tmp_path: Path):
     names = ["owner__repo-1", "owner__repo-2"]
     source = make_rebench(tmp_path / "source", names)
-    full = lanes.build_rebench(source, tmp_path / "lanes")
+    full = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
-    lanes.build_rebench(source, tmp_path / "lanes", check=True)
+    lanes.build(lanes.REBENCH, source, tmp_path / "lanes", check=True)
 
     assert sorted(entry.name for entry in full.iterdir()) == names
 
@@ -469,7 +471,7 @@ def test_the_tasks_the_lane_leaves_out_are_the_specs():
 def test_the_rebench_lane_leaves_out_the_tasks_no_fix_can_pass(tmp_path: Path):
     source = make_rebench(tmp_path / "source", ["owner__repo-1", *UNGRADEABLE, "zzz__repo-2"])
 
-    built = lanes.build_rebench(source, tmp_path / "lanes")
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
     assert sorted(entry.name for entry in built.iterdir()) == ["owner__repo-1", "zzz__repo-2"]
 
@@ -478,7 +480,7 @@ def test_the_check_lane_takes_the_first_task_the_lane_does_not_leave_out(tmp_pat
     # Every name left out sorts before owner__repo-1.
     source = make_rebench(tmp_path / "source", ["owner__repo-1", *UNGRADEABLE])
 
-    built = lanes.build_rebench(source, tmp_path / "lanes", check=True)
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes", check=True)
 
     assert [entry.name for entry in built.iterdir()] == ["owner__repo-1"]
 
@@ -488,8 +490,8 @@ def test_a_download_lacking_some_tasks_the_lane_leaves_out_builds_and_names_none
 ):
     source = make_rebench(tmp_path / "source", ["owner__repo-1", UNGRADEABLE[2]])
 
-    lanes.check_buildable(source, tmp_path / "lanes")
-    built = lanes.build_rebench(source, tmp_path / "lanes")
+    lanes.check_buildable(lanes.REBENCH, source, tmp_path / "lanes")
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
     assert [entry.name for entry in built.iterdir()] == ["owner__repo-1"]
     assert capfd.readouterr() == ("", "")
@@ -502,7 +504,7 @@ def test_a_rebuild_removes_tasks_left_out_that_an_earlier_lane_holds(tmp_path: P
     # A lane built before any task was left out, holding copies of them all.
     shutil.copytree(source, lane)
 
-    lanes.build_rebench(source, tmp_path / "lanes", check)
+    lanes.build(lanes.REBENCH, source, tmp_path / "lanes", check)
 
     assert [entry.name for entry in lane.iterdir()] == ["owner__repo-1"]
 
@@ -511,7 +513,7 @@ def test_a_download_holding_only_tasks_the_lane_leaves_out_is_an_error_naming_it
     source = make_rebench(tmp_path / "source", UNGRADEABLE)
 
     with pytest.raises(LaneError, match=re.escape(f"{source}: every task in it is one")):
-        lanes.check_buildable(source, tmp_path / "lanes")
+        lanes.check_buildable(lanes.REBENCH, source, tmp_path / "lanes")
     assert not (tmp_path / "lanes").exists()
 
 
@@ -521,12 +523,12 @@ def test_a_download_with_no_tasks_is_an_error_naming_it(tmp_path: Path):
     (source / "README.md").write_text("# empty\n")
 
     with pytest.raises(LaneError, match=re.escape(str(source))):
-        lanes.build_rebench(source, tmp_path / "lanes")
+        lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
 
 def test_a_download_that_is_not_a_directory_is_an_error_naming_it(tmp_path: Path):
     with pytest.raises(LaneError, match=re.escape(str(tmp_path / "missing"))):
-        lanes.build_rebench(tmp_path / "missing", tmp_path / "lanes")
+        lanes.build(lanes.REBENCH, tmp_path / "missing", tmp_path / "lanes")
 
 
 def test_a_rebench_lane_path_that_is_not_a_directory_is_an_error_and_left_alone(tmp_path: Path):
@@ -535,7 +537,7 @@ def test_a_rebench_lane_path_that_is_not_a_directory_is_an_error_and_left_alone(
     (tmp_path / "lanes" / "rebench").write_text("mine\n")
 
     with pytest.raises(LaneError, match=re.escape(str(tmp_path / "lanes" / "rebench"))):
-        lanes.build_rebench(source, tmp_path / "lanes")
+        lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
     assert (tmp_path / "lanes" / "rebench").read_text() == "mine\n"
 
 
@@ -550,14 +552,14 @@ def test_a_rebench_lane_path_that_is_a_link_is_an_error_and_its_target_left_alon
     (tmp_path / "lanes" / "rebench").symlink_to(target)
 
     with pytest.raises(LaneError, match=re.escape(str(tmp_path / "lanes" / "rebench"))):
-        lanes.build_rebench(source, tmp_path / "lanes")
+        lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
     assert [entry.name for entry in target.iterdir()] == ["mine.txt"]
 
 
 def test_harbor_reads_the_copy_as_a_task_whose_agent_has_no_network(tmp_path: Path):
     source = make_rebench(tmp_path / "source", ["owner__repo-1"])
 
-    built = lanes.build_rebench(source, tmp_path / "lanes")
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
     task = TaskConfig.model_validate_toml((built / "owner__repo-1" / "task.toml").read_text())
     assert task.agent.network_mode == NetworkMode.NO_NETWORK
@@ -570,7 +572,7 @@ def test_the_lane_checks_are_made_on_the_rebench_lane(tmp_path: Path):
     )
     source = make_rebench(tmp_path / "source", ["owner__repo-1"])
     make_rebench(source, ["owner__repo-2"], toml)
-    built = lanes.build_rebench(source, tmp_path / "lanes")
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
     read = lanes.read_tasks(sorted(built.iterdir()))
     peer_review = arm(tmp_path, TOP + '[arms.peer-review]\nharness = "h"\nmax_seconds = 1800\n')
 
@@ -604,18 +606,18 @@ def test_check_buildable_refuses_what_a_build_would_and_changes_nothing(
     before = sorted(str(path) for path in tmp_path.rglob("*"))
 
     with pytest.raises(LaneError, match=re.escape(str(named))):
-        lanes.check_buildable(source, tmp_path / "lanes", check)
+        lanes.check_buildable(lanes.REBENCH, source, tmp_path / "lanes", check)
     with pytest.raises(LaneError, match=re.escape(str(named))):
-        lanes.build_rebench(source, tmp_path / "lanes", check)
+        lanes.build(lanes.REBENCH, source, tmp_path / "lanes", check)
     assert sorted(str(path) for path in tmp_path.rglob("*")) == before
 
 
 def test_check_buildable_passes_a_lane_a_build_would_replace(tmp_path: Path):
     source = make_rebench(tmp_path / "source", ["owner__repo-1"])
-    lanes.build_rebench(source, tmp_path / "lanes")
+    lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
     (tmp_path / "lanes" / "rebench" / "stray.txt").write_text("left by hand\n")
 
-    lanes.check_buildable(source, tmp_path / "lanes")
+    lanes.check_buildable(lanes.REBENCH, source, tmp_path / "lanes")
 
     assert (tmp_path / "lanes" / "rebench" / "stray.txt").exists()
 
@@ -807,7 +809,7 @@ def test_a_task_directory_that_is_a_link_counts_as_the_task_it_names(tmp_path: P
     (tmp_path / "elsewhere" / "owner__repo-1" / "instruction.md").write_text("Changed.\n")
 
     assert lanes.digest(linked) != lanes.digest(real)
-    built = lanes.build_rebench(linked, tmp_path / "lanes") / "owner__repo-1"
+    built = lanes.build(lanes.REBENCH, linked, tmp_path / "lanes") / "owner__repo-1"
     assert (built / "instruction.md").read_text() == "Changed.\n"
 
 
@@ -860,8 +862,249 @@ def test_building_the_lane_leaves_the_downloads_digest_as_it_was(tmp_path: Path)
     source = make_rebench(tmp_path / "download", ["owner__repo-1", "owner__repo-2"])
     before = lanes.digest(source)
 
-    lane = lanes.build_rebench(source, tmp_path / "lanes")
-    lanes.build_rebench(source, tmp_path / "lanes")
+    lane = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
+    lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
     assert lanes.digest(source) == before
     assert lanes.digest(lane) != before, "the lane's task.toml files differ from the download's"
+
+
+# The senior lane
+
+# Three tasks of Senior SWE-Bench v2026.06, each with tests/test.sh as the
+# download holds it, its task.toml with stand-ins for the narrative that
+# describes the fix, and every other file a stand-in:
+# - paperless-ngx-perf-workflow-queries, an investigate task, graded by tests;
+# - harbor-add-agent-file-retention, a design task with tests, whose agent
+#   timeout is 14400 seconds;
+# - prefect-feat-dbt-per-node-hardening, a design task with no tests.
+SENIOR_TASKS = Path(__file__).resolve().parent / "senior_tasks"
+INVESTIGATE = "paperless-ngx-perf-workflow-queries"
+DESIGN = "harbor-add-agent-file-retention"
+NO_TESTS = "prefect-feat-dbt-per-node-hardening"
+LITELLM = b"litellm>=1.0,<2.0"
+PINNED = b"litellm>=1.0,<1.106"
+
+
+def make_senior(root: Path) -> Path:
+    """A download holding the three tasks, beside a file and a directory that are not tasks."""
+    shutil.copytree(SENIOR_TASKS, root)
+    (root / "README.md").write_text("# senior-swe-bench-v2026.06\n")
+    (root / "notes").mkdir()
+    (root / "notes" / "todo.md").write_text("not a task\n")
+    return root
+
+
+def every_file(task: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(task)): path.read_bytes()
+        for path in sorted(task.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_the_senior_fixtures_have_the_shapes_they_stand_for():
+    shared = (SENIOR_TASKS / INVESTIGATE / "tests" / "test.sh").read_bytes()
+    assert shared.splitlines().count(LITELLM) == 1
+    for name in (DESIGN, NO_TESTS):
+        assert (SENIOR_TASKS / name / "tests" / "test.sh").read_bytes() == shared, name
+    assert (SENIOR_TASKS / INVESTIGATE / "tests" / "verify").is_dir()
+    assert not (SENIOR_TASKS / INVESTIGATE / "tests" / "validate").exists()
+    assert (SENIOR_TASKS / DESIGN / "tests" / "validate").is_dir()
+    assert (SENIOR_TASKS / DESIGN / "tests" / "verify").is_dir()
+    assert (SENIOR_TASKS / NO_TESTS / "tests" / "validate").is_dir()
+    assert not (SENIOR_TASKS / NO_TESTS / "tests" / "verify").exists()
+
+
+def test_the_senior_lane_holds_a_copy_of_each_task_and_nothing_else(tmp_path: Path):
+    source = make_senior(tmp_path / "senior-swe-bench-v2026.06")
+
+    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes")
+
+    assert built == tmp_path / "lanes" / "senior"
+    assert sorted(entry.name for entry in built.iterdir()) == sorted([INVESTIGATE, DESIGN, NO_TESTS])
+    assert not any((built / name).is_symlink() for name in (INVESTIGATE, DESIGN, NO_TESTS))
+
+
+@pytest.mark.parametrize("name", [INVESTIGATE, DESIGN, NO_TESTS])
+def test_each_senior_copy_differs_from_its_task_in_the_litellm_line_of_test_sh_alone(
+    tmp_path: Path, name: str
+):
+    source = make_senior(tmp_path / "source")
+
+    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / name
+
+    original, copied = every_file(source / name), every_file(built)
+    assert copied.keys() == original.keys()
+    assert [path for path in original if copied[path] != original[path]] == ["tests/test.sh"]
+    before = original["tests/test.sh"].splitlines(keepends=True)
+    after = copied["tests/test.sh"].splitlines(keepends=True)
+    assert len(after) == len(before)
+    changed = [(old, new) for old, new in zip(before, after) if old != new]
+    assert changed == [(LITELLM + b"\n", PINNED + b"\n")]
+
+
+def test_a_senior_copy_keeps_its_modes_and_is_rebuilt_over_a_read_only_tests_directory(
+    tmp_path: Path,
+):
+    source = make_senior(tmp_path / "source")
+    tests = source / INVESTIGATE / "tests"
+    (tests / "test.sh").chmod(0o555)
+    tests.chmod(0o555)
+    try:
+        lanes.build(lanes.SENIOR, source, tmp_path / "lanes")
+        built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / INVESTIGATE
+
+        for path in ("tests", "tests/test.sh", "solution/solve.sh"):
+            assert oct((built / path).stat().st_mode) == oct(
+                (source / INVESTIGATE / path).stat().st_mode
+            ), path
+        assert PINNED in (built / "tests" / "test.sh").read_bytes().splitlines()
+    finally:
+        # Left read-only, they would stop pytest removing tmp_path.
+        for directory in tmp_path.rglob("*"):
+            if directory.is_dir():
+                directory.chmod(0o755)
+
+
+def test_a_line_that_names_litellm_otherwise_is_left_as_it_is(tmp_path: Path):
+    source = make_senior(tmp_path / "source")
+    test_sh = source / INVESTIGATE / "tests" / "test.sh"
+    extra = [b"# litellm>=1.0,<2.0 once broke the judges\n", b"  litellm>=1.0,<2.0\n"]
+    test_sh.write_bytes(b"".join(extra) + test_sh.read_bytes())
+
+    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / INVESTIGATE
+
+    copied = (built / "tests" / "test.sh").read_bytes().splitlines(keepends=True)
+    assert copied[:2] == extra
+    assert copied.count(PINNED + b"\n") == 1
+
+
+def test_a_test_sh_with_crlf_lines_keeps_them(tmp_path: Path):
+    source = make_senior(tmp_path / "source")
+    test_sh = source / INVESTIGATE / "tests" / "test.sh"
+    test_sh.write_bytes(test_sh.read_bytes().replace(b"\n", b"\r\n"))
+
+    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / INVESTIGATE
+
+    assert (built / "tests" / "test.sh").read_bytes() == test_sh.read_bytes().replace(
+        LITELLM + b"\r\n", PINNED + b"\r\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "rewrite",
+    [
+        lambda text: text.replace(LITELLM + b"\n", b""),
+        lambda text: text.replace(LITELLM, PINNED),
+        lambda text: text.replace(LITELLM, LITELLM + b" "),
+        lambda text: text.replace(LITELLM, b"litellm>=1.0,<3.0"),
+        lambda text: text.replace(LITELLM + b"\n", (LITELLM + b"\n") * 2),
+        None,
+    ],
+    ids=["no-line", "already-pinned", "trailing-space", "other-range", "twice", "no-test-sh"],
+)
+def test_a_test_sh_without_the_one_litellm_line_is_refused_naming_it_and_changes_nothing(
+    tmp_path: Path, rewrite
+):
+    source = make_senior(tmp_path / "source")
+    earlier = lanes.build(lanes.SENIOR, source, tmp_path / "lanes")
+    test_sh = source / DESIGN / "tests" / "test.sh"
+    if rewrite is None:
+        test_sh.unlink()
+    else:
+        test_sh.write_bytes(rewrite(test_sh.read_bytes()))
+    before = {str(path): path.read_bytes() for path in earlier.rglob("*") if path.is_file()}
+
+    with pytest.raises(LaneError) as error:
+        lanes.check_buildable(lanes.SENIOR, source, tmp_path / "lanes")
+    with pytest.raises(LaneError):
+        lanes.build(lanes.SENIOR, source, tmp_path / "lanes")
+
+    assert str(error.value).startswith(f"{test_sh}: ")
+    assert "pin litellm" in str(error.value)
+    assert {str(path): path.read_bytes() for path in earlier.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("absolute", [True, False], ids=["absolute", "relative"])
+def test_a_tests_directory_that_is_a_link_is_refused_and_the_download_left_alone(
+    tmp_path: Path, absolute: bool
+):
+    source = make_senior(tmp_path / "source")
+    earlier = lanes.build(lanes.SENIOR, source, tmp_path / "lanes")
+    tests = source / DESIGN / "tests"
+    shutil.move(tests, source / DESIGN / "real-tests")
+    tests.symlink_to(source / DESIGN / "real-tests" if absolute else "real-tests")
+    downloaded = every_file(source)
+    built = every_file(earlier)
+
+    with pytest.raises(LaneError) as error:
+        lanes.build(lanes.SENIOR, source, tmp_path / "lanes")
+
+    assert str(error.value).startswith(f"{tests}: ")
+    assert every_file(source) == downloaded
+    assert every_file(earlier) == built
+
+
+def test_the_senior_check_lane_holds_only_the_first_task_by_name(tmp_path: Path):
+    source = make_senior(tmp_path / "source")
+
+    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes", check=True)
+
+    assert built == tmp_path / "lanes" / "senior-check"
+    assert [entry.name for entry in built.iterdir()] == [DESIGN]
+    assert PINNED in (built / DESIGN / "tests" / "test.sh").read_bytes().splitlines()
+    assert not (tmp_path / "lanes" / "senior").exists()
+
+
+def test_the_senior_lane_takes_every_task_of_its_download(tmp_path: Path):
+    source = make_senior(tmp_path / "source")
+    # Named as a task the rebench lane leaves out, which the senior lane must not.
+    shutil.copytree(source / INVESTIGATE, source / UNGRADEABLE[0])
+
+    assert [task.name for task in lanes.lane_tasks(lanes.SENIOR, source)] == sorted(
+        [INVESTIGATE, DESIGN, NO_TESTS, UNGRADEABLE[0]]
+    )
+
+
+def test_a_rebench_build_leaves_its_test_sh_unpinned(tmp_path: Path):
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"])
+    (source / "owner__repo-1" / "tests" / "test.sh").write_bytes(LITELLM + b"\n")
+
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
+
+    assert (built / "owner__repo-1" / "tests" / "test.sh").read_bytes() == LITELLM + b"\n"
+
+
+def test_harbor_reads_a_senior_copy_with_its_own_agent_allowlist(tmp_path: Path):
+    source = make_senior(tmp_path / "source")
+
+    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes")
+
+    for name in (INVESTIGATE, DESIGN, NO_TESTS):
+        toml = (built / name / "task.toml").read_text()
+        assert toml == (source / name / "task.toml").read_text()
+        task = TaskConfig.model_validate_toml(toml)
+        assert task.agent.network_mode == NetworkMode.ALLOWLIST
+        assert "pypi.org" in task.agent.allowed_hosts
+
+
+def test_the_lane_checks_read_a_senior_tasks_memory_as_harbor_does(tmp_path: Path):
+    source = make_senior(tmp_path / "source")
+    read = lanes.read_tasks(lanes.lane_tasks(lanes.SENIOR, source))
+
+    # 4 CPUs and 8G in the no-test task, 2 and 4G in the design task, 2 and 8G in the other.
+    assert lanes.needs(read) == (4, 8192)
+    assert lanes.needs({task: read[task] for task in read if task.name == DESIGN}) == (2, 4096)
+
+
+@pytest.mark.parametrize("memory", ['"8 gigabytes"', "8"])
+def test_a_memory_harbor_cannot_read_is_an_error_naming_the_task(tmp_path: Path, memory: str):
+    source = make_senior(tmp_path / "source")
+    toml = source / DESIGN / "task.toml"
+    toml.write_text(toml.read_text().replace('memory = "4G"', f"memory = {memory}"))
+
+    with pytest.raises(LaneError) as error:
+        lanes.needs(lanes.read_tasks([source / DESIGN]))
+
+    assert str(error.value).startswith(f"{toml}: [environment] memory is ")

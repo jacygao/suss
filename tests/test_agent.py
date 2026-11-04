@@ -219,9 +219,9 @@ def test_the_record_has_exactly_the_specs_fields_with_their_values(
 
 
 def test_the_graders_digest_is_the_downloads_and_not_the_lanes(local_environment, trial):
-    lane = lanes.build_rebench(trial.download, trial.host / "lanes")
+    lane = lanes.build(lanes.REBENCH, trial.download, trial.host / "lanes")
     first = trial.run(local_environment)["grader"]["digest"]
-    lanes.build_rebench(trial.download, trial.host / "lanes")
+    lanes.build(lanes.REBENCH, trial.download, trial.host / "lanes")
 
     second = trial.run(local_environment)["grader"]["digest"]
 
@@ -289,17 +289,26 @@ def test_a_run_past_max_seconds_is_timed_out_and_its_change_is_captured(
     assert_patch_carries_the_known_change(trial, tmp_path)
 
 
-def test_a_lanes_max_seconds_stops_a_run_on_that_lane(
-    local_environment, trial, monkeypatch
-):
-    monkeypatch.setattr(lanes, "LANES", ("rebench", "senior"))
+def test_a_lanes_max_seconds_stops_a_run_on_that_lane(local_environment, trial):
     toml = trial.config.read_text()
-    trial.config.write_text(toml.replace("[arms.fake]", "[lanes.senior]\nmax_seconds = 1\n\n[arms.fake]"))
+    trial.config.write_text(toml.replace("[arms.fake]", "[lanes.rebench]\nmax_seconds = 1\n\n[arms.fake]"))
     trial.then("run", "sleep 30")
 
-    record = trial.run(local_environment, trial.agent(lane="senior"))
+    record = trial.run(local_environment, trial.agent(lane="rebench"))
 
     assert record["status"] == "timed-out"
+
+
+def test_a_senior_trial_fails_before_a_sandbox_starts_rather_than_record_rebenchs_grader(trial):
+    toml = trial.config.read_text()
+    trial.config.write_text('senior_swe_bench = "tasks/swe-rebench-07-2026"\n' + toml)
+
+    with pytest.raises(lanes.LaneError) as raised:
+        trial.agent(lane="senior")
+
+    assert str(raised.value) == (
+        "suss cannot yet name the grader of a trial on senior, so it runs none there"
+    )
 
 
 def test_a_run_that_raises_still_captures_the_patch(local_environment, trial, monkeypatch):

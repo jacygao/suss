@@ -16,13 +16,9 @@ from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
-from suss import config
+from suss import config, lanes
 
 REGRADE = "-regrade"
-
-# The one lane whose regrades carry the judges' scores, and whose verifier
-# writes verifier_results.json in place of report.json.
-SENIOR = "senior"
 
 # The keys of parsed_counts in a rebench verifier's report.
 TEST_OUTCOMES = ("PASSED", "FAILED", "SKIPPED", "ERROR")
@@ -113,7 +109,7 @@ def _trial(lane: str, job: str, task: str, trial: Path, regrade: Path | None) ->
         regrade_refused=applied is True and not _applied_whole(replay),
         regrade_raised=raised,
         regrade_tested=regrade is not None
-        and (_senior_tested(regrade) if lane == SENIOR else _tested(regrade)),
+        and (_senior_tested(regrade) if lane == lanes.SENIOR else _tested(regrade)),
         invalid=regrade is not None and _exception(regrade) == "RewardFileEmptyError",
         path=trial,
         rewards=_rewards(regrade) if regrade else None,
@@ -408,7 +404,7 @@ def report(directory: Path, lane: str, arms: Sequence[str]) -> str:
         for trial in trials[arm]
         if trial.invalid and trial.task in shared
     ]
-    if lane != SENIOR:
+    if lane != lanes.SENIOR:
         return render(shares, differences, untested, invalid)
     means = {arm: _means(kept[arm]) for arm in arms}
     unjudged = [
