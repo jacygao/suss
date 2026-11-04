@@ -517,8 +517,10 @@ def _graders(one, other) -> tuple[str, str]:
     """
     The two graders as a person reads them, `<dataset> (<first 8 of digest>)`.
 
-    Graders that would read the same that way, or that are not a dataset and a
-    digest, print in full.
+    Graders with the same fields, where those are more than a dataset and a
+    digest, print only the fields they differ in, as `<field> <JSON value>`.
+    Any others print in full when the short form would read the same or does
+    not fit them.
     """
     def short(grader) -> str | None:
         if isinstance(grader, dict) and grader.keys() == {"dataset", "digest"}:
@@ -527,9 +529,20 @@ def _graders(one, other) -> tuple[str, str]:
         return None
 
     named = short(one), short(other)
-    if None in named or named[0] == named[1]:
-        return json.dumps(one, sort_keys=True), json.dumps(other, sort_keys=True)
-    return named
+    if None not in named and named[0] != named[1]:
+        return named
+    if (
+        isinstance(one, dict)
+        and isinstance(other, dict)
+        and one.keys() == other.keys() != {"dataset", "digest"}
+    ):
+        fields = [field for field in one if one[field] != other[field]]
+        first, second = (
+            " and ".join(f"{field} {json.dumps(grader[field])}" for field in fields)
+            for grader in (one, other)
+        )
+        return first, second
+    return json.dumps(one, sort_keys=True), json.dumps(other, sort_keys=True)
 
 
 def _outcomes(trials: Sequence[Trial]) -> dict[str, list[bool]]:

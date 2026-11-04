@@ -12,7 +12,7 @@ from harbor.models.trial.result import ExceptionInfo
 from harbor.trial.errors import VerifierTimeoutError
 from harbor.verifier.verifier import RewardFileEmptyError
 
-from suss import cli, compare, replay
+from suss import agent, cli, compare, config, replay
 from suss.compare import Difference, Trial, read_trials, resolved_difference
 
 LANE = "pro-go"
@@ -1470,7 +1470,20 @@ def judged(rubric=None, practice=None, relative=None, bloat=None, base=JUDGED) -
     return base | {key: value for key, value in given.items() if value is not None}
 
 
-def write_senior_arm(root: Path, arm: str, tasks: dict[str, list[tuple[dict, dict | None]]]) -> None:
+SENIOR_GRADER = {
+    "dataset": "senior-swe-bench-v2026.06",
+    "digest": "0e0174e2" + "0" * 56,
+    "litellm": "litellm>=1.0,<1.106",
+    "judge_model": "anthropic/claude-sonnet-4-6",
+    "classifier_model": "anthropic/claude-haiku-4-5-20251001",
+    "validation_harness": "miniswe",
+    "validation_model": "anthropic/claude-sonnet-4-6",
+}
+
+
+def write_senior_arm(
+    root: Path, arm: str, tasks: dict[str, list[tuple[dict, dict | None]]], grader=SENIOR_GRADER
+) -> None:
     """
     The arm's senior results: each task's trials, the i-th in agent job `S-<i>`.
     Each is its regrade's rewards and judge_output.json, where None writes no
@@ -1479,7 +1492,7 @@ def write_senior_arm(root: Path, arm: str, tasks: dict[str, list[tuple[dict, dic
     for task, trials in tasks.items():
         for i, (rewards, judge_output) in enumerate(trials, start=1):
             job = root / "results" / SENIOR / arm / f"S-{i}"
-            write_agent_trial(job, task, f"agent{i}")
+            write_agent_trial(job, task, f"agent{i}", grader=grader)
             regrade = write_regrade_trial(
                 job.with_name(f"{job.name}{compare.REGRADE}"),
                 task,
@@ -1668,3 +1681,72 @@ def test_a_senior_trial_is_named_from_what_its_verifier_results_json_counts(seni
         "a task with no tests to run records a test result, and an invalid trial "
         "is named only as invalid"
     )
+
+
+@pytest.mark.parametrize("field", list(SENIOR_GRADER))
+def test_senior_arms_whose_graders_differ_in_any_field_are_an_error_naming_it(
+    tmp_path, capsys, field
+):
+    (tmp_path / "suss.toml").write_text(SENIOR_TOML)
+    other = {**SENIOR_GRADER, field: SENIOR_GRADER[field] + "-other"}
+    write_senior_arm(tmp_path, "base", {"s1": [(JUDGED, OK)]})
+    write_senior_arm(tmp_path, "beta", {"s1": [(JUDGED, OK)]}, grader=other)
+
+    code, out, err = run_compare(tmp_path, capsys, SENIOR, "base", "beta")
+
+    assert code != 0
+    assert (out, err) == (
+        "",
+        f"error: trials carry different graders: {field} {json.dumps(SENIOR_GRADER[field])} "
+        f"in results/{SENIOR}/base/S-1, {field} {json.dumps(other[field])} "
+        f"in results/{SENIOR}/beta/S-1\n",
+    )
+
+
+def test_senior_graders_that_differ_in_two_fields_name_both(tmp_path, capsys):
+    (tmp_path / "suss.toml").write_text(SENIOR_TOML)
+    other = {**SENIOR_GRADER, "judge_model": "openai/gpt-5.5", "validation_harness": "claude_code"}
+    write_senior_arm(tmp_path, "base", {"s1": [(JUDGED, OK)]})
+    write_senior_arm(tmp_path, "beta", {"s1": [(JUDGED, OK)]}, grader=other)
+
+    code, out, err = run_compare(tmp_path, capsys, SENIOR, "base", "beta")
+
+    assert code != 0
+    assert (out, err) == (
+        "",
+        "error: trials carry different graders: "
+        'judge_model "anthropic/claude-sonnet-4-6" and validation_harness "miniswe" '
+        f"in results/{SENIOR}/base/S-1, "
+        'judge_model "openai/gpt-5.5" and validation_harness "claude_code" '
+        f"in results/{SENIOR}/beta/S-1\n",
+    )
+
+
+# A suss.json SussAgent wrote before senior trials had a grader, over a download
+# holding one task, owner__repo-1, whose task.toml is OLD_TASK_TOML.
+OLD_REBENCH_RECORD = Path(__file__).resolve().parent / "old_records" / "rebench-suss.json"
+OLD_TASK_TOML = '[environment]\nnetwork_mode = "public"\n'
+
+
+def test_a_rebench_trial_recorded_before_senior_graders_compares_with_one_recorded_now(
+    tmp_path, capsys
+):
+    download = tmp_path / "tasks" / "swe-rebench-07-2026"
+    (download / "owner__repo-1").mkdir(parents=True)
+    (download / "owner__repo-1" / "task.toml").write_text(OLD_TASK_TOML)
+    (tmp_path / "suss.toml").write_text(
+        'swe_rebench = "tasks/swe-rebench-07-2026"\nenvironment = "docker"\nk = 1\n'
+        'concurrency = 1\n\n[arms.base]\nharness = "."\n\n'
+        '[arms.beta]\nharness = "."\nbaseline = "base"\n'
+    )
+    settings = config.load(tmp_path / "suss.toml", "beta", "rebench")
+    jobs = tmp_path / "results" / "rebench"
+    old = write_agent_trial(jobs / "base" / "S-1", "t1", "agent1")
+    shutil.copy(OLD_REBENCH_RECORD, old / "agent" / "suss.json")
+    write_agent_trial(jobs / "beta" / "S-1", "t1", "agent1", grader=agent.grader(settings, "rebench"))
+    for arm in ("base", "beta"):
+        write_regrade_trial(jobs / arm / f"S-1{compare.REGRADE}", "t1", "regrd1")
+
+    code, out, err = run_compare(tmp_path, capsys, "rebench", "base", "beta")
+
+    assert (code, err) == (0, ""), "a rebench trial recorded before senior graders no longer compares"

@@ -30,6 +30,8 @@ from suss.harness import SandboxPaths
 from suss.workspace import WorkspaceError
 
 FAKE_ADAPTER = Path(__file__).resolve().parent / "fake_adapter"
+SENIOR_TASKS = Path(__file__).resolve().parent / "senior_tasks"
+OLD_REBENCH_RECORD = Path(__file__).resolve().parent / "old_records" / "rebench-suss.json"
 SPEC = Path(__file__).resolve().parent.parent / "docs" / "specs" / "suss-spec.md"
 
 # Bytes a shell or an encoding would change: non-ASCII, quoting, expansion,
@@ -299,16 +301,129 @@ def test_a_lanes_max_seconds_stops_a_run_on_that_lane(local_environment, trial):
     assert record["status"] == "timed-out"
 
 
-def test_a_senior_trial_fails_before_a_sandbox_starts_rather_than_record_rebenchs_grader(trial):
-    toml = trial.config.read_text()
-    trial.config.write_text('senior_swe_bench = "tasks/swe-rebench-07-2026"\n' + toml)
-
+def test_a_trial_on_a_lane_with_no_grader_fails_before_a_sandbox_starts(trial):
     with pytest.raises(lanes.LaneError) as raised:
-        trial.agent(lane="senior")
+        trial.agent(lane="pro-go")
 
     assert str(raised.value) == (
-        "suss cannot yet name the grader of a trial on senior, so it runs none there"
+        "suss cannot name the grader of a trial on pro-go, so it runs none there"
     )
+
+
+def test_a_rebench_grader_is_byte_for_byte_what_suss_wrote_before_senior_had_one(
+    local_environment, trial
+):
+    # Written by SussAgent before senior trials had a grader, over the trial fixture's download.
+    old = json.loads(OLD_REBENCH_RECORD.read_text())
+
+    record = trial.run(local_environment)
+
+    assert json.dumps(record["grader"], indent=2) == json.dumps(old["grader"], indent=2)
+
+
+SENIOR_DOWNLOAD = "tasks/senior/senior-swe-bench-v2026.06"
+DEFAULT_GRADER_MODELS = {
+    "judge_model": "anthropic/claude-sonnet-4-6",
+    "classifier_model": "anthropic/claude-haiku-4-5-20251001",
+    "validation_harness": "miniswe",
+    "validation_model": "anthropic/claude-sonnet-4-6",
+}
+
+
+def on_senior(trial: Trial, env: str = "") -> Path:
+    """Give the trial's host a senior download, named in suss.toml, and `env` as its .env."""
+    download = trial.host / SENIOR_DOWNLOAD
+    shutil.copytree(SENIOR_TASKS, download)
+    trial.config.write_text(f'senior_swe_bench = "{SENIOR_DOWNLOAD}"\n' + trial.config.read_text())
+    (trial.host / ".env").write_text(env)
+    return download
+
+
+def test_a_senior_trial_records_its_dataset_digest_litellm_pin_and_default_models(
+    local_environment, trial
+):
+    download = on_senior(trial, "ANTHROPIC_API_KEY=sk-test\n")
+
+    record = trial.run(local_environment, trial.agent(lane="senior"))
+
+    assert record["grader"] == {
+        "dataset": "senior-swe-bench-v2026.06",
+        "digest": lanes.digest(download),
+        "litellm": "litellm>=1.0,<1.106",
+        **DEFAULT_GRADER_MODELS,
+    }
+
+
+def test_a_senior_grader_has_the_fields_of_the_specs_example(local_environment, trial):
+    on_senior(trial)
+    blocks = re.findall(r"```json\n(.*?)```", SPEC.read_text(), re.DOTALL)
+    examples = [block for block in blocks if '"litellm"' in block]
+    assert len(examples) == 1, f"expected one example senior grader in {SPEC}, found {len(examples)}"
+
+    record = trial.run(local_environment, trial.agent(lane="senior"))
+
+    assert list(record["grader"]) == list(json.loads(examples[0].replace("…", ""))["grader"])
+
+
+@pytest.mark.parametrize(
+    "env, chosen",
+    [
+        ("SSB_OVERRIDE_ALL_JUDGE_MODEL=openai/gpt-5.5\n", {"judge_model": "openai/gpt-5.5"}),
+        (
+            "SSB_OVERRIDE_CLASSIFIER_MODEL=openai/gpt-5.5-mini\n",
+            {"classifier_model": "openai/gpt-5.5-mini"},
+        ),
+        ("SSB_OVERRIDE_VA_HARNESS=claude_code\n", {"validation_harness": "claude_code"}),
+        ("FORCE_VA_HARNESS=claude_code\n", {"validation_harness": "claude_code"}),
+        ("SSB_OVERRIDE_VA_MODEL=openai/gpt-5.5\n", {"validation_model": "openai/gpt-5.5"}),
+        ("FORCE_VA_MODEL=openai/gpt-5.5\n", {"validation_model": "openai/gpt-5.5"}),
+        (
+            "FORCE_VA_MODEL=openai/gpt-5.4\nSSB_OVERRIDE_VA_MODEL=openai/gpt-5.5\n",
+            {"validation_model": "openai/gpt-5.5"},
+        ),
+        # An empty value is not passed to the regrade, so the verifier's default applies.
+        ("SSB_OVERRIDE_ALL_JUDGE_MODEL=\nSSB_OVERRIDE_VA_HARNESS=\n", {}),
+        ("SSB_OVERRIDE_VA_MODEL=\nFORCE_VA_MODEL=openai/gpt-5.4\n", {"validation_model": "openai/gpt-5.4"}),
+    ],
+)
+def test_a_senior_grader_names_the_models_the_env_file_gives_the_regrade(
+    local_environment, trial, env, chosen
+):
+    on_senior(trial, env)
+
+    record = trial.run(local_environment, trial.agent(lane="senior"))
+
+    models = {key: record["grader"][key] for key in DEFAULT_GRADER_MODELS}
+    assert models == DEFAULT_GRADER_MODELS | chosen
+
+
+def test_a_setting_the_tasks_do_not_pass_their_verifier_is_not_in_the_grader(
+    local_environment, trial
+):
+    download = on_senior(trial, "SSB_OVERRIDE_ALL_JUDGE_MODEL=openai/gpt-5.5\n")
+    for toml in download.glob("*/task.toml"):
+        text = toml.read_text()
+        line = 'SSB_OVERRIDE_ALL_JUDGE_MODEL = "${SSB_OVERRIDE_ALL_JUDGE_MODEL:-}"\n'
+        assert line in text
+        toml.write_text(text.replace(line, ""))
+
+    record = trial.run(local_environment, trial.agent(lane="senior"))
+
+    assert record["grader"]["judge_model"] == "anthropic/claude-sonnet-4-6", (
+        "the regrade's Harbor is never given a setting no task reads, so the verifier's default applies"
+    )
+
+
+def test_a_senior_digest_is_the_senior_downloads_and_follows_it(local_environment, trial):
+    download = on_senior(trial)
+    first = trial.run(local_environment, trial.agent(lane="senior"))["grader"]["digest"]
+    (download / "harbor-add-agent-file-retention" / "instruction.md").write_text("Changed.\n")
+
+    second = trial.run(local_environment, trial.agent(lane="senior"))["grader"]["digest"]
+
+    assert first != second
+    assert second == lanes.digest(download)
+    assert lanes.digest(trial.download) not in (first, second)
 
 
 def test_a_run_that_raises_still_captures_the_patch(local_environment, trial, monkeypatch):

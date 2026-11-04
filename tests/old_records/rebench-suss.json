@@ -1,0 +1,25 @@
+{
+  "arm": "fake",
+  "harness": {
+    "name": "fake",
+    "version": "0.0.1"
+  },
+  "params": {
+    "model": "fake-model",
+    "effort": "high",
+    "rounds": 3,
+    "note": "na\u00efve \u2713"
+  },
+  "grader": {
+    "dataset": "swe-rebench-07-2026",
+    "digest": "0f2435e60647df960105e621412473ffafa16770e209932a2c84cc6c8afaa08c"
+  },
+  "base": "ec797688b92d0bb7dc722382a0143355b7b228ac",
+  "status": "ok",
+  "exit_codes": {
+    "install": 0,
+    "run": 0
+  },
+  "run_seconds": 0.3747514159995262,
+  "patch_bytes": 134
+}
