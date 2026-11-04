@@ -10,6 +10,7 @@ import pytest
 from harbor.models.agent.context import AgentContext
 from harbor.models.trial.result import ExceptionInfo
 from harbor.trial.errors import VerifierTimeoutError
+from harbor.verifier.verifier import RewardFileEmptyError
 
 from suss import cli, compare, replay
 from suss.compare import Difference, Trial, read_trials, resolved_difference
@@ -393,6 +394,42 @@ def test_a_regrade_whose_verifier_timed_out_after_replay_json_applied_its_patch(
     [trial] = read_trials(tmp_path, LANE, ARM)
 
     assert (trial.resolved, trial.regrade_applied) == (False, True)
+
+
+def regrade_wrote_an_empty_reward(trial: Path) -> None:
+    """
+    Make the regrade's trial one whose verifier judged its trial invalid, as a
+    Senior SWE-Bench verifier leaves it: an empty reward.txt, no report.json,
+    and Harbor's RewardFileEmptyError in result.json.
+    """
+    (trial / "verifier").mkdir(exist_ok=True)
+    (trial / "verifier" / "reward.txt").write_text("")
+    (trial / "verifier" / "report.json").unlink(missing_ok=True)
+    record_exception(trial, RewardFileEmptyError(f"Reward file is empty at {trial}/verifier/reward.txt"))
+
+
+@pytest.mark.parametrize(
+    "error, invalid",
+    [
+        (None, False),
+        (RewardFileEmptyError("Reward file is empty at verifier/reward.txt"), True),
+        (VerifierTimeoutError("Verifier execution timed out after 3000.0 seconds"), False),
+        (RuntimeError("Docker container exited with code 137"), False),
+    ],
+    ids=["graded", "empty-reward", "verifier-timed-out", "verifier-crashed"],
+)
+def test_only_a_regrade_that_wrote_an_empty_reward_makes_its_trial_invalid(
+    tmp_path, arm, error, invalid
+):
+    write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
+    regrade = write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK", UNRESOLVED)
+    if error is not None:
+        record_exception(regrade, error)
+
+    [trial] = read_trials(tmp_path, LANE, ARM)
+
+    # Each leaves verifier_result null, so only the exception's type tells them apart.
+    assert (trial.invalid, trial.resolved) == (invalid, False)
 
 
 # What applying a patch printed in a real regrade, whose patch skipped a hunk
@@ -1209,3 +1246,82 @@ def test_a_trial_on_a_task_not_every_arm_has_is_not_named(results, capsys):
 
     assert (code, err) == (0, "")
     assert NAMED not in out
+
+
+INVALID = "These trials' regrades judged them invalid, so neither table counts them:\n"
+
+
+def without(root: Path, elsewhere: Path, trials: list[tuple[str, str, int]]) -> Path:
+    """
+    A copy of the results in `elsewhere`, with write_arm's i-th trial of each
+    (arm, task) and its regrade gone.
+    """
+    copy = elsewhere / "copy"
+    shutil.copytree(root, copy)
+    for arm, task, i in trials:
+        shutil.rmtree(trial_directory(copy / "results" / LANE / arm / f"S-{i}", task, f"agent{i}"))
+        shutil.rmtree(regrade_of(copy, arm, task, i))
+    return copy
+
+
+def test_an_invalid_trial_counts_in_neither_table_and_is_named(results, tmp_path_factory, capsys):
+    report_records_no_test_result(results, "base", "t4", 2)
+    # beta's first trial of t2 resolved, so leaving it out moves every number of beta's.
+    gone = without(results, tmp_path_factory.mktemp("gone"), [("beta", "t2", 1)])
+    _, expected, _ = run_compare(gone, capsys, LANE, "base", "beta")
+    regrade_wrote_an_empty_reward(regrade_of(results, "beta", "t2", 1))
+
+    code, out, err = run_compare(results, capsys, LANE, "base", "beta")
+
+    assert (code, err) == (0, "")
+    assert "beta      12       58%" in expected
+    assert out == expected + "\n" + INVALID + "  beta  S-1  t2\n", (
+        "an invalid trial must leave every number in both tables as if it were not there, "
+        "and be named once, as invalid and not as recording no test result"
+    )
+
+
+def test_a_task_whose_every_trial_in_one_arm_is_invalid_leaves_the_comparison(
+    results, tmp_path_factory, capsys
+):
+    gone = without(
+        results,
+        tmp_path_factory.mktemp("gone"),
+        [(arm, "t1", i) for arm in ("base", "beta") for i in (1, 2)],
+    )
+    _, expected, _ = run_compare(gone, capsys, LANE, "base", "beta")
+    for i in (1, 2):
+        regrade_wrote_an_empty_reward(regrade_of(results, "beta", "t1", i))
+
+    code, out, err = run_compare(results, capsys, LANE, "base", "beta")
+
+    assert (code, err) == (0, "")
+    assert "base      11" in expected
+    assert out == expected + "\n" + INVALID + "  beta  S-1  t1\n  beta  S-2  t1\n", (
+        "base's valid trials of t1 must count nowhere, since beta has none to compare them with"
+    )
+
+
+def test_an_arm_whose_every_trial_is_invalid_is_an_error(results, capsys):
+    for task, k in {"t1": 2, "t2": 4, "t3": 2, "t4": 4, "t6": 1}.items():
+        for i in range(1, k + 1):
+            regrade_wrote_an_empty_reward(regrade_of(results, "beta", task, i))
+
+    code, out, err = run_compare(results, capsys, LANE, "base", "beta")
+
+    assert code != 0
+    assert (out, err) == (
+        "",
+        f"error: every trial of arm beta under results/{LANE}/ is invalid: "
+        "its regrade wrote an empty reward\n",
+    )
+
+
+def test_an_invalid_trial_on_a_task_not_every_arm_has_is_not_named(results, capsys):
+    # t5 is alpha's alone, so it counts in neither table.
+    regrade_wrote_an_empty_reward(regrade_of(results, "alpha", "t5", 1))
+
+    code, out, err = run_compare(results, capsys, LANE, "alpha", "base")
+
+    assert (code, err) == (0, "")
+    assert INVALID not in out

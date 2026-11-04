@@ -537,39 +537,57 @@ under `checks/` never count.
 A trial's result is the reward of its regrade. Suss pairs each trial in an agent
 job, `<stamp>-<i>`, with the trial for the same task in `<stamp>-<i>-regrade`.
 
-It compares the arms over the tasks every one of them has trials for. It prints
-two tables. The first gives each arm's trials and its resolved, failed and
-timed-out shares. The second gives each arm's resolved difference from its
+It compares the arms over the tasks every one of them has a valid trial of. It
+prints two tables. The first gives each arm's trials and its resolved, failed
+and timed-out shares. The second gives each arm's resolved difference from its
 baseline, with an interval. After the tables, it names each trial whose regrade
-recorded no test result, by arm, job and task:
+recorded no test result, then each invalid trial, by arm, job and task:
 
 ```
 These trials' regrades recorded no test result, so their grading may have broken:
   claude-code  20261103T204423Z-2  marimo-team__marimo-9766
+
+These trials' regrades judged them invalid, so neither table counts them:
+  claude-code  20261103T204423Z-1  paperless-ngx-perf-workflow-queries
 ```
 
-- Every trial counts as its regrade graded it, `harness-failed` and `timed-out`
-  ones included.
+- Every valid trial counts as its regrade graded it, `harness-failed` and
+  `timed-out` ones included.
+- A trial is invalid when its regrade's verifier wrote an empty
+  `verifier/reward.txt`, which Harbor records in the regrade trial's
+  `result.json` as an `exception_info` whose `exception_type` is
+  `RewardFileEmptyError`. An invalid trial counts in neither table, as if it
+  had not run. The task's other trials, in every arm, still count. Where every
+  trial of a task in one arm is invalid, that task counts in no arm. The list
+  names the invalid trials of every task each arm has a trial of. An invalid
+  trial is never also named as recording no test result.
 - A regrade records no test result when its trial has no
   `verifier/report.json`, as the verifier of every `rebench` task writes it, or
   when that report's `parsed_counts` counts no test as `PASSED`, `FAILED`,
   `SKIPPED` or `ERROR`. A trial with no regrade trial records none either.
-- A trial whose regrade has no reward counts as unresolved. A trial with no
-  `suss.json`, which a sandbox that never started or a Harbor exception leaves,
-  counts as `harness-failed`.
+- A valid trial whose regrade has no reward counts as unresolved, as when its
+  verifier timed out or crashed. A trial with no `suss.json`, which a sandbox
+  that never started or a Harbor exception leaves, counts as `harness-failed`.
 - `failed` is the share of trials whose status is `harness-failed`, and
   `timed out` the share whose status is `timed-out`.
 - Each arm whose `baseline` is among the arms given gets a row in the second
   table. The bracketed range is a 95% interval from a bootstrap of 10,000
-  resamples, each drawing tasks so that a task's K trials stay together. The
-  same results always print the same interval.
+  resamples, each drawing tasks so that a task's trials stay together. A share
+  is resolved trials over trials, so a task left with fewer valid trials weighs
+  less in that arm. The same results always print the same interval.
 - Shares print as whole percents, and every difference and interval end
   carries a sign.
 
 It exits with an error, and prints nothing else, when:
 
-- An arm it is given has no trials under `results/<lane>/<arm>/`, or is not in
-  `suss.toml`.
+- An arm it is given has no trials under `results/<lane>/<arm>/`, has only
+  invalid ones, or is not in `suss.toml`:
+
+  ```
+  $ suss compare rebench claude-code self-review
+  error: every trial of arm self-review under results/rebench/ is invalid: its
+  regrade wrote an empty reward
+  ```
 - The arms' trials that have a `suss.json` do not all carry the same `grader`.
   A trial with no `suss.json` has no `grader` to compare, and still counts as
   `harness-failed`.
