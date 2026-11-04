@@ -40,8 +40,10 @@ recheck-when: Snorkel publishes a new snapshot or changes a design task's valida
   tripled it. Two no-change regrades ran past their task's own
   `[verifier] timeout_sec`: `posthog-feat-schema-ingestion-block` took 2,905 s
   against 2,400, and `gitea-add-project-column-picker` 1,300 s against 1,200.
-  With the task's own timeout, Harbor would have killed both and recorded them
-  invalid. Four tasks set `va_timeout_sec` above `timeout_sec`:
+  With the task's own timeout, Harbor would have killed both verifiers, and
+  suss would have counted each trial unresolved, as it counts every verifier
+  timeout. That is harmless on no change, but on a good fix it would be a false
+  fail, counted like any other fail. Four tasks set `va_timeout_sec` above `timeout_sec`:
   `firezone-feat-portal-add-recent`, `plausible-feat-shared-dashboard-deeplink`,
   `prefect-feat-dbt-per-node-hardening` and
   `turborepo-feat-add-circular-package`. I recommend the lane run Harbor with
