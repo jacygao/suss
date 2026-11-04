@@ -1,6 +1,7 @@
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import types
@@ -34,12 +35,19 @@ DOCKER_DESKTOP_8GB = "10 8319504384"
 # check runs. One names a docker_image, which suss must still not pull.
 TASKS = ["ArcadeData__arcadedb-4281", "apache__pulsar-25793", "owner__repo-3"]
 IMAGE = ("apache__pulsar-25793", "ghcr.io/x/pulsar:latest")
+# Three tasks of Senior SWE-Bench v2026.06, as test_lanes.py describes them. By
+# code point, the first is harbor-add-agent-file-retention, at 2 CPUs and 4G.
+SENIOR_TASKS = Path(__file__).resolve().parent / "senior_tasks"
+SENIOR_NAMES = sorted(task.name for task in SENIOR_TASKS.iterdir() if task.is_dir())
+LITELLM = b"litellm>=1.0,<2.0"
+PINNED = b"litellm>=1.0,<1.106"
 
 
 @dataclass
 class Project:
     directory: Path
     tasks: Path
+    senior_tasks: Path
     harbor: Path
     docker: Path
     log: Path
@@ -74,11 +82,16 @@ class Project:
         k: str = "2",
         max_seconds: str | None = "2700",
         lane_tables: str = "",
+        downloads: tuple[str, ...] = ("swe_rebench", "senior_swe_bench"),
     ) -> None:
         cap = f"max_seconds = {max_seconds}\n" if max_seconds else ""
+        named = {
+            "swe_rebench": "../tasks/swe-rebench-07-2026",
+            "senior_swe_bench": "../tasks/senior/senior-swe-bench-v2026.06",
+        }
         (self.directory / "suss.toml").write_text(
-            'swe_rebench = "../tasks/swe-rebench-07-2026"\n'
-            f'environment = "{environment}"\n'
+            "".join(f'{key} = "{named[key]}"\n' for key in downloads)
+            + f'environment = "{environment}"\n'
             f"k = {k}\n"
             "concurrency = 4\n"
             f"{cap}\n"
@@ -127,6 +140,8 @@ def project(tmp_path, monkeypatch) -> Project:
     tasks = tmp_path / "evals" / "tasks" / "swe-rebench-07-2026"
     for name in TASKS:
         write_task(tasks, name, image=IMAGE[1] if name == IMAGE[0] else None)
+    senior_tasks = tmp_path / "evals" / "tasks" / "senior" / "senior-swe-bench-v2026.06"
+    shutil.copytree(SENIOR_TASKS, senior_tasks)
 
     directory = tmp_path / "evals" / "project"
     (directory / "adapter").mkdir(parents=True)
@@ -139,6 +154,7 @@ def project(tmp_path, monkeypatch) -> Project:
     created = Project(
         directory=directory,
         tasks=tasks,
+        senior_tasks=senior_tasks,
         harbor=stand_in(STANDINS / "harbor.py", bin_dir / "harbor"),
         docker=stand_in(STANDINS / "docker.py", bin_dir / "docker"),
         log=tmp_path / "log.jsonl",
@@ -601,29 +617,36 @@ def test_the_max_seconds_error_is_printed_as_the_spec_shows(project, capfd):
     assert_nothing_ran(project)
 
 
-@pytest.fixture
-def two_lanes(monkeypatch) -> None:
-    """A second lane beside rebench, built from the same download."""
-    monkeypatch.setattr(lanes, "LANES", ("rebench", "senior"))
+# A .env that gives the senior lane's judges their key.
+JUDGES_KEY = "ANTHROPIC_API_KEY=sk-ant-1\n"
 
 
 # Either lane alone over the timeout, so that a value read once for the run,
-# from the first lane or the last, passes one of them.
-@pytest.mark.parametrize("over", ["rebench", "senior"])
+# from the first lane or the last, passes one of them. A senior check's one
+# task allows 14400 seconds, and is checked against the lane's shortest.
+@pytest.mark.parametrize("over, timeout", [("rebench", 3000), ("senior", 7200)])
 @pytest.mark.parametrize("check", [False, True], ids=["run", "check"])
 def test_each_lane_in_a_run_is_checked_against_its_own_max_seconds(
-    project, capfd, two_lanes, over, check
+    project, capfd, over, timeout, check
 ):
-    project.write_toml(lane_tables=f"[lanes.{over}]\nmax_seconds = 3000\n")
+    write_dotenv(project, JUDGES_KEY)
+    project.write_toml(lane_tables=f"[lanes.{over}]\nmax_seconds = {timeout}\n")
 
     code = project.run("peer-review", "rebench", "senior", *(["--check"] if check else []))
 
     assert code != 0
     assert capfd.readouterr().err == (
-        "error: arm peer-review sets max_seconds = 3000, which must be under the "
-        f"3000-second agent timeout of the tasks in {over}\n"
+        f"error: arm peer-review sets max_seconds = {timeout}, which must be under the "
+        f"{timeout}-second agent timeout of the tasks in {over}\n"
     )
     assert_nothing_ran(project)
+
+
+def test_a_senior_max_seconds_under_its_shortest_timeout_runs(project, capfd):
+    write_dotenv(project, JUDGES_KEY)
+    project.write_toml(lane_tables="[lanes.senior]\nmax_seconds = 7199\n")
+
+    assert project.run("peer-review", "senior") == 0, capfd.readouterr().err
 
 
 def test_an_arms_own_max_seconds_is_checked_in_place_of_its_lanes(project, capfd):
@@ -636,9 +659,10 @@ def test_an_arms_own_max_seconds_is_checked_in_place_of_its_lanes(project, capfd
 
 @pytest.mark.parametrize("check", [False, True], ids=["run", "check"])
 def test_each_lanes_agent_jobs_name_their_lane_to_the_agent(
-    project, capfd, monkeypatch, two_lanes, check
+    project, capfd, monkeypatch, check
 ):
     monkeypatch.setenv("DRY_RUN", "1")
+    write_dotenv(project, JUDGES_KEY)
 
     code = project.run("peer-review", "rebench", "senior", *(["--check"] if check else []))
 
@@ -692,7 +716,7 @@ def test_a_lane_suss_does_not_have_in_suss_toml_is_refused_as_the_spec_shows(
     assert code != 0
     assert err == (
         f"error: {project.directory / 'suss.toml'}: sets [lanes.rebnech], but suss has no lane "
-        "named rebnech; its lanes are rebench\n"
+        "named rebnech; its lanes are rebench, senior\n"
     )
     assert out == ""
     assert_nothing_ran(project)
@@ -716,8 +740,11 @@ def test_a_refused_argument_after_the_separator_is_printed_as_the_spec_shows(pro
         (["peer-review", "rebench", "-x"], "-x"),
         (["peer-review"], "lane"),
         ([], "arm"),
-        (["peer-review", "pro-go"], "no lane named pro-go; the only lane is rebench"),
-        (["peer-review", "rebench", "pro-go"], "no lane named pro-go; the only lane is rebench"),
+        (["peer-review", "pro-go"], "no lane named pro-go; its lanes are rebench, senior"),
+        (
+            ["peer-review", "rebench", "pro-go"],
+            "no lane named pro-go; its lanes are rebench, senior",
+        ),
         (["peer-review", "rebench", "rebench"], "rebench is named twice"),
         (["no-such-arm", "rebench"], "arm no-such-arm is not defined"),
     ],
@@ -1212,11 +1239,8 @@ JUDGE_VARIABLES = (
 
 
 @pytest.fixture
-def senior(project, two_lanes) -> Project:
-    """The download's tasks graded by Senior SWE-Bench's judges, run as the senior lane."""
-    for name in TASKS:
-        with (project.tasks / name / "task.toml").open("a") as toml:
-            toml.write(SENIOR_VERIFIER_ENV)
+def senior(project) -> Project:
+    """The project, whose senior download's tasks are graded by Senior SWE-Bench's judges."""
     return project
 
 
@@ -1317,3 +1341,121 @@ def test_a_rebench_regrade_runs_as_before_whatever_env_holds(project, capfd, mon
     capfd.readouterr()
     project.run("peer-review", "rebench")
     assert not any(line.startswith("#") for line in capfd.readouterr().out.splitlines())
+
+
+# The senior lane
+
+
+def test_a_run_of_both_lanes_builds_each_from_its_own_download(project, capfd):
+    write_dotenv(project, JUDGES_KEY)
+
+    assert project.run("peer-review", "rebench", "senior") == 0, capfd.readouterr().err
+
+    rebench = project.directory / "lanes" / "rebench"
+    senior = project.directory / "lanes" / "senior"
+    assert sorted(task.name for task in rebench.iterdir()) == sorted(TASKS)
+    assert sorted(task.name for task in senior.iterdir()) == SENIOR_NAMES
+    for name in SENIOR_NAMES:
+        lines = (senior / name / "tests" / "test.sh").read_bytes().splitlines()
+        assert PINNED in lines and LITELLM not in lines, name
+    regrades = [
+        (value(record["argv"], "-p"), "-y" in record["argv"], "ANTHROPIC_API_KEY" in record["env"])
+        for record in project.records("harbor")
+        if "suss.replay:ReplayAgent" in record["argv"]
+    ]
+    assert regrades == [("lanes/rebench", False, False)] * 2 + [("lanes/senior", True, True)] * 2
+
+
+def test_a_senior_check_builds_the_check_lane_from_its_first_task(project, capfd):
+    write_dotenv(project, JUDGES_KEY)
+
+    assert project.run("peer-review", "senior", "--check") == 0, capfd.readouterr().err
+
+    check = project.directory / "lanes" / "senior-check"
+    assert [task.name for task in check.iterdir()] == SENIOR_NAMES[:1]
+    assert PINNED in (check / SENIOR_NAMES[0] / "tests" / "test.sh").read_bytes().splitlines()
+    assert {value(record["argv"], "-p") for record in project.records("harbor")} == {
+        "lanes/senior-check"
+    }
+
+
+@pytest.mark.parametrize(
+    "lanes_run, missing",
+    [
+        (["senior"], "senior_swe_bench"),
+        (["rebench", "senior"], "senior_swe_bench"),
+        (["rebench"], "swe_rebench"),
+    ],
+)
+def test_a_lane_whose_download_suss_toml_does_not_name_is_refused_before_anything_runs(
+    project, capfd, lanes_run, missing
+):
+    write_dotenv(project, JUDGES_KEY)
+    others = tuple(key for key in ("swe_rebench", "senior_swe_bench") if key != missing)
+    project.write_toml(downloads=others)
+
+    code = project.run("peer-review", *lanes_run)
+
+    assert code != 0
+    assert capfd.readouterr().err == f"error: {project.directory / 'suss.toml'}: no {missing!r}\n"
+    assert_nothing_ran(project)
+
+
+@pytest.mark.parametrize(
+    "lane, download", [("rebench", "swe_rebench"), ("senior", "senior_swe_bench")]
+)
+def test_a_lane_runs_with_only_its_own_download_named(project, capfd, lane, download):
+    write_dotenv(project, JUDGES_KEY)
+    project.write_toml(downloads=(download,))
+
+    assert project.run("peer-review", lane) == 0, capfd.readouterr().err
+
+
+def test_a_run_of_both_lanes_without_the_judges_key_is_refused_naming_senior(project, capfd):
+    code = project.run("peer-review", "rebench", "senior")
+
+    assert code != 0
+    assert "the verifier of the tasks in senior needs" in capfd.readouterr().err
+    assert_nothing_ran(project)
+
+
+def test_a_rebench_task_that_names_the_judges_setting_needs_no_key(project, capfd):
+    for name in TASKS:
+        with (project.tasks / name / "task.toml").open("a") as toml:
+            toml.write(SENIOR_VERIFIER_ENV)
+
+    assert project.run("peer-review", "rebench") == 0, capfd.readouterr().err
+
+
+@pytest.mark.parametrize("dry_run", [False, True], ids=["run", "dry-run"])
+def test_a_senior_test_sh_without_the_litellm_line_is_refused_naming_it(
+    project, capfd, monkeypatch, dry_run
+):
+    if dry_run:
+        monkeypatch.setenv("DRY_RUN", "1")
+    write_dotenv(project, JUDGES_KEY)
+    test_sh = project.senior_tasks / SENIOR_NAMES[-1] / "tests" / "test.sh"
+    test_sh.write_bytes(test_sh.read_bytes().replace(LITELLM, PINNED))
+
+    code = project.run("peer-review", "senior")
+
+    out, err = capfd.readouterr()
+    assert code != 0
+    assert err.startswith(f"error: {test_sh}: ")
+    assert out == ""
+    assert_nothing_ran(project)
+
+
+def test_one_senior_trial_that_does_not_fit_in_docker_is_refused(project, capfd, monkeypatch):
+    write_dotenv(project, JUDGES_KEY)
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", DOCKER_DESKTOP_8GB)
+
+    code = project.run("peer-review", "senior")
+
+    assert code != 0
+    assert capfd.readouterr().err == (
+        "error: one trial of the tasks in senior needs 4 CPUs and 8192 MiB, but Docker has "
+        "10 CPUs and 7934 MiB; give Docker more\n"
+    )
+    assert project.records("harbor") == []
+    assert not (project.directory / "lanes").exists()

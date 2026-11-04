@@ -59,8 +59,9 @@ class SussAgent(BaseAgent):
         `paths` is where the sandbox keeps things. Harbor never passes it, so
         production gets the default. Raises TypeError when Harbor parsed `arm`,
         `lane` or `config` as something other than a string, ConfigError or
-        ManifestError when the settings cannot be read, and LaneError when the
-        download `swe_rebench` names cannot be digested.
+        ManifestError when the settings cannot be read, and LaneError for a
+        lane other than rebench or when the download `swe_rebench` names cannot
+        be digested.
         """
         for key, value in (("arm", arm), ("lane", lane), ("config", config)):
             if not isinstance(value, str):
@@ -74,6 +75,11 @@ class SussAgent(BaseAgent):
         self.paths = paths
         self._config = suss_config.load(Path(config), arm, lane)
         self._manifest = harness.load_manifest(self._config.arm.harness)
+        # DATASET and the digest name rebench's download, which grades no other lane's trials.
+        if lane != lanes.REBENCH:
+            raise lanes.LaneError(
+                f"suss cannot yet name the grader of a trial on {lane}, so it runs none there"
+            )
         self._grader = {"dataset": DATASET, "digest": lanes.digest(self._config.swe_rebench)}
         self._prepared: _Prepared | None = None
 

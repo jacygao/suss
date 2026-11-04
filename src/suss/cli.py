@@ -290,6 +290,8 @@ class _Lane:
     # Which trials those are, as the capacity error names them.
     trials: str
     pairs: list[tuple[Command, Command]]
+    # The download the lane is built from.
+    download: Path
 
 
 def harbor_executable() -> Path:
@@ -419,7 +421,7 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
     failed_regrades = []
     for lane in planned:
         # Harbor builds each task's image when its trial starts, so suss pulls none.
-        lanes.build_rebench(settings.swe_rebench, root / "lanes", args.check)
+        lanes.build(lane.name, lane.download, root / "lanes", args.check)
         for agent, regrade in lane.pairs:
             code, output = _stream(agent, root)
             job = root / _option(agent.argv, "--jobs-dir") / _option(agent.argv, "--job-name")
@@ -482,13 +484,14 @@ def _plan(
     arm cannot run.
     """
     lanes.check_lane(lane)
+    download = settings.download(lane)
     # The whole lane even for a check, which tests that the arm can run it.
-    found = lanes.read_tasks(lanes.lane_tasks(settings.swe_rebench))
+    found = lanes.read_tasks(lanes.lane_tasks(lane, download))
     lanes.check_max_seconds(settings.arm, lane, found)
-    lanes.check_buildable(settings.swe_rebench, settings.path.parent / "lanes", check)
+    lanes.check_buildable(lane, download, settings.path.parent / "lanes", check)
     used = dict(list(found.items())[:1]) if check else found
     reads = config.host_variables(used)
-    config.check_grading_keys(settings, reads, lane)
+    config.check_grading_keys(settings, lane)
     on_docker = settings.environment == "docker"
     pairs = []
     for trial in range(1, 2 if check else settings.k + 1):
@@ -511,7 +514,7 @@ def _plan(
         memory_mb = max(memory_mb, overrides.get("--override-memory-mb", 0))
         needs = (cpus, memory_mb)
         trials += "".join(f" under {option} {value}" for option, value in overrides.items())
-    return _Lane(lane, needs, trials, pairs)
+    return _Lane(lane, needs, trials, pairs, download)
 
 
 def _docker_capacity(docker: str, root: Path) -> tuple[int, int]:

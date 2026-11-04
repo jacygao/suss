@@ -2,8 +2,9 @@
 A lane's directory, which Harbor reads as `-p lanes/<lane>`, and the checks
 made on a lane before any job.
 
-The rebench lane holds copies of the downloaded tasks, since a task.toml that
-leaves the agent's network open must close it.
+Each lane holds copies of the downloaded tasks, since a task.toml that leaves
+the agent's network open must close it, and a senior task's test.sh must pin
+litellm.
 """
 
 import hashlib
@@ -15,6 +16,8 @@ import tomllib
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from harbor.models.task.config import EnvironmentConfig
 
 # For the annotation alone: config imports this module for its lanes.
 if TYPE_CHECKING:
@@ -28,8 +31,9 @@ class LaneError(Exception):
 MIB = 2**20
 
 REBENCH = "rebench"
+SENIOR = "senior"
 
-LANES = (REBENCH,)
+LANES = (REBENCH, SENIOR)
 
 NO_NETWORK = 'network_mode = "no-network"'
 
@@ -38,9 +42,9 @@ AGENT_HEADER = re.compile(r"[ \t]*\[[ \t]*agent[ \t]*\][ \t]*(#.*)?\r?\n?\Z")
 
 
 def check_lane(lane: str) -> None:
-    """Raise LaneError, naming the only lane, for a lane suss does not have."""
+    """Raise LaneError, naming the lanes, for a lane suss does not have."""
     if lane not in LANES:
-        raise LaneError(f"no lane named {lane}; the only lane is {REBENCH}")
+        raise LaneError(f"suss has no lane named {lane}; its lanes are {', '.join(LANES)}")
 
 
 def _directory(lanes: Path, lane: str, check: bool) -> Path:
@@ -85,8 +89,28 @@ def needs(tasks: Mapping[Path, dict]) -> tuple[int, int]:
     task.toml where either is missing or is not a positive whole number.
     """
     cpus = max(_need(task, toml, "cpus") for task, toml in tasks.items())
-    memory_mb = max(_need(task, toml, "memory_mb") for task, toml in tasks.items())
+    memory_mb = max(_memory_mb(task, toml) for task, toml in tasks.items())
     return cpus, memory_mb
+
+
+def _memory_mb(task: Path, toml: dict) -> int:
+    """The task's `memory_mb`, else its `memory`, such as "8G", in MiB as Harbor reads it."""
+    memory = _field(toml, "environment", "memory")
+    if memory is None or _field(toml, "environment", "memory_mb") is not None:
+        return _need(task, toml, "memory_mb")
+    # Harbor ignores a memory that is not a string, and refuses one it cannot parse.
+    found = 0
+    if isinstance(memory, str):
+        try:
+            found = EnvironmentConfig._parse_size_to_mb(memory)
+        except ValueError:
+            pass
+    if found < 1:
+        raise LaneError(
+            f"{task / 'task.toml'}: [environment] memory is {memory!r}, not a size Harbor "
+            'reads, such as "8G"'
+        )
+    return found
 
 
 def check_capacity(
@@ -169,14 +193,14 @@ def _read_task(path: Path) -> dict:
         raise LaneError(f"{path}: not valid TOML: {error}") from None
 
 
-def rebench_tasks(swe_rebench: Path) -> list[Path]:
+def download_tasks(download: Path) -> list[Path]:
     """
     The task directories of the download, sorted by name: each directory in it
     holding a task.toml.
 
     Raises LaneError when the download is not a directory or holds no task.
     """
-    source = Path(swe_rebench).resolve()
+    source = Path(download).resolve()
     if not source.is_dir():
         raise LaneError(f"{source}: no such directory")
     found = [entry for entry in source.iterdir() if (entry / "task.toml").is_file()]
@@ -193,20 +217,22 @@ UNGRADEABLE = (
 )
 
 
-def lane_tasks(swe_rebench: Path) -> list[Path]:
+def lane_tasks(lane: str, download: Path) -> list[Path]:
     """
-    The tasks of the download that the rebench lane takes, sorted by name:
-    each but those in UNGRADEABLE. A download lacking any of those is not an
-    error.
+    The tasks of the download that `lane` takes, sorted by name: on rebench,
+    each but those in UNGRADEABLE, and on senior, every one. A download
+    lacking any of UNGRADEABLE is not an error.
 
-    Raises LaneError as `rebench_tasks` does, and when the download holds no
+    Raises LaneError as `download_tasks` does, and when the download holds no
     other task.
     """
-    found = [task for task in rebench_tasks(swe_rebench) if task.name not in UNGRADEABLE]
+    found = download_tasks(download)
+    if lane == REBENCH:
+        found = [task for task in found if task.name not in UNGRADEABLE]
     if not found:
-        source = Path(swe_rebench).resolve()
+        source = Path(download).resolve()
         raise LaneError(
-            f"{source}: every task in it is one the rebench lane leaves out, so the lane "
+            f"{source}: every task in it is one the {lane} lane leaves out, so the lane "
             "would be empty"
         )
     return found
@@ -223,7 +249,7 @@ def digest(swe_rebench: Path) -> str:
     The sha256, in hex, of every file of every task in the download, by path
     and content.
 
-    The tasks are the directories `rebench_tasks` finds, those the lane
+    The tasks are the directories `download_tasks` finds, those the lane
     leaves out included, so anything else at the top of the download takes
     no part. Each entry's path runs from the
     download, with `/` between its parts, and the entries go in order of
@@ -235,13 +261,13 @@ def digest(swe_rebench: Path) -> str:
 
     A link inside a task adds its target as written, and is never followed.
     A task directory that is itself a link adds the files of the task it
-    names, as `build_rebench` copies them. A directory adds nothing but the paths of what it holds, so an empty one
-    adds nothing. Modes and times add nothing. Raises LaneError as
-    `rebench_tasks` does, and naming an entry that cannot be read or is
+    names, as `build` copies them. A directory adds nothing but the paths of
+    what it holds, so an empty one adds nothing. Modes and times add nothing. Raises LaneError as
+    `download_tasks` does, and naming an entry that cannot be read or is
     neither a file, a directory nor a link.
     """
     entries: list[tuple[bytes, str]] = []
-    for task in rebench_tasks(swe_rebench):
+    for task in download_tasks(swe_rebench):
         entries.extend(_task_entries(task, os.fsencode(task.name)))
     entries.sort()
     found = hashlib.sha256(DIGEST_PREFIX)
@@ -283,65 +309,109 @@ def _entry(path: str) -> tuple[bytes, bytes]:
     raise LaneError(f"{path}: not a file, a directory or a link, so it cannot be digested")
 
 
-def check_buildable(swe_rebench: Path, lanes: Path, check: bool = False) -> None:
-    """Refuse a lane that `build_rebench` would refuse, changing nothing."""
-    _plan_build(swe_rebench, lanes, check)
+def check_buildable(lane: str, download: Path, lanes: Path, check: bool = False) -> None:
+    """Refuse a lane that `build` would refuse, changing nothing."""
+    _plan_build(lane, download, lanes, check)
 
 
-def build_rebench(swe_rebench: Path, lanes: Path, check: bool = False) -> Path:
+def build(lane: str, download: Path, lanes: Path, check: bool = False) -> Path:
     """
-    Make `lanes/rebench/` hold a copy of each task `lane_tasks` gives, whose
+    Make `lanes/<lane>/` hold a copy of each task `lane_tasks` gives, whose
     task.toml adds `[agent] network_mode = "no-network"` unless its agent's
-    network is already closed.
+    network is already closed. On senior, each copy's tests/test.sh also
+    pins litellm, as `_pinned` gives it.
 
-    With `check`, it makes `lanes/rebench-check/` instead, holding only the
+    With `check`, it makes `lanes/<lane>-check/` instead, holding only the
     first task by name. Every other file is copied as it is, mode included.
     Whatever an earlier build left is removed. Raises LaneError as
     `lane_tasks` does, naming a task.toml whose agent network `_without_network`
-    refuses or that the key cannot be added to, and when the lane's path
-    is a link or anything else but a directory. Every task.toml is read before
-    the lane is touched, so an error leaves an earlier build as it was.
+    refuses or that the key cannot be added to, naming a test.sh `_pinned`
+    refuses, and when the lane's path is a link or anything else but a
+    directory. Every file it rewrites is read before the lane is touched, so
+    an error leaves an earlier build as it was.
     """
-    directory, tomls = _plan_build(swe_rebench, lanes, check)
+    directory, rewritten = _plan_build(lane, download, lanes, check)
     if directory.is_dir():
         shutil.rmtree(directory, onexc=_remove_from_read_only)
     directory.mkdir(parents=True)
-    for task, toml in tomls.items():
+    for task, files in rewritten.items():
         copy = directory / task.name
-        # The task.toml is written fresh rather than over its copy, which may be read-only.
+        skipped = {str(task / name) for name in files}
+        # Each rewritten file is written fresh rather than over its copy, which may be read-only.
         shutil.copytree(
             task,
             copy,
             symlinks=True,
-            ignore=lambda at, names: ["task.toml"] if at == str(task) else [],
+            ignore=lambda at, names: [n for n in names if str(Path(at) / n) in skipped],
         )
-        mode = copy.stat().st_mode
-        copy.chmod(mode | stat.S_IWUSR)
-        (copy / "task.toml").write_bytes(toml)
-        shutil.copymode(task / "task.toml", copy / "task.toml")
-        copy.chmod(mode)
+        for name, content in files.items():
+            parent = (copy / name).parent
+            mode = parent.stat().st_mode
+            parent.chmod(mode | stat.S_IWUSR)
+            (copy / name).write_bytes(content)
+            shutil.copymode(task / name, copy / name)
+            parent.chmod(mode)
     return directory
 
 
-def _plan_build(swe_rebench: Path, lanes: Path, check: bool) -> tuple[Path, dict[Path, bytes]]:
+def _plan_build(
+    lane: str, download: Path, lanes: Path, check: bool
+) -> tuple[Path, dict[Path, dict[str, bytes]]]:
     """
-    The lane's directory, and each task it takes with the task.toml its copy
-    gets, reading everything and changing nothing.
+    The lane's directory, and each task it takes with the files its copy
+    rewrites, by path from the task, reading everything and changing nothing.
 
-    Raises LaneError as `build_rebench` does.
+    Raises LaneError as `build` does.
     """
-    found = lane_tasks(swe_rebench)
+    found = lane_tasks(lane, download)
     if check:
         found = found[:1]
-    directory = _directory(lanes, REBENCH, check)
+    directory = _directory(lanes, lane, check)
     for path in (Path(lanes), directory):
         # A dangling link does not exist, and still blocks the mkdir.
         if (path.exists() or path.is_symlink()) and not path.is_dir():
             raise LaneError(f"{path}: not a directory, so no lane can be built there")
     # A build empties the lane, and must not empty a directory the link names.
     if directory.is_symlink():
-        raise LaneError(f"{directory}: a link, so the rebench lane is not built through it")
-    return directory, {task: _without_network(task / "task.toml") for task in found}
+        raise LaneError(f"{directory}: a link, so the {lane} lane is not built through it")
+    rewritten = {}
+    for task in found:
+        rewritten[task] = {"task.toml": _without_network(task / "task.toml")}
+        if lane == SENIOR:
+            rewritten[task][TEST_SH] = _pinned(task / TEST_SH)
+    return directory, rewritten
+
+
+TEST_SH = "tests/test.sh"
+# The requirement every senior task's test.sh installs, and what the lane's copy
+# installs in its place: every litellm from 1.106.0 fails each judge's call.
+LITELLM = b"litellm>=1.0,<2.0"
+PINNED_LITELLM = b"litellm>=1.0,<1.106"
+
+
+def _pinned(path: Path) -> bytes:
+    """
+    The test.sh at `path` with its one line that is exactly LITELLM made
+    PINNED_LITELLM, its bytes otherwise unchanged.
+
+    Raises LaneError naming the file when it cannot be read, or when not
+    exactly one of its lines is LITELLM.
+    """
+    try:
+        lines = path.read_bytes().splitlines(keepends=True)
+    except FileNotFoundError:
+        raise LaneError(f"{path}: no such file, so the lane cannot pin litellm in it") from None
+    except OSError as error:
+        raise LaneError(f"{path}: cannot be read: {error.strerror}") from None
+    found = [number for number, line in enumerate(lines) if line.rstrip(b"\r\n") == LITELLM]
+    if len(found) != 1:
+        raise LaneError(
+            f"{path}: has {len(found)} lines that are {LITELLM.decode()}, so the lane cannot "
+            f"pin litellm to {PINNED_LITELLM.decode()}; it takes a test.sh with exactly one"
+        )
+    line = lines[found[0]]
+    lines[found[0]] = PINNED_LITELLM + line[len(LITELLM) :]
+    return b"".join(lines)
 
 
 def _remove_from_read_only(function, path: str, error: BaseException) -> None:

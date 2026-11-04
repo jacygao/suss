@@ -1,0 +1,2 @@
+[pytest]
+command = "python -m pytest"

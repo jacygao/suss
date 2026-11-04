@@ -1,7 +1,7 @@
 """The settings one named arm runs with, read from suss.toml and the .env beside it."""
 
 import tomllib
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,15 +29,26 @@ class Arm:
 @dataclass(frozen=True)
 class Config:
     path: Path
-    swe_rebench: Path
+    # rebench's download, as senior_swe_bench is senior's; each None where suss.toml names none.
+    swe_rebench: Path | None
     environment: str
     k: int
     concurrency: int
     arm: Arm
     env: dict[str, str]
+    senior_swe_bench: Path | None = None
+
+    def download(self, lane: str) -> Path:
+        """The download `lane` is built from, which `load` requires for its lane."""
+        found = getattr(self, DOWNLOADS[lane])
+        if found is None:
+            raise ConfigError(f"{self.path}: no {DOWNLOADS[lane]!r}")
+        return found
 
 
-REQUIRED = ("swe_rebench", "environment", "k", "concurrency")
+# The key that names each lane's download.
+DOWNLOADS = {lanes.REBENCH: "swe_rebench", lanes.SENIOR: "senior_swe_bench"}
+REQUIRED = ("environment", "k", "concurrency")
 # Ignored, they would leave a run going on what its author believes they still set.
 RETIRED = ("swe_bench_pro", "dataset")
 REQUIRED_IN_ARM = ("harness",)
@@ -49,9 +60,10 @@ def load(path: Path, arm: str, lane: str) -> Config:
     Read the settings `arm` runs with on `lane` from the suss.toml at `path`.
 
     Paths in the file resolve from the directory holding it, whatever the
-    current directory is. `max_seconds` is optional. Raises ConfigError,
-    naming the file, when it is missing or is not TOML, when it sets
-    `swe_bench_pro` or `dataset`, when a required key is missing, when `k` is
+    current directory is. `max_seconds` is optional, and so is the download
+    of each lane but `lane`. Raises ConfigError, naming the file, when it is
+    missing or is not TOML, when it sets `swe_bench_pro` or `dataset`, when a
+    required key is missing, when `k` is
     not a whole number of at least 1, when the file does not define `arm`, when
     the top or `arm` sets `max_cost_usd`, when a `[lanes.<lane>]` table names a
     lane suss does not have or sets a key other than `max_seconds`, or when a
@@ -65,7 +77,8 @@ def load(path: Path, arm: str, lane: str) -> Config:
             f"{path}: sets {' and '.join(retired)}, which suss no longer reads; name the "
             "directory of downloaded SWE-rebench tasks with swe_rebench"
         )
-    for key in REQUIRED:
+    required = (DOWNLOADS[lane],) if lane in DOWNLOADS else ()
+    for key in (*required, *REQUIRED):
         if key not in data:
             raise ConfigError(f"{path}: no {key!r}")
     # bool is an int in Python, and true is not a number of jobs.
@@ -92,7 +105,8 @@ def load(path: Path, arm: str, lane: str) -> Config:
     lane_tables = _lanes(path, data)
     return Config(
         path=path,
-        swe_rebench=(directory / data["swe_rebench"]).resolve(),
+        swe_rebench=_path(directory, data.get("swe_rebench")),
+        senior_swe_bench=_path(directory, data.get("senior_swe_bench")),
         environment=data["environment"],
         k=data["k"],
         concurrency=data["concurrency"],
@@ -105,6 +119,10 @@ def load(path: Path, arm: str, lane: str) -> Config:
         ),
         env=_read_env(directory / ".env"),
     )
+
+
+def _path(directory: Path, value: str | None) -> Path | None:
+    return None if value is None else (directory / value).resolve()
 
 
 def baselines(path: Path, arms: list[str]) -> dict[str, str | None]:
@@ -221,18 +239,18 @@ ROUTER_KEY = "PORTKEY_API_KEY"
 PROVIDER_KEYS = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 
 
-def check_grading_keys(settings: Config, variables: Collection[str], lane: str) -> None:
+def check_grading_keys(settings: Config, lane: str) -> None:
     """
-    Refuse a .env that lacks a key the tasks' verifier needs to call its models.
+    Refuse a .env that lacks a key the senior lane's verifier needs to call
+    its models. Every other lane passes.
 
-    Only tasks whose verifier env names `JUDGE_SETTING` have such a verifier.
-    It needs `ROUTER_KEY`, or else the key of the provider each of its models
-    names, as anthropic/ or openai/. Without it the judges cannot run, and the
+    The verifier needs `ROUTER_KEY`, or else the key of the provider each of
+    its models names, as anthropic/ or openai/. Without it the judges cannot run, and the
     verifier still writes a reward. An empty value counts as unset. Raises
     ConfigError naming the missing keys, or a model setting whose provider has
     no key in `PROVIDER_KEYS`.
     """
-    if JUDGE_SETTING not in variables or settings.env.get(ROUTER_KEY):
+    if lane != lanes.SENIOR or settings.env.get(ROUTER_KEY):
         return
     dotenv = settings.path.parent / ".env"
     needed: dict[str, list[str]] = {}

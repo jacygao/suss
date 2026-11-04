@@ -32,6 +32,7 @@ def write_config(directory: Path, text: str) -> Path:
 
 TOP = """\
 swe_rebench = "../tasks/swe-rebench-07-2026"
+senior_swe_bench = "../tasks/senior/senior-swe-bench-v2026.06"
 environment = "docker"
 k = 3
 concurrency = 4
@@ -99,13 +100,7 @@ def test_a_max_seconds_set_nowhere_is_none(tmp_path: Path):
     assert config.load(path, "a", "rebench").arm.max_seconds is None
 
 
-@pytest.fixture
-def two_lanes(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A second lane beside rebench."""
-    monkeypatch.setattr(lanes, "LANES", ("rebench", "senior"))
-
-
-def test_a_lanes_max_seconds_overrides_the_tops_on_that_lane_alone(tmp_path: Path, two_lanes):
+def test_a_lanes_max_seconds_overrides_the_tops_on_that_lane_alone(tmp_path: Path):
     path = write_config(
         tmp_path,
         TOP + 'max_seconds = 2700\n[lanes.senior]\nmax_seconds = 5400\n[arms.a]\nharness = "h"\n',
@@ -117,7 +112,7 @@ def test_a_lanes_max_seconds_overrides_the_tops_on_that_lane_alone(tmp_path: Pat
 
 # Each value differs from the others, so the one loaded says which won.
 @pytest.mark.parametrize("seconds", [1800, 0])
-def test_an_arms_own_max_seconds_overrides_its_lanes(tmp_path: Path, two_lanes, seconds: int):
+def test_an_arms_own_max_seconds_overrides_its_lanes(tmp_path: Path, seconds: int):
     path = write_config(
         tmp_path,
         TOP + "max_seconds = 2700\n[lanes.senior]\nmax_seconds = 5400\n"
@@ -146,7 +141,7 @@ def test_a_lane_suss_does_not_have_is_an_error_naming_it(tmp_path: Path):
         config.load(path, "a", "rebench")
 
     assert str(error.value) == (
-        f"{path}: sets [lanes.senoir], but suss has no lane named senoir; its lanes are rebench"
+        f"{path}: sets [lanes.senoir], but suss has no lane named senoir; its lanes are rebench, senior"
     )
 
 
@@ -186,6 +181,9 @@ def test_paths_resolve_from_the_directory_holding_suss_toml(
     settings = config.load(path, "a", "rebench")
 
     assert settings.swe_rebench == (tmp_path / "tasks" / "swe-rebench-07-2026").resolve()
+    assert settings.senior_swe_bench == (
+        tmp_path / "tasks" / "senior" / "senior-swe-bench-v2026.06"
+    ).resolve()
     assert settings.arm.harness == (tmp_path / "self-review").resolve()
 
 
@@ -286,17 +284,51 @@ def test_a_suss_toml_that_is_not_toml_is_an_error_naming_it(tmp_path: Path, cont
 
 
 @pytest.mark.parametrize(
-    "key", ["swe_rebench", "environment", "k", "concurrency"]
+    "key, lane",
+    [
+        ("swe_rebench", "rebench"),
+        ("senior_swe_bench", "senior"),
+        ("environment", "rebench"),
+        ("k", "senior"),
+        ("concurrency", "rebench"),
+    ],
 )
-def test_a_missing_top_level_key_is_an_error_naming_it_and_the_file(tmp_path: Path, key: str):
+def test_a_missing_top_level_key_is_an_error_naming_it_and_the_file(
+    tmp_path: Path, key: str, lane: str
+):
     lines = [line for line in TOP.splitlines() if not line.startswith(f"{key} =")]
     path = write_config(tmp_path, "\n".join(lines) + '\n[arms.a]\nharness = "h"\n')
 
     with pytest.raises(config.ConfigError) as error:
-        config.load(path, "a", "rebench")
+        config.load(path, "a", lane)
 
-    assert repr(key) in str(error.value)
-    assert str(path) in str(error.value)
+    assert str(error.value) == f"{path}: no {key!r}"
+
+
+@pytest.mark.parametrize(
+    "key, lane", [("swe_rebench", "senior"), ("senior_swe_bench", "rebench")]
+)
+def test_a_lane_needs_no_other_lanes_download(tmp_path: Path, key: str, lane: str):
+    lines = [line for line in TOP.splitlines() if not line.startswith(f"{key} =")]
+    path = write_config(tmp_path, "\n".join(lines) + '\n[arms.a]\nharness = "h"\n')
+
+    settings = config.load(path, "a", lane)
+
+    assert getattr(settings, key) is None
+    assert settings.download(lane) == (tmp_path / TOP_DOWNLOADS[lane]).resolve()
+
+
+TOP_DOWNLOADS = {
+    "rebench": "../tasks/swe-rebench-07-2026",
+    "senior": "../tasks/senior/senior-swe-bench-v2026.06",
+}
+
+
+def test_each_lane_reads_the_download_its_own_key_names(spec_config: Path):
+    for lane in ("rebench", "senior"):
+        settings = config.load(spec_config, "claude-code", lane)
+
+        assert settings.download(lane) == (spec_config.parent / TOP_DOWNLOADS[lane]).resolve()
 
 
 @pytest.mark.parametrize(
@@ -480,7 +512,7 @@ def test_the_judges_default_models_need_the_anthropic_key(tmp_path: Path):
     settings = with_env(tmp_path, "OPENAI_API_KEY=sk-1\n")
 
     with pytest.raises(config.ConfigError) as error:
-        config.check_grading_keys(settings, SENIOR_VARIABLES, "senior")
+        config.check_grading_keys(settings, "senior")
 
     assert str(error.value) == (
         f"{tmp_path / '.env'} sets no ANTHROPIC_API_KEY, which the verifier of the tasks in "
@@ -494,13 +526,13 @@ def test_an_empty_key_in_env_counts_as_missing(tmp_path: Path):
     settings = with_env(tmp_path, "ANTHROPIC_API_KEY=\n")
 
     with pytest.raises(config.ConfigError, match="sets no ANTHROPIC_API_KEY"):
-        config.check_grading_keys(settings, SENIOR_VARIABLES, "senior")
+        config.check_grading_keys(settings, "senior")
 
 
 def test_the_anthropic_key_alone_grades_with_the_default_judges(tmp_path: Path):
     settings = with_env(tmp_path, "ANTHROPIC_API_KEY=sk-ant-1\n")
 
-    config.check_grading_keys(settings, SENIOR_VARIABLES, "senior")
+    config.check_grading_keys(settings, "senior")
 
 
 def test_a_portkey_key_reaches_every_model_whatever_they_are(tmp_path: Path):
@@ -508,7 +540,7 @@ def test_a_portkey_key_reaches_every_model_whatever_they_are(tmp_path: Path):
         tmp_path, "PORTKEY_API_KEY=pk-1\nSSB_OVERRIDE_ALL_JUDGE_MODEL=@vertex/gemini-3-pro\n"
     )
 
-    config.check_grading_keys(settings, SENIOR_VARIABLES, "senior")
+    config.check_grading_keys(settings, "senior")
 
 
 def test_an_override_to_an_openai_model_needs_the_openai_key_and_names_the_model_once(
@@ -521,7 +553,7 @@ def test_an_override_to_an_openai_model_needs_the_openai_key_and_names_the_model
     )
 
     with pytest.raises(config.ConfigError) as error:
-        config.check_grading_keys(settings, SENIOR_VARIABLES, "senior")
+        config.check_grading_keys(settings, "senior")
 
     assert (
         "sets no OPENAI_API_KEY, which the verifier of the tasks in senior needs for "
@@ -533,7 +565,7 @@ def test_both_missing_keys_are_named_at_once(tmp_path: Path):
     settings = with_env(tmp_path, "SSB_OVERRIDE_ALL_JUDGE_MODEL=openai/gpt-5.5\n")
 
     with pytest.raises(config.ConfigError) as error:
-        config.check_grading_keys(settings, SENIOR_VARIABLES, "senior")
+        config.check_grading_keys(settings, "senior")
 
     assert "sets no ANTHROPIC_API_KEY or OPENAI_API_KEY, which" in str(error.value)
 
@@ -542,7 +574,7 @@ def test_the_validation_agents_older_override_counts_when_the_new_one_is_unset(t
     settings = with_env(tmp_path, "ANTHROPIC_API_KEY=sk-ant-1\nFORCE_VA_MODEL=openai/gpt-5.5\n")
 
     with pytest.raises(config.ConfigError, match="sets no OPENAI_API_KEY"):
-        config.check_grading_keys(settings, SENIOR_VARIABLES, "senior")
+        config.check_grading_keys(settings, "senior")
 
 
 def test_a_model_of_a_provider_the_verifier_has_no_key_for_is_an_error_naming_its_setting(
@@ -553,7 +585,7 @@ def test_a_model_of_a_provider_the_verifier_has_no_key_for_is_an_error_naming_it
     )
 
     with pytest.raises(config.ConfigError) as error:
-        config.check_grading_keys(settings, SENIOR_VARIABLES, "senior")
+        config.check_grading_keys(settings, "senior")
 
     assert str(error.value) == (
         f"{tmp_path / '.env'} sets SSB_OVERRIDE_CLASSIFIER_MODEL to gemini/gemini-3-pro, but the "
@@ -562,7 +594,15 @@ def test_a_model_of_a_provider_the_verifier_has_no_key_for_is_an_error_naming_it
     )
 
 
-def test_tasks_without_the_judges_need_no_key(tmp_path: Path):
+def test_the_rebench_lane_needs_no_grading_key(tmp_path: Path):
     settings = with_env(tmp_path, "")
 
-    config.check_grading_keys(settings, ("BUILD_TOKEN",), "rebench")
+    config.check_grading_keys(settings, "rebench")
+
+
+def test_the_senior_lane_needs_its_judges_key_whatever_its_tasks_name(tmp_path: Path):
+    settings = with_env(tmp_path, "OPENAI_API_KEY=sk-1\n")
+
+    # The lane by name decides, so a task that renames the judges' setting changes nothing.
+    with pytest.raises(config.ConfigError, match="sets no ANTHROPIC_API_KEY"):
+        config.check_grading_keys(settings, "senior")
