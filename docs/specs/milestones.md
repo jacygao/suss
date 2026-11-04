@@ -174,3 +174,56 @@ regrading agent are gone.
       its regrade under `checks/rebench/claude-code/`, the trial's `suss.json`
       has `status` `ok`, and the regrade's reward is the trial's result
 - [ ] `uv run pytest` passes
+
+## M5 — Claude Code on a subscription
+
+`adapters/claude-code/` runs Claude Code on a Claude subscription as well as on
+an API key, so a Claude Code arm can be measured on a plan, as a `copilot-cli`
+arm is on a Copilot plan.
+
+### Acceptance criteria
+
+- [ ] The adapter takes the token `claude setup-token` makes, as
+      `CLAUDE_CODE_OAUTH_TOKEN`, or `ANTHROPIC_API_KEY`, from the run's `.env`,
+      and `run` exits 1 naming the problem when both are set or neither is,
+      before Claude Code starts
+- [ ] An arm on a subscription refuses `max_budget_usd`, and its trials record
+      each call's token usage as an API-key arm's trials do
+- [ ] A trial that stops at the plan's usage limit has `status`
+      `usage-limited`, not `harness-failed`
+- [ ] On Modal, in the agent phase of a `rebench` task, a subscription arm
+      reaches each host in the manifest's `allowed_hosts` and no other host
+- [ ] `suss run <arm> rebench --check` on Modal, with only the subscription
+      token in `.env`, leaves a trial with `status` `ok` and its regrade
+- [ ] `uv run pytest` passes
+
+## M6 — The Senior SWE-Bench lane
+
+Suss runs a second lane, `senior`, built from Snorkel's Senior SWE-Bench
+snapshot `senior-swe-bench-v2026.06`, which holds 50 tasks. Each task's verifier
+runs its tests, a validation agent and LLM judges, and `suss compare` reports
+the judges' scores beside each arm's resolved share.
+
+### Acceptance criteria
+
+- [ ] A note in `docs/notes/` gives, for one task graded by its default judges,
+      what the trial and its regrade cost, in AI credits and in API spend, how
+      long each took, and how far the judges' scores move when the same patch
+      is regraded
+- [ ] `lanes/senior/` holds a copy of each task Harbor's oracle passes, and
+      `suss.toml` names the download with `senior_swe_bench`
+- [ ] The regrade passes the verifier the grading keys and `SSB_OVERRIDE_*`
+      settings from the run's `.env`, and the agent phase gets none of them
+- [ ] A `senior` trial's `grader` holds the dataset, its digest, and the judge
+      and validation-agent models its regrade used
+- [ ] In the agent phase of a `senior` task, the harness reaches the hosts in
+      its manifest's `allowed_hosts` and in the task's `[agent] allowed_hosts`,
+      and no other host
+- [ ] `max_seconds` can be set per lane in `suss.toml`
+- [ ] A trial whose regrade writes an empty reward, as the verifier does for an
+      invalid trial, counts in no share, and `suss compare` names it
+- [ ] For the `senior` lane, `suss compare` gives each arm's mean rubric and
+      taste scores
+- [ ] `suss run <arm> senior --check` on Modal leaves a trial and its regrade,
+      with a reward and the judges' scores
+- [ ] `uv run pytest` passes
