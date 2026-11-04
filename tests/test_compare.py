@@ -399,11 +399,13 @@ def test_a_regrade_whose_verifier_timed_out_after_replay_json_applied_its_patch(
 def regrade_wrote_an_empty_reward(trial: Path) -> None:
     """
     Make the regrade's trial one whose verifier judged its trial invalid, as a
-    Senior SWE-Bench verifier leaves it: an empty reward.txt, no report.json,
-    and Harbor's RewardFileEmptyError in result.json.
+    Senior SWE-Bench verifier leaves it when its tests crashed: an empty
+    reward.txt, a verifier_results.json counting no test, no report.json, and
+    Harbor's RewardFileEmptyError in result.json.
     """
     (trial / "verifier").mkdir(exist_ok=True)
     (trial / "verifier" / "reward.txt").write_text("")
+    write_json(trial / "verifier" / "verifier_results.json", RUNNER_FAILED)
     (trial / "verifier" / "report.json").unlink(missing_ok=True)
     record_exception(trial, RewardFileEmptyError(f"Reward file is empty at {trial}/verifier/reward.txt"))
 
@@ -568,6 +570,93 @@ def test_a_report_that_is_not_json_records_no_test_result(tmp_path, arm):
     [trial] = read_trials(tmp_path, LANE, ARM)
 
     assert trial.regrade_tested is False
+
+
+def verifier_results(passed: int, total: int, **given) -> dict:
+    """The verifier/verifier_results.json a senior verifier writes, its tests left out."""
+    return {"passed": passed, "total": total, "all_pass": passed == total, "tests": {}, **given}
+
+
+SENIOR_TESTED = verifier_results(passed=3, total=4)
+# What a senior verifier writes when its runner crashed or ran no test. It also
+# writes an empty reward, so the trial is invalid.
+RUNNER_FAILED = verifier_results(
+    passed=0, total=0, all_pass=False, runner_errors={"python": "pytest exited 4"}
+)
+# What a senior verifier writes for a task with no tests, which its validation agent alone grades.
+NO_TESTS = verifier_results(passed=0, total=0)
+
+
+@pytest.mark.parametrize(
+    "results, tested",
+    [
+        (SENIOR_TESTED, True),
+        (verifier_results(passed=0, total=1), True),
+        (NO_TESTS, True),
+        (RUNNER_FAILED, False),
+        (dict(RUNNER_FAILED, runner_errors=None), False),
+        (dict(NO_TESTS, runner_errors={"verify": "no verify/ directory found"}), False),
+        (None, False),
+        ({key: value for key, value in SENIOR_TESTED.items() if key != "total"}, False),
+        (dict(SENIOR_TESTED, total="4"), False),
+        (dict(SENIOR_TESTED, total=True), False),
+        (dict(SENIOR_TESTED, total=-1), False),
+        (dict(NO_TESTS, all_pass=1), False),
+        ([SENIOR_TESTED], False),
+    ],
+    ids=[
+        "tests-ran",
+        "one-failed",
+        "no-tests-to-run",
+        "runner-failed",
+        "zero-not-passing",
+        "zero-with-runner-errors",
+        "no-file",
+        "no-total",
+        "total-a-string",
+        "total-a-bool",
+        "total-below-zero",
+        "all-pass-not-a-bool",
+        "not-an-object",
+    ],
+)
+def test_a_senior_regrade_records_a_test_result_from_verifier_results_json(
+    tmp_path, results, tested
+):
+    arm = tmp_path / "results" / "senior" / ARM
+    write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
+    # A report.json counting tests, which a senior regrade's test result must not come from.
+    regrade = write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK", UNRESOLVED)
+    if results is not None:
+        write_json(regrade / "verifier" / "verifier_results.json", results)
+
+    [trial] = read_trials(tmp_path, "senior", ARM)
+
+    assert trial.regrade_tested is tested
+
+
+def test_a_senior_regrade_whose_verifier_results_json_is_not_json_records_no_test_result(tmp_path):
+    arm = tmp_path / "results" / "senior" / ARM
+    write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
+    regrade = write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK", UNRESOLVED)
+    (regrade / "verifier" / "verifier_results.json").write_text('{"passed": 3, "total": 4')
+
+    [trial] = read_trials(tmp_path, "senior", ARM)
+
+    assert trial.regrade_tested is False
+
+
+@pytest.mark.parametrize("report, tested", [(None, False), (TESTED, True)], ids=["no-report", "report"])
+def test_a_rebench_regrade_takes_no_test_result_from_verifier_results_json(
+    tmp_path, arm, report, tested
+):
+    write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
+    regrade = write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK", UNRESOLVED, report=report)
+    write_json(regrade / "verifier" / "verifier_results.json", NO_TESTS)
+
+    [trial] = read_trials(tmp_path, LANE, ARM)
+
+    assert trial.regrade_tested is tested
 
 
 def test_nothing_under_checks_is_read(tmp_path, arm):
@@ -1248,7 +1337,7 @@ def test_a_trial_on_a_task_not_every_arm_has_is_not_named(results, capsys):
     assert NAMED not in out
 
 
-INVALID = "These trials' regrades judged them invalid, so neither table counts them:\n"
+INVALID = "These trials' regrades judged them invalid, so no table counts them:\n"
 
 
 def without(root: Path, elsewhere: Path, trials: list[tuple[str, str, int]]) -> Path:
@@ -1391,10 +1480,14 @@ def write_senior_arm(root: Path, arm: str, tasks: dict[str, list[tuple[dict, dic
         for i, (rewards, judge_output) in enumerate(trials, start=1):
             job = root / "results" / SENIOR / arm / f"S-{i}"
             write_agent_trial(job, task, f"agent{i}")
-            # With a rebench report, so no trial here is named for recording no test result.
             regrade = write_regrade_trial(
-                job.with_name(f"{job.name}{compare.REGRADE}"), task, f"regrd{i}", {"rewards": rewards}
+                job.with_name(f"{job.name}{compare.REGRADE}"),
+                task,
+                f"regrd{i}",
+                {"rewards": rewards},
+                report=None,
             )
+            write_json(regrade / "verifier" / "verifier_results.json", SENIOR_TESTED)
             if judge_output is not None:
                 write_json(regrade / "verifier" / "judge_output.json", judge_output)
 
@@ -1533,6 +1626,8 @@ def test_a_regrade_with_no_reward_has_no_scores_and_is_not_named_for_its_judges(
 
 def test_another_lane_prints_no_means_whatever_its_rewards_hold(senior, capsys):
     (senior / "results" / SENIOR).rename(senior / "results" / "rebench")
+    for results in (senior / "results" / "rebench").glob(f"*/*{compare.REGRADE}/*/verifier"):
+        write_json(results / "report.json", TESTED)
 
     code, out, err = run_compare(senior, capsys, "rebench", "base", "beta")
 
@@ -1553,4 +1648,23 @@ def test_a_task_whose_every_trial_in_one_arm_is_invalid_leaves_the_means(senior,
         "beta           0.50 (1)            2.50 (2)        2.50 (2)     2.00 (2)\n"
         "\n" + INVALID + "  beta  S-1  s1\n"
         "\n" + JUDGES_NAMED + "  base  S-1  s2  rubric, taste\n"
+    )
+
+
+def test_a_senior_trial_is_named_from_what_its_verifier_results_json_counts(senior, capsys):
+    base_s2 = regrade_of_senior(senior, "base", "s2", 2) / "verifier" / "verifier_results.json"
+    base_s2.unlink()
+    write_json(regrade_of_senior(senior, "beta", "s3", 1) / "verifier" / "verifier_results.json", NO_TESTS)
+    regrade_wrote_an_empty_reward(regrade_of_senior(senior, "base", "s1", 2))
+
+    code, out, err = run_compare(senior, capsys, SENIOR, "base", "beta")
+
+    assert (code, err) == (0, "")
+    assert out.endswith(
+        "\n" + NAMED + "  base  S-2  s2\n"
+        "\n" + INVALID + "  base  S-2  s1\n"
+        "\n" + JUDGES_NAMED + "  base  S-1  s2  rubric, taste\n"
+    ), (
+        "a task with no tests to run records a test result, and an invalid trial "
+        "is named only as invalid"
     )

@@ -624,7 +624,7 @@ recorded no test result, then each invalid trial, by arm, job and task:
 These trials' regrades recorded no test result, so their grading may have broken:
   claude-code  20261103T204423Z-2  marimo-team__marimo-9766
 
-These trials' regrades judged them invalid, so neither table counts them:
+These trials' regrades judged them invalid, so no table counts them:
   claude-code  20261103T204423Z-1  paperless-ngx-perf-workflow-queries
 ```
 
@@ -633,15 +633,19 @@ These trials' regrades judged them invalid, so neither table counts them:
 - A trial is invalid when its regrade's verifier wrote an empty
   `verifier/reward.txt`, which Harbor records in the regrade trial's
   `result.json` as an `exception_info` whose `exception_type` is
-  `RewardFileEmptyError`. An invalid trial counts in neither table, as if it
+  `RewardFileEmptyError`. An invalid trial counts in no table, as if it
   had not run. The task's other trials, in every arm, still count. Where every
   trial of a task in one arm is invalid, that task counts in no arm. The list
   names the invalid trials of every task each arm has a trial of. An invalid
   trial is never also named as recording no test result.
-- A regrade records no test result when its trial has no
-  `verifier/report.json`, as the verifier of every `rebench` task writes it, or
-  when that report's `parsed_counts` counts no test as `PASSED`, `FAILED`,
-  `SKIPPED` or `ERROR`. A trial with no regrade trial records none either.
+- A regrade records a test result in the file its lane's verifier writes in
+  the regrade trial, as the table below says. It records none when that file is
+  missing, and a trial with no regrade trial records none either.
+
+  | Lane | File | Records a test result when |
+  |---|---|---|
+  | `rebench` | `verifier/report.json` | its `parsed_counts` counts a test as `PASSED`, `FAILED`, `SKIPPED` or `ERROR` |
+  | `senior` | `verifier/verifier_results.json` | its `total` is above 0, or is 0 with `all_pass` true and no `runner_errors`, as the verifier writes for a task that has no tests and grades by its validation agent alone |
 - A valid trial whose regrade has no reward counts as unresolved, as when its
   verifier timed out or crashed. A trial with no `suss.json`, which a sandbox
   that never started or a Harbor exception leaves, counts as `harness-failed`.
