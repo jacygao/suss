@@ -48,8 +48,10 @@ recheck-when: Snorkel publishes a new snapshot or changes test.sh, litellm relea
   | invalid trial | empty | `null` | `RewardFileEmptyError` |
 
   Harbor's own summary counts the invalid trial as 0 in its `Mean`.
-- **A trial's agent phase gets up to 7200 seconds, or 14400 in four tasks.**
-  `max_seconds` for the lane can be as high as either.
+- **The lane's `max_seconds` must be under 7200.** That is the agent timeout of
+  46 tasks, and the shortest. The other four allow 14400, which a cap for the
+  whole lane cannot use, since suss must stop `run` before Harbor's timeout
+  stops the shorter tasks.
 - **Every task allows the same 32 hosts in its agent phase, and 19 add a few
   more.** The extra hosts depend on the repository.
 - **One trial of `paperless-ngx-perf-workflow-queries` cost $0.98 and took 8.5
