@@ -1,9 +1,12 @@
 """The settings one named arm runs with, read from suss.toml and the .env beside it."""
 
 import tomllib
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from harbor.utils.env import get_required_host_vars
 
 from suss import lanes
 
@@ -169,6 +172,94 @@ def _cap(key: str, *tables: dict[str, Any]) -> Any:
         if key in table:
             return table[key]
     return None
+
+
+# The task.toml tables whose `${NAME}` values Harbor fills from its own environment
+# in a job suss runs. It reads [solution.env] only for its oracle agent.
+HOST_ENV_TABLES = ("environment", "verifier")
+
+
+def host_variables(tasks: Mapping[Path, dict]) -> tuple[str, ...]:
+    """
+    The names the tasks' `[environment.env]` and `[verifier.env]` values read
+    from Harbor's environment, as `${NAME}` or `${NAME:-default}`, sorted.
+
+    `tasks` are as `lanes.read_tasks` gives them. A literal value reads nothing.
+    """
+    names = set()
+    for toml in tasks.values():
+        for table in HOST_ENV_TABLES:
+            section = toml.get(table)
+            env = section.get("env") if isinstance(section, dict) else None
+            if isinstance(env, dict):
+                values = {key: value for key, value in env.items() if isinstance(value, str)}
+                names |= {name for name, _ in get_required_host_vars(values)}
+    return tuple(sorted(names))
+
+
+def verifier_env(settings: Config, variables: Iterable[str]) -> dict[str, str]:
+    """
+    The value .env gives each of `variables`, for the regrade's Harbor.
+
+    A variable .env leaves empty is left out, so the task's own default applies,
+    as it does for one .env does not set.
+    """
+    return {name: settings.env[name] for name in variables if settings.env.get(name)}
+
+
+# Read by Senior SWE-Bench's verifier alone, which grades with LLM judges.
+JUDGE_SETTING = "SSB_OVERRIDE_ALL_JUDGE_MODEL"
+# Each model the verifier calls, by the settings that choose it, the first set
+# one winning, and its default.
+GRADING_MODELS = (
+    ((JUDGE_SETTING,), "anthropic/claude-sonnet-4-6"),
+    (("SSB_OVERRIDE_CLASSIFIER_MODEL",), "anthropic/claude-haiku-4-5-20251001"),
+    (("SSB_OVERRIDE_VA_MODEL", "FORCE_VA_MODEL"), "anthropic/claude-sonnet-4-6"),
+)
+# The verifier sends every call through Portkey when this is set, whatever the model.
+ROUTER_KEY = "PORTKEY_API_KEY"
+PROVIDER_KEYS = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+
+
+def check_grading_keys(settings: Config, variables: Collection[str], lane: str) -> None:
+    """
+    Refuse a .env that lacks a key the tasks' verifier needs to call its models.
+
+    Only tasks whose verifier env names `JUDGE_SETTING` have such a verifier.
+    It needs `ROUTER_KEY`, or else the key of the provider each of its models
+    names, as anthropic/ or openai/. Without it the judges cannot run, and the
+    verifier still writes a reward. An empty value counts as unset. Raises
+    ConfigError naming the missing keys, or a model setting whose provider has
+    no key in `PROVIDER_KEYS`.
+    """
+    if JUDGE_SETTING not in variables or settings.env.get(ROUTER_KEY):
+        return
+    dotenv = settings.path.parent / ".env"
+    needed: dict[str, list[str]] = {}
+    for names, default in GRADING_MODELS:
+        setting = next((name for name in names if settings.env.get(name)), None)
+        model = settings.env[setting] if setting else default
+        key = PROVIDER_KEYS.get(model.partition("/")[0]) if "/" in model else None
+        if key is None:
+            raise ConfigError(
+                f"{dotenv} sets {setting} to {model}, but the verifier of the tasks in {lane} "
+                f"is given a key only for {' and '.join(f'{p}/' for p in PROVIDER_KEYS)} "
+                f"models; name one of those, or set {ROUTER_KEY}"
+            )
+        if not settings.env.get(key) and model not in needed.setdefault(key, []):
+            needed[key].append(model)
+    if needed:
+        models = [model for found in needed.values() for model in found]
+        them = "it" if len(needed) == 1 else "them"
+        raise ConfigError(
+            f"{dotenv} sets no {' or '.join(sorted(needed))}, which the verifier of the "
+            f"tasks in {lane} needs for {_and(models)}, or its judges cannot run; set {them}, "
+            f"or set {ROUTER_KEY} to reach every model through Portkey"
+        )
+
+
+def _and(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
 
 
 def _read_env(path: Path) -> dict[str, str]:

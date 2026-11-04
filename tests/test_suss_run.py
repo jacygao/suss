@@ -10,6 +10,12 @@ from importlib.machinery import ModuleSpec
 from pathlib import Path
 
 import pytest
+import typer.main
+from harbor.cli.main import app as harbor_app
+from harbor.models.task.config import NetworkMode, TaskConfig
+from harbor.models.trial.config import AgentConfig as TrialAgentConfig
+from harbor.models.trial.config import EnvironmentConfig as TrialEnvironmentConfig
+from harbor.trial.network_policy import resolve_agent_env_baseline, resolve_agent_phase_policy
 
 from suss import cli, lanes
 
@@ -204,6 +210,77 @@ def test_the_lane_holds_a_copy_of_each_downloaded_task_with_the_agents_network_o
     for name in TASKS:
         assert not (lane / name).is_symlink()
         assert 'network_mode = "no-network"' in (lane / name / "task.toml").read_text()
+
+
+def agent_phase_hosts(task: Path, agent_argv: list[str]) -> list[str]:
+    """
+    The hosts Harbor 0.22.0 opens in the agent phase of a trial of `task`, a
+    task directory, in the agent job run as `agent_argv`, by Harbor's own code.
+
+    Fails the test when that phase's network is not an allowlist.
+    """
+    run = typer.main.get_command(harbor_app).commands["run"]
+    parser = run.make_parser(run.context_class(run, info_name="run"))
+    given, _, _ = parser.parse_args(agent_argv[1:])
+    task_config = TaskConfig.model_validate_toml((task / "task.toml").read_text())
+    agent = TrialAgentConfig(extra_allowed_hosts=list(given.get("allow_agent_hosts") or []))
+    baseline = resolve_agent_env_baseline(task_config, TrialEnvironmentConfig())
+    policy = resolve_agent_phase_policy(task_config, agent, baseline)
+    assert policy.network_mode == NetworkMode.ALLOWLIST, f"{task.name}: {policy}"
+    return policy.allowed_hosts
+
+
+# Every Senior SWE-Bench v2026.06 task allows these in its agent phase.
+SENIOR_HOSTS = [
+    "api.portkey.ai", "pypi.org", "*.pythonhosted.org", "*.pypa.io", "astral.sh",
+    "*.astral.sh", "pypi-mirror.modal.local", "*.python.org", "registry.npmjs.org",
+    "www.npmjs.com", "registry.yarnpkg.com", "pnpm.io", "get.pnpm.io", "nodejs.org",
+    "deb.nodesource.com", "www.typescriptlang.org", "sh.rustup.rs", "*.rust-lang.org",
+    "crates.io", "*.crates.io", "hex.pm", "*.hex.pm", "elixir-lang.org", "www.erlang.org",
+    "developer.mozilla.org", "archive.ubuntu.com", "security.ubuntu.com", "*.ubuntu.com",
+    "deb.debian.org", "*.debian.org", "apt.postgresql.org", "download.redis.io",
+]
+
+
+def write_allowlist_task(tasks: Path, name: str, hosts: list[str]) -> Path:
+    task = write_task(tasks, name)
+    listed = "".join(f'    "{host}",\n' for host in hosts)
+    toml = task / "task.toml"
+    toml.write_text(
+        toml.read_text().replace(
+            "[agent]\n", f'[agent]\nnetwork_mode = "allowlist"\nallowed_hosts = [\n{listed}]\n'
+        )
+    )
+    return task
+
+
+def test_each_trials_agent_phase_reaches_its_tasks_hosts_and_the_manifests_and_no_other(project):
+    write_allowlist_task(
+        project.tasks, "posthog-fix-a", [*SENIOR_HOSTS, "clickhouse.com", "*.clickhouse.com"]
+    )
+    write_allowlist_task(project.tasks, "prefect-fix-b", [*SENIOR_HOSTS, "docs.sqlalchemy.org"])
+    # pypi.org is the tasks' as well, and must be opened once.
+    (project.directory / "adapter" / "suss-harness.toml").write_text(
+        '[harness]\nname = "peer-review"\nversion = "0.1.0"\nrun = "run.sh"\n'
+        'allowed_hosts = ["api.anthropic.com", "pypi.org"]\n'
+    )
+
+    assert project.run("peer-review", "rebench") == 0
+
+    lane = project.directory / "lanes" / "rebench"
+    agent = project.records("harbor")[0]["argv"]
+    assert [host for flag, host in zip(agent, agent[1:]) if flag == "--allow-agent-host"] == [
+        "api.anthropic.com",
+        "pypi.org",
+    ]
+    assert agent_phase_hosts(lane / "posthog-fix-a", agent) == [
+        *SENIOR_HOSTS, "clickhouse.com", "*.clickhouse.com", "api.anthropic.com",
+    ]
+    assert agent_phase_hosts(lane / "prefect-fix-b", agent) == [
+        *SENIOR_HOSTS, "docs.sqlalchemy.org", "api.anthropic.com",
+    ]
+    for name in TASKS:
+        assert agent_phase_hosts(lane / name, agent) == ["api.anthropic.com", "pypi.org"]
 
 
 def test_swe_rebench_is_read_from_the_directory_holding_suss_toml_not_the_current_one(
@@ -1101,3 +1178,142 @@ def test_a_second_run_leaves_the_first_runs_jobs_in_place(project):
     assert first == [f"{STAMP}-1", f"{STAMP}-1-regrade", f"{STAMP}-2", f"{STAMP}-2-regrade"]
     assert set(first) < set(after) and len(after) == 8
     assert all(Path(trial).is_dir() for trial in trials)
+
+
+# The verifier's environment
+
+# Every Senior SWE-Bench task's [verifier.env], as the v2026.06 download writes it.
+SENIOR_VERIFIER_ENV = """
+[verifier.env]
+ANTHROPIC_API_KEY = "${ANTHROPIC_API_KEY:-}"
+OPENAI_API_KEY = "${OPENAI_API_KEY:-}"
+PORTKEY_API_KEY = "${PORTKEY_API_KEY:-}"
+SSB_OVERRIDE_ALL_JUDGE_MODEL = "${SSB_OVERRIDE_ALL_JUDGE_MODEL:-}"
+SSB_OVERRIDE_CLASSIFIER_MODEL = "${SSB_OVERRIDE_CLASSIFIER_MODEL:-}"
+SSB_OVERRIDE_VA_HARNESS = "${SSB_OVERRIDE_VA_HARNESS:-}"
+SSB_OVERRIDE_VA_MODEL = "${SSB_OVERRIDE_VA_MODEL:-}"
+FORCE_VA_HARNESS = "${FORCE_VA_HARNESS:-}"
+FORCE_VA_MODEL = "${FORCE_VA_MODEL:-}"
+REPO_NAME = "repo"
+TIMEOUT_MULTIPLIER = "${TIMEOUT_MULTIPLIER:-1}"
+"""
+JUDGE_VARIABLES = (
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "PORTKEY_API_KEY",
+    "SSB_OVERRIDE_ALL_JUDGE_MODEL",
+    "SSB_OVERRIDE_CLASSIFIER_MODEL",
+    "SSB_OVERRIDE_VA_HARNESS",
+    "SSB_OVERRIDE_VA_MODEL",
+    "FORCE_VA_HARNESS",
+    "FORCE_VA_MODEL",
+    "TIMEOUT_MULTIPLIER",
+)
+
+
+@pytest.fixture
+def senior(project, two_lanes) -> Project:
+    """The download's tasks graded by Senior SWE-Bench's judges, run as the senior lane."""
+    for name in TASKS:
+        with (project.tasks / name / "task.toml").open("a") as toml:
+            toml.write(SENIOR_VERIFIER_ENV)
+    return project
+
+
+def write_dotenv(project: Project, text: str) -> None:
+    (project.directory / ".env").write_text(text)
+
+
+def test_the_agent_job_takes_no_key_its_tasks_read_even_from_suss_own_environment(
+    senior, monkeypatch
+):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "from-the-shell")
+    write_dotenv(senior, "ANTHROPIC_API_KEY=from-dotenv\n")
+
+    assert senior.run("peer-review", "senior") == 0
+
+    agent, regrade = senior.records("harbor")[:2]
+    assert "suss.agent:SussAgent" in agent["argv"]
+    assert not set(JUDGE_VARIABLES) & set(agent["env"])
+    assert agent["env"]["PATH"] == os.environ["PATH"]
+    assert regrade["env"]["ANTHROPIC_API_KEY"] == "from-dotenv"
+    assert regrade["env"]["PATH"] == os.environ["PATH"]
+
+
+def test_the_regrade_gets_an_override_env_sets_and_none_from_suss_own_environment(
+    senior, monkeypatch
+):
+    monkeypatch.setenv("SSB_OVERRIDE_CLASSIFIER_MODEL", "anthropic/claude-opus-4-6")
+    write_dotenv(
+        senior, "ANTHROPIC_API_KEY=sk-ant-1\nSSB_OVERRIDE_ALL_JUDGE_MODEL=anthropic/claude-opus-4-6\n"
+    )
+
+    assert senior.run("peer-review", "senior") == 0
+
+    regrade = senior.records("harbor")[1]
+    assert regrade["env"]["SSB_OVERRIDE_ALL_JUDGE_MODEL"] == "anthropic/claude-opus-4-6"
+    assert "SSB_OVERRIDE_CLASSIFIER_MODEL" not in regrade["env"]
+
+
+@pytest.mark.parametrize(
+    "dry_run, check", [(False, False), (True, False), (False, True)], ids=["run", "dry-run", "check"]
+)
+@pytest.mark.parametrize("dotenv", ["", "ANTHROPIC_API_KEY=\n"], ids=["unset", "empty"])
+def test_a_missing_grading_key_is_refused_as_the_spec_shows_before_anything_runs(
+    senior, capfd, monkeypatch, dry_run, check, dotenv
+):
+    if dry_run:
+        monkeypatch.setenv("DRY_RUN", "1")
+    # suss's own environment does not count: the regrade takes the key from .env alone.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "from-the-shell")
+    write_dotenv(senior, dotenv)
+
+    code = senior.run("peer-review", "senior", *(["--check"] if check else []))
+
+    out, err = capfd.readouterr()
+    assert code != 0
+    assert err == (
+        f"error: {senior.directory / '.env'} sets no ANTHROPIC_API_KEY, which the verifier of "
+        "the tasks in senior needs for anthropic/claude-sonnet-4-6 and "
+        "anthropic/claude-haiku-4-5-20251001, or its judges cannot run; set it, or set "
+        "PORTKEY_API_KEY to reach every model through Portkey\n"
+    )
+    assert out == ""
+    assert_nothing_ran(senior)
+
+
+def test_a_dry_run_names_each_variable_the_regrade_is_given_and_never_its_value(
+    senior, capfd, monkeypatch
+):
+    monkeypatch.setenv("DRY_RUN", "1")
+    write_dotenv(
+        senior,
+        "ANTHROPIC_API_KEY=sk-ant-secret\nSSB_OVERRIDE_ALL_JUDGE_MODEL=anthropic/claude-opus-4-6\n",
+    )
+
+    assert senior.run("peer-review", "senior") == 0
+
+    lines = capfd.readouterr().out.splitlines()
+    assert "sk-ant-secret" not in "\n".join(lines)
+    assert "claude-opus-4-6" not in "\n".join(lines)
+    assert len(lines) == 6
+    agent, names, regrade = lines[:3]
+    assert "suss.agent:SussAgent" in agent and agent.split()[1:3] == ["run", "-y"]
+    assert names == "# from .env: ANTHROPIC_API_KEY SSB_OVERRIDE_ALL_JUDGE_MODEL"
+    assert "suss.replay:ReplayAgent" in regrade and regrade.split()[1:3] == ["run", "-y"]
+
+
+def test_a_rebench_regrade_runs_as_before_whatever_env_holds(project, capfd, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "from-the-shell")
+    write_dotenv(project, "ANTHROPIC_API_KEY=from-dotenv\n")
+
+    assert project.run("peer-review", "rebench") == 0
+
+    for record in project.records("harbor")[:2]:
+        assert "-y" not in record["argv"]
+        assert record["env"]["ANTHROPIC_API_KEY"] == "from-the-shell"
+
+    monkeypatch.setenv("DRY_RUN", "1")
+    capfd.readouterr()
+    project.run("peer-review", "rebench")
+    assert not any(line.startswith("#") for line in capfd.readouterr().out.splitlines())

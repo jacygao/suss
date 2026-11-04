@@ -65,7 +65,8 @@ docker run --rm alpine:3.19 sh -c 'zcat /proc/config.gz | grep NFT_FIB_INET'
 
 Suss is a Harbor custom agent, `suss.agent:SussAgent`. Harbor runs it once per
 trial, in two phases. The setup phase has network access. The agent phase
-reaches only the hosts the harness's manifest lists in `allowed_hosts`.
+reaches only the hosts the harness's manifest lists in `allowed_hosts`, and
+those its task lists in `[agent] allowed_hosts`.
 
 In the setup phase, suss:
 
@@ -168,6 +169,37 @@ file:
   "removed": []
 }
 ```
+
+A task can have Harbor fill a variable from Harbor's own environment, in its
+`[verifier.env]` or `[environment.env]`, as each Senior SWE-Bench task's
+verifier takes its keys:
+
+```toml
+[verifier.env]
+ANTHROPIC_API_KEY = "${ANTHROPIC_API_KEY:-}"
+SSB_OVERRIDE_ALL_JUDGE_MODEL = "${SSB_OVERRIDE_ALL_JUDGE_MODEL:-}"
+```
+
+Suss runs the regrade's Harbor with each variable the lane's tasks name this
+way that the `.env` beside `suss.toml` sets, with its value there. Neither job's
+Harbor takes these variables from suss's own environment. So a variable `.env`
+leaves out or leaves empty takes the task's default, and the agent phase gets
+one only when the harness's manifest names it in `env`.
+
+A task whose `[verifier.env]` names `SSB_OVERRIDE_ALL_JUDGE_MODEL` has Senior
+SWE-Bench's verifier. It calls LLM judges, and when it cannot reach their
+models it still writes a reward. Its run needs
+`PORTKEY_API_KEY` in `.env`, which reaches every model through Portkey, or else
+the key of each model the verifier calls: `ANTHROPIC_API_KEY` for an
+`anthropic/` model, and `OPENAI_API_KEY` for an `openai/` one. With every
+default, that is `ANTHROPIC_API_KEY` alone. The settings that choose the models
+are optional:
+
+| Model | Chosen by | Default |
+|---|---|---|
+| the rubric and taste judges | `SSB_OVERRIDE_ALL_JUDGE_MODEL` | `anthropic/claude-sonnet-4-6` |
+| the patch classifier | `SSB_OVERRIDE_CLASSIFIER_MODEL` | `anthropic/claude-haiku-4-5-20251001` |
+| the validation agent | `SSB_OVERRIDE_VA_MODEL`, else `FORCE_VA_MODEL` | `anthropic/claude-sonnet-4-6` |
 
 ### The trial record
 
@@ -316,16 +348,31 @@ build downloads from the network. Its repository is in the image's `WORKDIR`.
 
 ### Network
 
-The agent phase has no network. Suss passes each host in the harness's
-`allowed_hosts` to Harbor as `--allow-agent-host`, and nothing else, so a harness
-cannot fetch a task's real change from the web.
+In the agent phase, a trial reaches the hosts in the harness's `allowed_hosts`
+and the hosts in its own task's `[agent] allowed_hosts`, and no other host, so a
+harness cannot fetch a task's real change from the web. A `rebench` task names
+no hosts of its own, so its trials reach the harness's alone.
 
-The tasks give the network to the whole trial, with
-`[environment] network_mode = "public"`, or with `allow_internet = true` in
-one, and Harbor ignores `--allow-agent-host` under either. So the lane holds a copy of each task, whose
-`task.toml` adds `[agent] network_mode = "no-network"` and is otherwise
-unchanged. The verifier keeps the task's own network, which it uses to download
-a Python on an image that has none.
+Suss passes each host in the harness's `allowed_hosts` to Harbor as
+`--allow-agent-host`, and nothing else. Harbor adds them, trial by trial, to the
+hosts of that trial's own task. A host that one task names stays closed to
+every other task's trials in the same job, and a host the harness and the task
+both name is opened once. A task allowing `pypi.org`
+and `clickhouse.com`, under a harness allowing `api.anthropic.com` and
+`pypi.org`, has an agent phase that reaches `pypi.org`, `clickhouse.com` and
+`api.anthropic.com`.
+
+Harbor ignores `--allow-agent-host` when the agent's network is public, which
+it is when a task's `[agent]` sets no `network_mode` and the task gives the
+network to the whole trial, with `[environment] network_mode = "public"` or with
+`allow_internet = true`. Every `rebench` task does. So the lane holds a copy of
+each task, and the copy's `task.toml` adds `[agent] network_mode = "no-network"`
+where `[agent]` sets no `network_mode`. A `task.toml` whose `[agent]` sets
+`no-network` or `allowlist` is copied unchanged. One whose `[agent]` sets any
+other `network_mode`, or sets `allowed_hosts` with no `network_mode`, makes
+`suss run` exit with an error naming it before it builds any lane or runs any
+job. The verifier keeps the task's own network, which it uses to download a
+Python on an image that has none.
 
 ## 6. Commands
 
@@ -339,7 +386,8 @@ suss run peer-review rebench
 It reads the arm from `suss.toml` in the current directory. For each lane, it
 builds `lanes/<lane>/`, a directory of copies of the lane's task directories
 from the directory `swe_rebench` names, each with
-`[agent] network_mode = "no-network"` added to its `task.toml`. A build removes
+`[agent] network_mode = "no-network"` added to its `task.toml` where its
+`[agent]` sets no `network_mode`. A build removes
 what an earlier build of the lane left. Harbor builds each task's image from its
 `Dockerfile` when its trial starts.
 
@@ -369,6 +417,26 @@ forms two absolute paths itself:
 - `<dir>` is the directory holding `suss.toml`, so the regrade's `source_job`
   is the agent job's directory.
 
+When a task in the lane has Harbor fill a variable from Harbor's environment,
+both jobs also take `-y`, right after `run`. Harbor asks before such a job
+whether its tasks may load those variables, and without a terminal it reads no
+answer and exits 1 with `Aborted.`. Answering yes is safe because Harbor holds
+only the values suss gives it: none in the agent job, and those `.env` sets in
+the regrade. `-y` also agrees, without asking, to share an uploaded job with an
+organization you are not a member of.
+
+A run whose `.env` lacks a key the regrade's verifier needs exits with an error
+naming it before it builds any lane or runs any job, with `DRY_RUN=1` and
+`--check` too. A key set to an empty value counts as missing:
+
+```
+$ suss run peer-review senior
+error: /home/me/evals/.env sets no ANTHROPIC_API_KEY, which the verifier of the
+tasks in senior needs for anthropic/claude-sonnet-4-6 and
+anthropic/claude-haiku-4-5-20251001, or its judges cannot run; set it, or set
+PORTKEY_API_KEY to reach every model through Portkey
+```
+
 Options after `--` go to every agent job. Passing any of these, under any name
 or spelling Harbor accepts, is an error that names it and says why, and runs
 nothing:
@@ -376,7 +444,9 @@ nothing:
 - An option suss sets on the agent job or its regrade, even with suss's own
   value: `-p`, `-e`, `-n`, `-k`, `-a`, `-m`, `--ak`, `--allow-agent-host`,
   `--disable-verification` and its opposite `--enable-verification`,
-  `--jobs-dir` and `--job-name`.
+  `--jobs-dir`, `--job-name` and `-y`.
+- `--env-file`, which would load the file into the agent job's environment, and
+  `--share-org` where the jobs take `-y`.
 - An option that changes the tasks or the agent the agent job runs, or keeps it
   from leaving a trial on this machine for its regrade: `-c`, `-d`, `-t`, `-i`,
   `-x`, `-l`, `--registry-url`, `--registry-path`, `--repo`, `--task-git-url`,
@@ -392,7 +462,14 @@ error: -k/--n-attempts can't be passed after --: suss runs one trial per agent
 job, and k in suss.toml sets how many jobs
 ```
 
-`DRY_RUN=1` prints the `harbor run` commands instead of running them.
+`DRY_RUN=1` prints the `harbor run` commands instead of running them. Before a
+regrade whose Harbor holds values from `.env`, it prints their names, and never
+a value:
+
+```
+# from .env: ANTHROPIC_API_KEY SSB_OVERRIDE_ALL_JUDGE_MODEL
+/home/me/evals/.venv/bin/harbor run -y -p lanes/senior -e docker -n 16 -k 1 -a suss.replay:ReplayAgent -m replay --ak source_job=/home/me/evals/results/senior/peer-review/20261031T142500Z-1 --jobs-dir results/senior/peer-review --job-name 20261031T142500Z-1-regrade
+```
 
 Every agent job is followed by its regrade, whatever its trials did and whatever
 Harbor's exit code was. A trial that failed or errored is graded as its regrade
@@ -537,38 +614,50 @@ under `checks/` never count.
 A trial's result is the reward of its regrade. Suss pairs each trial in an agent
 job, `<stamp>-<i>`, with the trial for the same task in `<stamp>-<i>-regrade`.
 
-It compares the arms over the tasks every one of them has trials for. It prints
-two tables. The first gives each arm's trials and its resolved, failed and
-timed-out shares. The second gives each arm's resolved difference from its
+It compares the arms over the tasks every one of them has a valid trial of. It
+prints two tables. The first gives each arm's trials and its resolved, failed
+and timed-out shares. The second gives each arm's resolved difference from its
 baseline, with an interval. After the tables, it names each trial whose regrade
-recorded no test result, by arm, job and task:
+recorded no test result, then each invalid trial, by arm, job and task:
 
 ```
 These trials' regrades recorded no test result, so their grading may have broken:
   claude-code  20261103T204423Z-2  marimo-team__marimo-9766
+
+These trials' regrades judged them invalid, so neither table counts them:
+  claude-code  20261103T204423Z-1  paperless-ngx-perf-workflow-queries
 ```
 
-- Every trial counts as its regrade graded it, `harness-failed` and `timed-out`
-  ones included.
+- Every valid trial counts as its regrade graded it, `harness-failed` and
+  `timed-out` ones included.
+- A trial is invalid when its regrade's verifier wrote an empty
+  `verifier/reward.txt`, which Harbor records in the regrade trial's
+  `result.json` as an `exception_info` whose `exception_type` is
+  `RewardFileEmptyError`. An invalid trial counts in neither table, as if it
+  had not run. The task's other trials, in every arm, still count. Where every
+  trial of a task in one arm is invalid, that task counts in no arm. The list
+  names the invalid trials of every task each arm has a trial of. An invalid
+  trial is never also named as recording no test result.
 - A regrade records no test result when its trial has no
   `verifier/report.json`, as the verifier of every `rebench` task writes it, or
   when that report's `parsed_counts` counts no test as `PASSED`, `FAILED`,
   `SKIPPED` or `ERROR`. A trial with no regrade trial records none either.
-- A trial whose regrade has no reward counts as unresolved. A trial with no
-  `suss.json`, which a sandbox that never started or a Harbor exception leaves,
-  counts as `harness-failed`.
+- A valid trial whose regrade has no reward counts as unresolved, as when its
+  verifier timed out or crashed. A trial with no `suss.json`, which a sandbox
+  that never started or a Harbor exception leaves, counts as `harness-failed`.
 - `failed` is the share of trials whose status is `harness-failed`, and
   `timed out` the share whose status is `timed-out`.
 - Each arm whose `baseline` is among the arms given gets a row in the second
   table. The bracketed range is a 95% interval from a bootstrap of 10,000
-  resamples, each drawing tasks so that a task's K trials stay together. The
-  same results always print the same interval.
+  resamples, each drawing tasks so that a task's trials stay together. A share
+  is resolved trials over trials, so a task left with fewer valid trials weighs
+  less in that arm. The same results always print the same interval.
 - Shares print as whole percents, and every difference and interval end
   carries a sign.
 
 On the `senior` lane, a third table follows the second. It gives each arm's mean
-score from each of the regrade's judges, over the same tasks, and in parentheses
-how many trials each mean is over:
+score from each of the regrade's judges, over the valid trials the shares count,
+and in parentheses how many trials each mean is over:
 
 ```
 mean (trials)     rubric  practice alignment  relative taste  patch bloat
@@ -576,8 +665,8 @@ claude-code    0.71 (34)           3.62 (47)       3.04 (47)    1.48 (47)
 self-review    0.78 (33)           3.81 (46)       3.17 (46)    1.31 (46)
 ```
 
-After the list of trials that recorded no test result, it names each trial
-whose judges failed or were skipped, by arm, job and task, then the judges:
+After the list of invalid trials, it names each counted trial whose judges
+failed or were skipped, by arm, job and task, then the judges:
 
 ```
 These trials' judges failed or were skipped, so the means leave out their scores:
@@ -608,8 +697,14 @@ These trials' judges failed or were skipped, so the means leave out their scores
 
 It exits with an error, and prints nothing else, when:
 
-- An arm it is given has no trials under `results/<lane>/<arm>/`, or is not in
-  `suss.toml`.
+- An arm it is given has no trials under `results/<lane>/<arm>/`, has only
+  invalid ones, or is not in `suss.toml`:
+
+  ```
+  $ suss compare rebench claude-code self-review
+  error: every trial of arm self-review under results/rebench/ is invalid: its
+  regrade wrote an empty reward
+  ```
 - The arms' trials that have a `suss.json` do not all carry the same `grader`.
   A trial with no `suss.json` has no `grader` to compare, and still counts as
   `harness-failed`.

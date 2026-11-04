@@ -2,8 +2,8 @@
 A lane's directory, which Harbor reads as `-p lanes/<lane>`, and the checks
 made on a lane before any job.
 
-The rebench lane holds copies of the downloaded tasks, since each task.toml
-must change.
+The rebench lane holds copies of the downloaded tasks, since a task.toml that
+leaves the agent's network open must close it.
 """
 
 import hashlib
@@ -291,13 +291,14 @@ def check_buildable(swe_rebench: Path, lanes: Path, check: bool = False) -> None
 def build_rebench(swe_rebench: Path, lanes: Path, check: bool = False) -> Path:
     """
     Make `lanes/rebench/` hold a copy of each task `lane_tasks` gives, whose
-    task.toml adds `[agent] network_mode = "no-network"`.
+    task.toml adds `[agent] network_mode = "no-network"` unless its agent's
+    network is already closed.
 
     With `check`, it makes `lanes/rebench-check/` instead, holding only the
     first task by name. Every other file is copied as it is, mode included.
     Whatever an earlier build left is removed. Raises LaneError as
-    `lane_tasks` does, naming a task.toml that already sets the agent's
-    network mode or that the key cannot be added to, and when the lane's path
+    `lane_tasks` does, naming a task.toml whose agent network `_without_network`
+    refuses or that the key cannot be added to, and when the lane's path
     is a link or anything else but a directory. Every task.toml is read before
     the lane is touched, so an error leaves an earlier build as it was.
     """
@@ -352,22 +353,36 @@ def _remove_from_read_only(function, path: str, error: BaseException) -> None:
     function(path)
 
 
+# The agent network modes under which Harbor opens, in each trial, only the
+# task's own allowed_hosts and the job's --allow-agent-host hosts.
+CLOSED = ("no-network", "allowlist")
+
+
 def _without_network(path: Path) -> bytes:
     """
     The task.toml at `path` with `network_mode = "no-network"` added to its
-    `[agent]` table, its text otherwise unchanged.
+    `[agent]` table, its text otherwise unchanged. One whose `[agent]` already
+    sets a mode in CLOSED is returned as it is.
 
     The line goes directly under the `[agent]` header, or under a new one at
     the end where there is none. Raises LaneError naming the file when it
-    already sets the agent's network mode, or when the result does not parse
-    to the original plus that one key.
+    sets any other agent network mode, sets `[agent] allowed_hosts` with no
+    mode, or when the result does not parse to the original plus that one
+    key.
     """
     original = _read_task(path)
     agent = original.get("agent", {})
+    if isinstance(agent, dict) and agent.get("network_mode") in CLOSED:
+        return path.read_bytes()
     if isinstance(agent, dict) and "network_mode" in agent:
         raise LaneError(
-            f"{path}: sets [agent] network_mode = {agent['network_mode']!r}, which the "
-            "rebench lane must set to no-network itself"
+            f"{path}: sets [agent] network_mode = {agent['network_mode']!r}, under which "
+            "Harbor opens every host to the agent; the lane takes only no-network or allowlist"
+        )
+    if isinstance(agent, dict) and "allowed_hosts" in agent:
+        raise LaneError(
+            f"{path}: sets [agent] allowed_hosts with no network_mode, which Harbor "
+            'refuses; it takes them only with network_mode = "allowlist"'
         )
     lines = path.read_bytes().decode().splitlines(keepends=True)
     headers = [number for number, line in enumerate(lines) if AGENT_HEADER.match(line)]
