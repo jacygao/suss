@@ -1,3 +1,4 @@
+import dataclasses
 import os
 import re
 import shlex
@@ -273,9 +274,13 @@ def harbor_run_options():
 
 def options_suss_sets(tmp_path) -> set[str]:
     run, _ = harbor_run_options()
-    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1)
+    # -y only on a lane whose tasks read Harbor's environment.
+    commands = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1)
+    commands += harbor_commands(
+        make_config(tmp_path), make_manifest(), "senior", STAMP, 1, reads=("ANTHROPIC_API_KEY",)
+    )
     emitted = set()
-    for command in (agent, regrade):
+    for command in commands:
         _, _, found = run.make_parser(run.context_class(run)).parse_args(command.argv[2:])
         emitted |= {param.name for param in found}
     return emitted
@@ -297,7 +302,7 @@ def refused_options(tmp_path) -> set[str]:
 def test_every_option_suss_sets_on_either_job_is_refused(tmp_path):
     emitted = options_suss_sets(tmp_path)
 
-    assert len(emitted) == 11
+    assert len(emitted) == 12
     assert emitted <= refused_options(tmp_path)
 
 
@@ -331,7 +336,105 @@ def test_the_options_refused_beyond_those_suss_sets_are_these(tmp_path):
         "dry_run",
         "init",
         "print_config",
+        "env_file",
     }
+
+
+# The verifier's environment
+
+READS = ("ANTHROPIC_API_KEY", "SSB_OVERRIDE_ALL_JUDGE_MODEL", "TIMEOUT_MULTIPLIER")
+
+
+def with_dotenv(tmp_path: Path, env: dict[str, str]) -> Config:
+    return dataclasses.replace(make_config(tmp_path), env=env)
+
+
+def test_both_jobs_answer_harbors_question_when_the_tasks_read_its_environment(tmp_path):
+    agent, regrade = harbor_commands(
+        make_config(tmp_path), make_manifest(), "senior", STAMP, 1, reads=READS
+    )
+
+    # Without a terminal, Harbor reads no answer and aborts the job.
+    assert agent.argv[:3] == ["harbor", "run", "-y"]
+    assert regrade.argv[:3] == ["harbor", "run", "-y"]
+
+
+def test_neither_job_answers_a_question_harbor_does_not_ask(tmp_path):
+    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1)
+
+    assert "-y" not in agent.argv
+    assert "-y" not in regrade.argv
+
+
+def test_the_agent_job_withholds_every_variable_the_tasks_read_and_is_given_none(tmp_path):
+    settings = with_dotenv(tmp_path, {"ANTHROPIC_API_KEY": "sk-ant-1"})
+
+    agent, _ = harbor_commands(settings, make_manifest(), "senior", STAMP, 1, reads=READS)
+
+    assert agent.withheld == READS
+    assert agent.given == {}
+
+
+def test_the_regrade_is_given_the_values_env_sets_for_what_the_tasks_read(tmp_path):
+    settings = with_dotenv(
+        tmp_path,
+        {"ANTHROPIC_API_KEY": "sk-ant-1", "TIMEOUT_MULTIPLIER": "", "DEEPSEEK_API_KEY": "ds-1"},
+    )
+
+    _, regrade = harbor_commands(settings, make_manifest(), "senior", STAMP, 1, reads=READS)
+
+    assert regrade.withheld == READS
+    assert regrade.given == {"ANTHROPIC_API_KEY": "sk-ant-1"}
+
+
+def test_a_commands_values_from_env_never_show_in_its_repr(tmp_path):
+    settings = with_dotenv(tmp_path, {"ANTHROPIC_API_KEY": "sk-ant-secret"})
+
+    _, regrade = harbor_commands(settings, make_manifest(), "senior", STAMP, 1, reads=READS)
+
+    assert "sk-ant-secret" not in repr(regrade)
+
+
+def test_yes_after_the_separator_is_refused_as_an_option_suss_sets(tmp_path):
+    with pytest.raises(ValueError) as refused:
+        harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, ["--yes"])
+
+    assert str(refused.value) == (
+        "-y/--yes can't be passed after --: suss answers Harbor's question itself, on a lane "
+        "whose tasks read Harbor's environment"
+    )
+
+
+def test_an_env_file_after_the_separator_is_refused(tmp_path):
+    with pytest.raises(ValueError) as refused:
+        harbor_commands(
+            make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, ["--env-file", ".env"]
+        )
+
+    assert str(refused.value) == (
+        "--env-file can't be passed after --: it would give the agent job the variables its "
+        "tasks read from Harbor's environment; suss gives those .env sets to the regrade alone"
+    )
+
+
+def test_sharing_with_an_organization_is_refused_where_suss_answers_harbors_question(tmp_path):
+    extra = ["--upload", "--share-org", "acme"]
+
+    with pytest.raises(ValueError) as refused:
+        harbor_commands(make_config(tmp_path), make_manifest(), "senior", STAMP, 1, extra, reads=READS)
+
+    assert str(refused.value) == (
+        "--share-org can't be passed after -- on senior: suss passes -y there, which would "
+        "share the job with an organization you are not a member of without asking"
+    )
+
+
+def test_sharing_with_an_organization_passes_through_where_harbor_asks_no_question(tmp_path):
+    extra = ["--upload", "--share-org", "acme"]
+
+    agent, _ = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, extra)
+
+    assert agent.argv[-3:] == extra
 
 
 @pytest.mark.parametrize(
