@@ -1365,6 +1365,23 @@ def test_a_mean_with_no_trial_to_count_prints_a_dash():
     ]
 
 
+def set_rewards(regrade: Path, rewards: dict) -> None:
+    result = json.loads((regrade / "result.json").read_text())
+    write_json(regrade / "result.json", result | {"verifier_result": {"rewards": rewards}})
+
+
+def test_a_mean_half_way_between_two_places_rounds_up_however_floats_add_it(senior, capsys):
+    # 0.7 + 0.11 over 2 is 0.40499999999999997 in floats.
+    set_rewards(regrade_of_senior(senior, "beta", "s1", 1), judged(bloat=0.7))
+    set_rewards(regrade_of_senior(senior, "beta", "s2", 1), judged(bloat=0.11))
+    set_rewards(regrade_of_senior(senior, "beta", "s3", 1), JUDGES_FAILED)
+
+    code, out, err = run_compare(senior, capsys, SENIOR, "base", "beta")
+
+    assert (code, err) == (0, "")
+    assert "beta           1.00 (2)            4.00 (2)        3.00 (2)     0.41 (2)\n" in out
+
+
 def test_a_judge_with_no_status_to_say_it_had_no_criteria_is_named(senior, capsys):
     # With no judge_output.json, a rubric flag of 0 cannot be told from a failure.
     (regrade_of_senior(senior, "beta", "s3", 1) / "verifier" / "judge_output.json").unlink()

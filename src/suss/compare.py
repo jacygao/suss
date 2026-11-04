@@ -299,7 +299,7 @@ class Mean:
     """A mean over the trials that have the score, and how many those are."""
 
     # None when no trial has the score.
-    value: float | None
+    value: Decimal | float | None
     trials: int
 
 
@@ -400,7 +400,9 @@ def _means(trials: Sequence[Trial]) -> Means:
             and _number(trial.rewards.get(flag)) == 1
             and (score := _number(trial.rewards.get(key))) is not None
         ]
-        means[field] = Mean(sum(scores) / len(scores) if scores else None, len(scores))
+        # In decimal, so that a mean half way between two places is not a float just under it.
+        total = sum(Decimal(str(score)) for score in scores)
+        means[field] = Mean(total / len(scores) if scores else None, len(scores))
     return Means(**means)
 
 
