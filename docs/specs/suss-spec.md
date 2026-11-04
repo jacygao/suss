@@ -108,11 +108,15 @@ suss's own `suss.replay:ReplayAgent` as the agent. For each trial, it starts a
 fresh sandbox from the task's image, applies the trial's `model.patch` in the
 workspace, found as the trial found it, puts every test file back as the image
 held it, and runs the verifier there. That verifier's reward is the trial's
-result. It applies the patch with the first of these that succeeds:
+result. It applies the patch with:
 
 ```bash
-git apply --verbose model.patch || git apply --3way model.patch || patch --fuzz=3 -p1 -i model.patch
+git apply --verbose model.patch
 ```
+
+Git applies all of the patch or none of it. The patch runs from the starting
+tree, which the regrade's sandbox also starts from, so a patch suss captured
+applies there.
 
 A harness cannot change its result by changing the sandbox it worked in, because
 the grading happens in another.
@@ -546,9 +550,8 @@ It exits with an error, and prints nothing else, when:
 - A trial whose `suss.json` has `patch_bytes` above 0 has a regrade that
   applied no patch: its `agent/replay.json` has `"patch": null`, or it has no
   `agent/replay.json` and its `result.json` records an exception.
-- A trial's regrade applied only part of its patch: its `agent/replay.json`
-  names a patch, and `apply_rc` is not 0, or `apply_out` has a line from
-  `git apply --3way` that ends `with conflicts.`.
+- A trial's regrade could not apply its patch: its `agent/replay.json` names a
+  patch, and its `apply_rc` is not 0.
 
 ## 7. The project
 

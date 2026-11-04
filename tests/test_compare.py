@@ -427,25 +427,6 @@ SKIPPED_A_HUNK = {
         "patching file src/logic/createFormControl.ts\n"
     ),
 }
-# git apply --3way wrote conflict markers and exited 1, then patch applied the
-# hunk again with fuzz and exited 0, leaving the markers in place.
-LEFT_CONFLICTS = {
-    "apply_rc": 0,
-    "apply_out": (
-        "$ git apply --verbose\n"
-        "Checking patch a.txt...\n"
-        "error: patch failed: a.txt:3\n"
-        "error: a.txt: patch does not apply\n"
-        "$ git apply --3way\n"
-        "Applied patch to 'a.txt' with conflicts.\n"
-        "U a.txt\n"
-        "$ patch --fuzz=3 -p1 -i\n"
-        "patching file a.txt\n"
-        "Hunk #1 succeeded at 3 with fuzz 3.\n"
-    ),
-}
-
-
 def applied_part(trial: Path, applying: dict) -> None:
     """Make the regrade trial's replay.json record its patch applied as `applying` says."""
     replay = trial / "agent" / "replay.json"
@@ -455,8 +436,8 @@ def applied_part(trial: Path, applying: dict) -> None:
 
 @pytest.mark.parametrize(
     "applying",
-    [SKIPPED_A_HUNK, LEFT_CONFLICTS, {}, {"apply_rc": None, "apply_out": ""}],
-    ids=["skipped-a-hunk", "left-conflicts", "no-exit-code", "null-exit-code"],
+    [SKIPPED_A_HUNK, {}, {"apply_rc": None, "apply_out": ""}],
+    ids=["skipped-a-hunk", "no-exit-code", "null-exit-code"],
 )
 def test_a_regrade_that_does_not_show_it_applied_all_of_its_patch_applied_part(
     tmp_path, arm, applying
@@ -470,10 +451,10 @@ def test_a_regrade_that_does_not_show_it_applied_all_of_its_patch_applied_part(
 
     trials = by_job(read_trials(tmp_path, LANE, ARM))
 
-    assert trials["S-1", FLIPT].regrade_partial is True
+    assert trials["S-1", FLIPT].regrade_refused is True
     # A clean apply, and a regrade that applied no patch, applied no part.
-    assert trials["S-1", NAVIDROME].regrade_partial is False
-    assert trials["S-1", FLIPT_TOO].regrade_partial is False
+    assert trials["S-1", NAVIDROME].regrade_refused is False
+    assert trials["S-1", FLIPT_TOO].regrade_refused is False
 
 
 def counts(**given) -> dict:
@@ -1011,13 +992,13 @@ def test_a_regrade_that_applied_part_of_a_trials_patch_is_an_error_naming_both(
     assert (out, err) == (
         "",
         f"error: the trial of {task} in results/{LANE}/{arm}/S-1 made a patch, "
-        "but its regrade in S-1-regrade applied only part of it\n",
+        "but its regrade in S-1-regrade could not apply it\n",
     )
 
 
 def test_the_first_regrade_that_applied_part_of_a_patch_is_the_one_named(results, capsys):
     applied_part(regrade_of(results, "alpha", "t3", 2), SKIPPED_A_HUNK)
-    applied_part(regrade_of(results, "alpha", "t4", 1), LEFT_CONFLICTS)
+    applied_part(regrade_of(results, "alpha", "t4", 1), SKIPPED_A_HUNK)
     applied_part(regrade_of(results, "base", "t4", 3), SKIPPED_A_HUNK)
 
     code, out, err = run_compare(results, capsys, LANE, "alpha", "base")
@@ -1027,7 +1008,7 @@ def test_the_first_regrade_that_applied_part_of_a_patch_is_the_one_named(results
     assert (out, err) == (
         "",
         f"error: the trial of t4 in results/{LANE}/alpha/S-1 made a patch, "
-        "but its regrade in S-1-regrade applied only part of it\n",
+        "but its regrade in S-1-regrade could not apply it\n",
     )
 
 

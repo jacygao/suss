@@ -261,45 +261,20 @@ def test_a_patch_that_applies_cleanly_runs_only_git_apply(
     assert "Applied patch lines.txt cleanly" in record["apply_out"]
 
 
-def test_a_patch_whose_context_moved_falls_back_to_a_three_way_merge(
+def test_a_patch_whose_context_moved_is_refused_not_merged(
     tmp_path, local_environment, workspace, found
 ):
     job = tmp_path / "agent-job"
-    trial(job, "t1", TASK, patch_of(workspace, edit_line(13, "ours")))
-    # A context line of the hunk differs from the patch's, but merges cleanly.
+    trial(job, "t1", TASK, patch_of(workspace, edit_line(12, "ours")))
+    # A context line of the hunk differs from the patch's, though git could merge it.
     edit_line(10, "moved")(workspace)
     git(workspace, "commit", "-qam", "moved")
 
     record = replay(replay_agent(tmp_path, str(job)), local_environment)
 
-    assert methods_run(record) == ["git apply --verbose", "git apply --3way"]
-    assert record["apply_rc"] == 0
-    lines = (workspace / "lines.txt").read_text().splitlines()
-    assert (lines[9], lines[12]) == ("moved", "ours")
-
-
-def test_a_patch_git_cannot_merge_falls_back_to_patch_with_fuzz(
-    tmp_path, local_environment, workspace, found
-):
-    # No index line, so git has no blob to merge from.
-    hand_written = (
-        b"--- a/lines.txt\n+++ b/lines.txt\n@@ -10,7 +10,7 @@\n"
-        b" line 10\n line 11\n line 12\n-line 13\n+ours\n line 14\n line 15\n line 16\n"
-    )
-    job = tmp_path / "agent-job"
-    trial(job, "t1", TASK, hand_written)
-    edit_line(10, "moved")(workspace)
-    git(workspace, "commit", "-qam", "moved")
-
-    record = replay(replay_agent(tmp_path, str(job)), local_environment)
-
-    assert methods_run(record) == [
-        "git apply --verbose",
-        "git apply --3way",
-        "patch --fuzz=3 -p1 -i",
-    ]
-    assert record["apply_rc"] == 0
-    assert (workspace / "lines.txt").read_text().splitlines()[12] == "ours"
+    assert methods_run(record) == ["git apply --verbose"]
+    assert record["apply_rc"] != 0
+    assert (workspace / "lines.txt").read_text().splitlines()[11] == "line 12"
 
 
 def test_a_patch_nothing_applies_records_the_failure_and_returns(
@@ -311,11 +286,7 @@ def test_a_patch_nothing_applies_records_the_failure_and_returns(
 
     record = replay(replay_agent(tmp_path, str(job)), local_environment)
 
-    assert methods_run(record) == [
-        "git apply --verbose",
-        "git apply --3way",
-        "patch --fuzz=3 -p1 -i",
-    ]
+    assert methods_run(record) == ["git apply --verbose"]
     assert record["apply_rc"] != 0
     assert "absent.txt" in record["apply_out"]
 
@@ -329,8 +300,8 @@ def test_each_methods_output_follows_its_own_line_where_stderr_is_kept_apart(
 
     record = replay(replay_agent(tmp_path, str(job)), modal_environment)
 
-    first_method_output = record["apply_out"].split("$ git apply --3way")[0]
-    assert "error: absent.txt" in first_method_output, record["apply_out"]
+    assert record["apply_out"].startswith("$ git apply --verbose\n"), record["apply_out"]
+    assert "error: absent.txt" in record["apply_out"], record["apply_out"]
 
 
 @pytest.mark.parametrize(
@@ -567,25 +538,6 @@ def test_a_test_file_whose_name_needs_quoting_is_restored_and_removed(
     assert not (workspace / added).exists()
     assert record["tests_reset"] == {"restored": [edited], "removed": [added]}
     assert git(workspace, "status", "--porcelain") == ""
-
-
-def test_a_test_file_a_three_way_merge_staged_is_removed_from_the_index_too(
-    tmp_path, local_environment, workspace, found
-):
-    def change(repo: Path) -> None:
-        edit_line(13, "ours")(repo)
-        write({"tests/test_new.py": b"assert True\n"})(repo)
-
-    job = tmp_path / "agent-job"
-    trial(job, "t1", TASK, patch_of(workspace, change))
-    edit_line(10, "moved")(workspace)
-    git(workspace, "commit", "-qam", "moved")
-
-    record = replay(replay_agent(tmp_path, str(job)), local_environment)
-
-    assert methods_run(record) == ["git apply --verbose", "git apply --3way"]
-    assert record["tests_reset"] == {"restored": [], "removed": ["tests/test_new.py"]}
-    assert git(workspace, "status", "--porcelain") == "M  lines.txt\n"
 
 
 def test_a_test_file_the_image_had_changed_and_the_patch_did_not_touch_is_left_alone(
