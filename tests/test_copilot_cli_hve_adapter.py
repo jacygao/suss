@@ -394,3 +394,17 @@ def test_run_refuses_a_workspace_that_already_has_copilot_tracking(hve, kind):
     assert result.returncode != 0
     assert ".copilot-tracking" in result.stderr, result.stderr
     assert not (hve / "records" / "copilot").exists()
+
+
+# The repository's .gitignore outranks info/exclude, so the link would be in
+# the patch.
+def test_run_refuses_a_workspace_whose_gitignore_keeps_copilot_tracking(hve):
+    stand_in_copilot(hve)
+    (hve / "workspace" / ".gitignore").write_text("!.copilot-tracking\n")
+
+    result = run(hve)
+
+    assert result.returncode != 0
+    assert ".copilot-tracking" in result.stderr, result.stderr
+    assert not (hve / "workspace" / ".copilot-tracking").is_symlink()
+    assert not (hve / "records" / "copilot").exists()

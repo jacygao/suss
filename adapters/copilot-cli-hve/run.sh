@@ -54,6 +54,9 @@ exclude=$(git rev-parse --git-path info/exclude) || fail "git cannot find the wo
 mkdir -p "${exclude%/*}" "$tracking" || fail "cannot make ${exclude%/*} and $tracking"
 # The newline first, in case the file does not end in one.
 printf '\n/.copilot-tracking\n' >> "$exclude" || fail "cannot write $exclude"
+# The repository's own .gitignore outranks info/exclude, and can unignore it.
+git check-ignore -q .copilot-tracking \
+    || fail "the workspace's ignore rules keep .copilot-tracking, so RPI's files would be in the patch"
 ln -s "$tracking" .copilot-tracking || fail "cannot link .copilot-tracking to $tracking"
 
 # Where install.sh puts the binary.
