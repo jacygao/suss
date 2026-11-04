@@ -20,6 +20,10 @@ from suss import config
 
 REGRADE = "-regrade"
 
+# The one lane whose regrades carry the judges' scores, and whose verifier
+# writes verifier_results.json in place of report.json.
+SENIOR = "senior"
+
 # The keys of parsed_counts in a rebench verifier's report.
 TEST_OUTCOMES = ("PASSED", "FAILED", "SKIPPED", "ERROR")
 
@@ -45,9 +49,8 @@ class Trial:
     regrade_refused: bool
     # The type of the exception the regrade raised, when it wrote no replay.json.
     regrade_raised: str | None
-    # Whether the regrade's verifier/report.json counts a test as passed,
-    # failed, skipped or errored. When it counts none, a 0 cannot tell a wrong
-    # patch from grading that broke.
+    # Whether the regrade's verifier recorded a test result. When it records
+    # none, a 0 cannot tell a wrong patch from grading that broke.
     regrade_tested: bool
     # True when the regrade's verifier judged the trial invalid by writing an
     # empty reward, which Harbor records as RewardFileEmptyError. A timeout or
@@ -81,11 +84,11 @@ def read_trials(directory: Path, lane: str, arm: str) -> list[Trial]:
             # A trial that names no task cannot be paired or compared.
             if task is None:
                 continue
-            trials.append(_trial(job.name, task, trial, regrades.get(task)))
+            trials.append(_trial(lane, job.name, task, trial, regrades.get(task)))
     return sorted(trials, key=lambda trial: (trial.job, trial.task))
 
 
-def _trial(job: str, task: str, trial: Path, regrade: Path | None) -> Trial:
+def _trial(lane: str, job: str, task: str, trial: Path, regrade: Path | None) -> Trial:
     record = _json(trial / "agent" / "suss.json")
     if not isinstance(record, dict):
         record = {"status": "harness-failed"}
@@ -109,7 +112,8 @@ def _trial(job: str, task: str, trial: Path, regrade: Path | None) -> Trial:
         regrade_applied=applied,
         regrade_refused=applied is True and not _applied_whole(replay),
         regrade_raised=raised,
-        regrade_tested=regrade is not None and _tested(regrade),
+        regrade_tested=regrade is not None
+        and (_senior_tested(regrade) if lane == SENIOR else _tested(regrade)),
         invalid=regrade is not None and _exception(regrade) == "RewardFileEmptyError",
         path=trial,
         rewards=_rewards(regrade) if regrade else None,
@@ -208,6 +212,26 @@ def _tested(trial: Path) -> bool:
     )
 
 
+def _senior_tested(trial: Path) -> bool:
+    """
+    Whether the trial's verifier/verifier_results.json counts a test in
+    `total`, or says the task has no test to run.
+
+    A senior verifier writes a `total` of 0 with `all_pass` true only for a task
+    with no tests, which its validation agent alone grades. When its tests
+    crashed or ran none, it writes `all_pass` false and `runner_errors`.
+    """
+    results = _json(trial / "verifier" / "verifier_results.json")
+    if not isinstance(results, dict):
+        return False
+    total = results.get("total")
+    if type(total) is not int:
+        return False
+    if total > 0:
+        return True
+    return total == 0 and results.get("all_pass") is True and "runner_errors" not in results
+
+
 def _exception(trial: Path) -> str | None:
     """
     The type of the exception Harbor recorded as `exception_info` in the
@@ -292,9 +316,6 @@ class CompareError(Exception):
     """The arms' results cannot be compared, for the reason the message gives."""
 
 
-# The one lane whose regrades carry the judges' scores.
-SENIOR = "senior"
-
 # The rubric judge's status on a task with no rubric criteria, which no arm can be scored on.
 NO_CRITERIA = "skipped:no_criteria"
 
@@ -344,7 +365,7 @@ def report(directory: Path, lane: str, arms: Sequence[str]) -> str:
     What `suss compare` prints for the arms on the lane, run in `directory`,
     the directory holding suss.toml.
 
-    Both tables leave out every invalid trial, and count only the tasks every
+    Every table leaves out every invalid trial, and counts only the tasks every
     arm has a valid trial of. The second has a row for each arm whose baseline
     is among `arms`, in the order given, and is left out when no arm has one.
     After them come the counted trials whose regrade recorded no test result,
@@ -570,7 +591,7 @@ def render(
     lines += _named(
         "These trials' regrades recorded no test result, so their grading may have broken:", untested
     )
-    lines += _named("These trials' regrades judged them invalid, so neither table counts them:", invalid)
+    lines += _named("These trials' regrades judged them invalid, so no table counts them:", invalid)
     task_width = max((len(task) for _, _, task, _ in unjudged), default=0)
     lines += _named(
         "These trials' judges failed or were skipped, so the means leave out their scores:",
