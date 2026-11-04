@@ -170,6 +170,37 @@ file:
 }
 ```
 
+A task can have Harbor fill a variable from Harbor's own environment, in its
+`[verifier.env]` or `[environment.env]`, as each Senior SWE-Bench task's
+verifier takes its keys:
+
+```toml
+[verifier.env]
+ANTHROPIC_API_KEY = "${ANTHROPIC_API_KEY:-}"
+SSB_OVERRIDE_ALL_JUDGE_MODEL = "${SSB_OVERRIDE_ALL_JUDGE_MODEL:-}"
+```
+
+Suss runs the regrade's Harbor with each variable the lane's tasks name this
+way that the `.env` beside `suss.toml` sets, with its value there. Neither job's
+Harbor takes these variables from suss's own environment. So a variable `.env`
+leaves out or leaves empty takes the task's default, and the agent phase gets
+one only when the harness's manifest names it in `env`.
+
+A task whose `[verifier.env]` names `SSB_OVERRIDE_ALL_JUDGE_MODEL` has Senior
+SWE-Bench's verifier. It calls LLM judges, and when it cannot reach their
+models it still writes a reward. Its run needs
+`PORTKEY_API_KEY` in `.env`, which reaches every model through Portkey, or else
+the key of each model the verifier calls: `ANTHROPIC_API_KEY` for an
+`anthropic/` model, and `OPENAI_API_KEY` for an `openai/` one. With every
+default, that is `ANTHROPIC_API_KEY` alone. The settings that choose the models
+are optional:
+
+| Model | Chosen by | Default |
+|---|---|---|
+| the rubric and taste judges | `SSB_OVERRIDE_ALL_JUDGE_MODEL` | `anthropic/claude-sonnet-4-6` |
+| the patch classifier | `SSB_OVERRIDE_CLASSIFIER_MODEL` | `anthropic/claude-haiku-4-5-20251001` |
+| the validation agent | `SSB_OVERRIDE_VA_MODEL`, else `FORCE_VA_MODEL` | `anthropic/claude-sonnet-4-6` |
+
 ### The trial record
 
 Suss writes these files to `/logs/agent/` in the sandbox. Harbor keeps that
@@ -386,6 +417,26 @@ forms two absolute paths itself:
 - `<dir>` is the directory holding `suss.toml`, so the regrade's `source_job`
   is the agent job's directory.
 
+When a task in the lane has Harbor fill a variable from Harbor's environment,
+both jobs also take `-y`, right after `run`. Harbor asks before such a job
+whether its tasks may load those variables, and without a terminal it reads no
+answer and exits 1 with `Aborted.`. Answering yes is safe because Harbor holds
+only the values suss gives it: none in the agent job, and those `.env` sets in
+the regrade. `-y` also agrees, without asking, to share an uploaded job with an
+organization you are not a member of.
+
+A run whose `.env` lacks a key the regrade's verifier needs exits with an error
+naming it before it builds any lane or runs any job, with `DRY_RUN=1` and
+`--check` too. A key set to an empty value counts as missing:
+
+```
+$ suss run peer-review senior
+error: /home/me/evals/.env sets no ANTHROPIC_API_KEY, which the verifier of the
+tasks in senior needs for anthropic/claude-sonnet-4-6 and
+anthropic/claude-haiku-4-5-20251001, or its judges cannot run; set it, or set
+PORTKEY_API_KEY to reach every model through Portkey
+```
+
 Options after `--` go to every agent job. Passing any of these, under any name
 or spelling Harbor accepts, is an error that names it and says why, and runs
 nothing:
@@ -393,7 +444,9 @@ nothing:
 - An option suss sets on the agent job or its regrade, even with suss's own
   value: `-p`, `-e`, `-n`, `-k`, `-a`, `-m`, `--ak`, `--allow-agent-host`,
   `--disable-verification` and its opposite `--enable-verification`,
-  `--jobs-dir` and `--job-name`.
+  `--jobs-dir`, `--job-name` and `-y`.
+- `--env-file`, which would load the file into the agent job's environment, and
+  `--share-org` where the jobs take `-y`.
 - An option that changes the tasks or the agent the agent job runs, or keeps it
   from leaving a trial on this machine for its regrade: `-c`, `-d`, `-t`, `-i`,
   `-x`, `-l`, `--registry-url`, `--registry-path`, `--repo`, `--task-git-url`,
@@ -409,7 +462,14 @@ error: -k/--n-attempts can't be passed after --: suss runs one trial per agent
 job, and k in suss.toml sets how many jobs
 ```
 
-`DRY_RUN=1` prints the `harbor run` commands instead of running them.
+`DRY_RUN=1` prints the `harbor run` commands instead of running them. Before a
+regrade whose Harbor holds values from `.env`, it prints their names, and never
+a value:
+
+```
+# from .env: ANTHROPIC_API_KEY SSB_OVERRIDE_ALL_JUDGE_MODEL
+/home/me/evals/.venv/bin/harbor run -y -p lanes/senior -e docker -n 16 -k 1 -a suss.replay:ReplayAgent -m replay --ak source_job=/home/me/evals/results/senior/peer-review/20261031T142500Z-1 --jobs-dir results/senior/peer-review --job-name 20261031T142500Z-1-regrade
+```
 
 Every agent job is followed by its regrade, whatever its trials did and whatever
 Harbor's exit code was. A trial that failed or errored is graded as its regrade

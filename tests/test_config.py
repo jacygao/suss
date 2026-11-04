@@ -404,3 +404,165 @@ def test_baselines_refuses_a_file_that_is_not_toml(tmp_path: Path):
 
     with pytest.raises(config.ConfigError, match="not valid TOML"):
         config.baselines(path, ["a"])
+
+
+# The verifier's environment
+
+# Every Senior SWE-Bench task's [verifier.env], as the v2026.06 download writes it.
+SENIOR_VERIFIER_ENV = {
+    "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY:-}",
+    "OPENAI_API_KEY": "${OPENAI_API_KEY:-}",
+    "PORTKEY_API_KEY": "${PORTKEY_API_KEY:-}",
+    "SSB_OVERRIDE_ALL_JUDGE_MODEL": "${SSB_OVERRIDE_ALL_JUDGE_MODEL:-}",
+    "SSB_OVERRIDE_CLASSIFIER_MODEL": "${SSB_OVERRIDE_CLASSIFIER_MODEL:-}",
+    "SSB_OVERRIDE_VA_HARNESS": "${SSB_OVERRIDE_VA_HARNESS:-}",
+    "SSB_OVERRIDE_VA_MODEL": "${SSB_OVERRIDE_VA_MODEL:-}",
+    "FORCE_VA_HARNESS": "${FORCE_VA_HARNESS:-}",
+    "FORCE_VA_MODEL": "${FORCE_VA_MODEL:-}",
+    "REPO_NAME": "turborepo",
+    "TIMEOUT_MULTIPLIER": "${TIMEOUT_MULTIPLIER:-1}",
+}
+SENIOR_VARIABLES = (
+    "ANTHROPIC_API_KEY",
+    "FORCE_VA_HARNESS",
+    "FORCE_VA_MODEL",
+    "OPENAI_API_KEY",
+    "PORTKEY_API_KEY",
+    "SSB_OVERRIDE_ALL_JUDGE_MODEL",
+    "SSB_OVERRIDE_CLASSIFIER_MODEL",
+    "SSB_OVERRIDE_VA_HARNESS",
+    "SSB_OVERRIDE_VA_MODEL",
+    "TIMEOUT_MULTIPLIER",
+)
+
+
+def with_env(tmp_path: Path, dotenv: str) -> config.Config:
+    path = write_config(tmp_path, TOP + '[arms.a]\nharness = "h"\n')
+    (tmp_path / ".env").write_text(dotenv)
+    return config.load(path, "a", "rebench")
+
+
+def test_the_variables_tasks_read_from_harbors_environment_are_those_their_templates_name():
+    tasks = {
+        Path("one"): {"verifier": {"env": SENIOR_VERIFIER_ENV}},
+        Path("two"): {
+            "environment": {"env": {"BUILD_TOKEN": "${BUILD_TOKEN}", "LANG": "C"}},
+            # Harbor reads [solution.env] only for its oracle agent, which suss never runs.
+            "solution": {"env": {"SOLUTION_ONLY": "${SOLUTION_ONLY}"}},
+        },
+    }
+
+    assert config.host_variables(tasks) == tuple(sorted((*SENIOR_VARIABLES, "BUILD_TOKEN")))
+
+
+def test_a_task_with_only_literal_env_values_reads_nothing_from_harbors_environment():
+    tasks = {Path("one"): {"environment": {"env": {"LANG": "C"}}, "verifier": {"env": {"A": "b"}}}}
+
+    assert config.host_variables(tasks) == ()
+
+
+def test_the_regrade_gets_each_variable_the_tasks_read_that_env_sets_and_no_empty_one(
+    tmp_path: Path,
+):
+    settings = with_env(
+        tmp_path,
+        "ANTHROPIC_API_KEY=sk-ant-1\nSSB_OVERRIDE_ALL_JUDGE_MODEL=openai/gpt-5.5\n"
+        "TIMEOUT_MULTIPLIER=\nDEEPSEEK_API_KEY=ds-1\n",
+    )
+
+    assert config.verifier_env(settings, SENIOR_VARIABLES) == {
+        "ANTHROPIC_API_KEY": "sk-ant-1",
+        "SSB_OVERRIDE_ALL_JUDGE_MODEL": "openai/gpt-5.5",
+    }
+
+
+def test_the_judges_default_models_need_the_anthropic_key(tmp_path: Path):
+    settings = with_env(tmp_path, "OPENAI_API_KEY=sk-1\n")
+
+    with pytest.raises(config.ConfigError) as error:
+        config.check_grading_keys(settings, SENIOR_VARIABLES, "senior")
+
+    assert str(error.value) == (
+        f"{tmp_path / '.env'} sets no ANTHROPIC_API_KEY, which the verifier of the tasks in "
+        "senior needs for anthropic/claude-sonnet-4-6 and anthropic/claude-haiku-4-5-20251001, "
+        "or its judges cannot run; set it, or set PORTKEY_API_KEY to reach every model through "
+        "Portkey"
+    )
+
+
+def test_an_empty_key_in_env_counts_as_missing(tmp_path: Path):
+    settings = with_env(tmp_path, "ANTHROPIC_API_KEY=\n")
+
+    with pytest.raises(config.ConfigError, match="sets no ANTHROPIC_API_KEY"):
+        config.check_grading_keys(settings, SENIOR_VARIABLES, "senior")
+
+
+def test_the_anthropic_key_alone_grades_with_the_default_judges(tmp_path: Path):
+    settings = with_env(tmp_path, "ANTHROPIC_API_KEY=sk-ant-1\n")
+
+    config.check_grading_keys(settings, SENIOR_VARIABLES, "senior")
+
+
+def test_a_portkey_key_reaches_every_model_whatever_they_are(tmp_path: Path):
+    settings = with_env(
+        tmp_path, "PORTKEY_API_KEY=pk-1\nSSB_OVERRIDE_ALL_JUDGE_MODEL=@vertex/gemini-3-pro\n"
+    )
+
+    config.check_grading_keys(settings, SENIOR_VARIABLES, "senior")
+
+
+def test_an_override_to_an_openai_model_needs_the_openai_key_and_names_the_model_once(
+    tmp_path: Path,
+):
+    settings = with_env(
+        tmp_path,
+        "ANTHROPIC_API_KEY=sk-ant-1\nSSB_OVERRIDE_ALL_JUDGE_MODEL=openai/gpt-5.5\n"
+        "SSB_OVERRIDE_VA_MODEL=openai/gpt-5.5\n",
+    )
+
+    with pytest.raises(config.ConfigError) as error:
+        config.check_grading_keys(settings, SENIOR_VARIABLES, "senior")
+
+    assert (
+        "sets no OPENAI_API_KEY, which the verifier of the tasks in senior needs for "
+        "openai/gpt-5.5, or its judges"
+    ) in str(error.value)
+
+
+def test_both_missing_keys_are_named_at_once(tmp_path: Path):
+    settings = with_env(tmp_path, "SSB_OVERRIDE_ALL_JUDGE_MODEL=openai/gpt-5.5\n")
+
+    with pytest.raises(config.ConfigError) as error:
+        config.check_grading_keys(settings, SENIOR_VARIABLES, "senior")
+
+    assert "sets no ANTHROPIC_API_KEY or OPENAI_API_KEY, which" in str(error.value)
+
+
+def test_the_validation_agents_older_override_counts_when_the_new_one_is_unset(tmp_path: Path):
+    settings = with_env(tmp_path, "ANTHROPIC_API_KEY=sk-ant-1\nFORCE_VA_MODEL=openai/gpt-5.5\n")
+
+    with pytest.raises(config.ConfigError, match="sets no OPENAI_API_KEY"):
+        config.check_grading_keys(settings, SENIOR_VARIABLES, "senior")
+
+
+def test_a_model_of_a_provider_the_verifier_has_no_key_for_is_an_error_naming_its_setting(
+    tmp_path: Path,
+):
+    settings = with_env(
+        tmp_path, "ANTHROPIC_API_KEY=sk-ant-1\nSSB_OVERRIDE_CLASSIFIER_MODEL=gemini/gemini-3-pro\n"
+    )
+
+    with pytest.raises(config.ConfigError) as error:
+        config.check_grading_keys(settings, SENIOR_VARIABLES, "senior")
+
+    assert str(error.value) == (
+        f"{tmp_path / '.env'} sets SSB_OVERRIDE_CLASSIFIER_MODEL to gemini/gemini-3-pro, but the "
+        "verifier of the tasks in senior is given a key only for anthropic/ and openai/ models; "
+        "name one of those, or set PORTKEY_API_KEY"
+    )
+
+
+def test_tasks_without_the_judges_need_no_key(tmp_path: Path):
+    settings = with_env(tmp_path, "")
+
+    config.check_grading_keys(settings, ("BUILD_TOKEN",), "rebench")

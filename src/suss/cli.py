@@ -13,8 +13,8 @@ import shlex
 import subprocess
 import sys
 import termios
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -24,7 +24,7 @@ from harbor.cli.utils import parse_kwargs
 
 from suss import compare, config, lanes
 from suss.compare import CompareError
-from suss.config import Config, ConfigError
+from suss.config import Config, ConfigError, verifier_env
 from suss.harness import Manifest, ManifestError, load_manifest
 from suss.lanes import LaneError
 
@@ -32,6 +32,10 @@ from suss.lanes import LaneError
 @dataclass(frozen=True)
 class Command:
     argv: list[str]
+    # Variables of suss's own environment that Harbor's must not take.
+    withheld: tuple[str, ...] = ()
+    # Values from .env that Harbor's environment holds in their place.
+    given: Mapping[str, str] = field(default_factory=dict, repr=False)
 
 
 def stamp(started: datetime) -> str:
@@ -54,6 +58,7 @@ def harbor_commands(
     trial: int,
     harbor_args: Sequence[str] = (),
     check: bool = False,
+    reads: Sequence[str] = (),
 ) -> tuple[Command, Command]:
     """
     The `harbor run` commands for agent job `trial` of the arm on `lane`, and
@@ -64,15 +69,23 @@ def harbor_commands(
     both take the lane's check directory and write under `checks/` instead of
     `results/`.
 
+    `reads` are the variables the lane's tasks read from Harbor's environment,
+    as `config.host_variables` gives them. Neither job takes them from suss's
+    own environment, and the regrade alone is given those .env sets.
+
     Raises ValueError, with a message for the user, when `harbor_args` include
     a positional argument, an option suss sets on either job, an option that
-    changes what the agent job runs, or anything Harbor's parser rejects.
+    changes what the agent job runs, `--share-org` where suss passes `-y`, or
+    anything Harbor's parser rejects.
     """
     lane_dir = f"lanes/{lane}-check" if check else f"lanes/{lane}"
     jobs_dir = PurePosixPath("checks" if check else "results", lane, config.arm.name)
     job_name = f"{run_stamp}-{trial}"
     common = [
         "harbor", "run",
+        # Harbor asks before a job whose tasks read its environment, and
+        # without a terminal it reads no answer and aborts the job.
+        *(["-y"] if reads else []),
         "-p", lane_dir,
         "-e", config.environment,
         "-n", str(config.concurrency),
@@ -104,8 +117,26 @@ def harbor_commands(
         "--job-name", f"{job_name}-regrade",
     ]
     _refuse(harbor_args)
+    if reads:
+        _refuse_sharing(harbor_args, lane)
     agent += harbor_args
-    return Command(agent), Command(regrade)
+    withheld = tuple(reads)
+    return (
+        Command(agent, withheld),
+        Command(regrade, withheld, verifier_env(config, reads)),
+    )
+
+
+def _refuse_sharing(harbor_args: Sequence[str], lane: str) -> None:
+    """Raise ValueError when `harbor_args` share the job with an organization, which -y confirms."""
+    run = _harbor_run()
+    parser = run.make_parser(run.context_class(run, info_name="run"))
+    given, _, _ = parser.parse_args(list(harbor_args))
+    if given.get("share_org"):
+        raise ValueError(
+            f"--share-org can't be passed after -- on {lane}: suss passes -y there, which would "
+            "share the job with an organization you are not a member of without asking"
+        )
 
 
 def _kwarg(key: str, value: str) -> str:
@@ -144,6 +175,7 @@ _REFUSED = {
     "disable_verification": (
         "suss grades each trial by its regrade alone, so the agent job never runs the verifier"
     ),
+    "yes": "suss answers Harbor's question itself, on a lane whose tasks read Harbor's environment",
     # Those that would change what the agent job runs. The regrade still grades
     # every task in the lane, so a task the agent job skips scores 0.
     "config_path": "a job config file can change anything suss sets on the job",
@@ -172,6 +204,10 @@ _REFUSED = {
     "dry_run": "it validates a --launch, and suss runs each agent job locally",
     "init": _HARBOR_STOPS,
     "print_config": _HARBOR_STOPS,
+    "env_file": (
+        "it would give the agent job the variables its tasks read from Harbor's environment; "
+        "suss gives those .env sets to the regrade alone"
+    ),
 }
 
 
@@ -375,6 +411,8 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
         for lane in planned:
             for pair in lane.pairs:
                 for command in pair:
+                    if command.given:
+                        print(f"# from .env: {' '.join(command.given)}")
                     print(shlex.join(command.argv))
         return 0
 
@@ -449,15 +487,19 @@ def _plan(
     lanes.check_max_seconds(settings.arm, lane, found)
     lanes.check_buildable(settings.swe_rebench, settings.path.parent / "lanes", check)
     used = dict(list(found.items())[:1]) if check else found
+    reads = config.host_variables(used)
+    config.check_grading_keys(settings, reads, lane)
     on_docker = settings.environment == "docker"
     pairs = []
     for trial in range(1, 2 if check else settings.k + 1):
         try:
-            commands = harbor_commands(settings, manifest, lane, run_stamp, trial, harbor_args, check)
+            commands = harbor_commands(
+                settings, manifest, lane, run_stamp, trial, harbor_args, check, reads
+            )
         except ValueError as error:
             raise _Stop(str(error)) from None
         pairs.append(
-            tuple(Command([str(harbor), *command.argv[1:]]) for command in commands)
+            tuple(replace(command, argv=[str(harbor), *command.argv[1:]]) for command in commands)
         )
     needs = None
     trials = f"the first task in {lane}" if check else f"the tasks in {lane}"
@@ -522,6 +564,7 @@ def _stream(command: Command, cwd: Path, terminal: bool | None = None) -> tuple[
         process = subprocess.Popen(
             command.argv,
             cwd=cwd,
+            env=_environment(command),
             stdout=writer,
             stderr=writer,
         )
@@ -546,6 +589,12 @@ def _stream(command: Command, cwd: Path, terminal: bool | None = None) -> tuple[
             break
     os.close(reader)
     return process.wait(), "".join(kept)
+
+
+def _environment(command: Command) -> dict[str, str]:
+    """suss's own environment, less what the command withholds, with what it is given."""
+    env = {name: value for name, value in os.environ.items() if name not in command.withheld}
+    return {**env, **command.given}
 
 
 def _copy_size(source, terminal: int) -> None:
