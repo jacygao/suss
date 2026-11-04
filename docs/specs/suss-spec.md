@@ -348,6 +348,7 @@ Then, K times, it runs an agent job and its regrade:
 ```bash
 <env>/bin/harbor run -p lanes/rebench -e docker -n 16 -k 1 \
   -a suss.agent:SussAgent --ak arm=peer-review --ak config=suss.toml \
+  --ak lane=rebench \
   --allow-agent-host api.anthropic.com --allow-agent-host api.deepseek.com \
   --disable-verification \
   --jobs-dir results/rebench/peer-review --job-name <stamp>-1
@@ -479,11 +480,34 @@ params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "d
 
   When a single trial does not fit, the error says so and offers no
   `concurrency`.
-- `max_seconds` caps each trial: suss stops `run` after it. Set at the top, it
-  applies to every arm, and an arm may set its own. It must be under the task's
-  agent timeout, 3000 seconds in every task, so that suss
-  captures the patch before Harbor stops the trial. When it is not under the agent timeout of every
-  task in a lane, `suss run` exits with an error before running any job:
+- `max_seconds` caps each trial: suss stops `run` after it. It can be set at
+  the top, in a lane's own table, and on an arm. On each lane, an arm's trials
+  take the arm's own value, else the lane's, else the top's. A `--check` takes
+  the value of the lane it checks. Here, every arm without its own value gets
+  2400 on `rebench`:
+
+  ```toml
+  max_seconds = 2700
+
+  [lanes.rebench]
+  max_seconds = 2400
+  ```
+
+  A `[lanes.<lane>]` table for a lane suss does not have, or one that sets
+  anything else, makes `suss run` exit with an error before it builds any lane
+  or runs any job:
+
+  ```
+  $ suss run peer-review rebench
+  error: /home/me/evals/suss.toml: sets [lanes.rebnech], but suss has no lane
+  named rebnech; its lanes are rebench
+  ```
+
+  The value must be under the agent timeout of every task in the lane, 3000
+  seconds in every `rebench` task, so that suss captures the patch before
+  Harbor stops the trial. Each lane is checked against its own value. When one
+  is not under the timeout, `suss run` exits with an error before running any
+  job:
 
   ```
   $ suss run peer-review rebench

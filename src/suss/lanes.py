@@ -14,8 +14,11 @@ import stat
 import tomllib
 from collections.abc import Iterable, Mapping
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from suss.config import Arm
+# For the annotation alone: config imports this module for its lanes.
+if TYPE_CHECKING:
+    from suss.config import Arm
 
 
 class LaneError(Exception):
@@ -54,7 +57,7 @@ def read_tasks(tasks: Iterable[Path]) -> dict[Path, dict]:
     return {task: _read_task(task / "task.toml") for task in tasks}
 
 
-def check_max_seconds(arm: Arm, lane: str, tasks: Mapping[Path, dict]) -> None:
+def check_max_seconds(arm: "Arm", lane: str, tasks: Mapping[Path, dict]) -> None:
     """
     Refuse an arm whose max_seconds is not under the agent timeout of every task.
 
