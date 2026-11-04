@@ -190,7 +190,8 @@ arm is on a Copilot plan.
 - [ ] An arm on a subscription refuses `max_budget_usd`, and its trials record
       each call's token usage as an API-key arm's trials do
 - [ ] A trial that stops at the plan's usage limit has `status`
-      `usage-limited`, not `harness-failed`
+      `usage-limited`, not `harness-failed`. It counts in no share, and
+      `suss compare` names it
 - [ ] On Modal, in the agent phase of a `rebench` task, a subscription arm
       reaches each host in the manifest's `allowed_hosts` and no other host
 - [ ] `suss run <arm> rebench --check` on Modal, with only the subscription
