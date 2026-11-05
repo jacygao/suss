@@ -130,7 +130,7 @@ checkout of this repository. The shares, intervals and invalid trials come from
 
 ```bash
 uv run --project <suss> suss compare rebench copilot-sonnet copilot-gpt hve-sol
-cd hve-hard && uv run --project <suss> suss compare rebench hve-capped hve-uncapped hve-gpt
+(cd hve-hard && uv run --project <suss> suss compare rebench hve-capped hve-uncapped hve-gpt)
 ```
 
 Suss no longer takes the `pro-*` lanes, and `suss compare` takes two arms or
