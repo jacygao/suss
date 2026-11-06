@@ -228,8 +228,8 @@ The stage 1 note is
 - No repeat run was made, so how far one model moves between runs is not
   measured. The only repeat, Sonnet on paperless, changed its nudge and failed
   the schema, so it says nothing about noise.
-- Five patches, all passing or partly passing the rubric, from five
-  repositories. No design-task patch was judged, and the run's largest patches
+- Five patches from five repositories: one passing every rubric criterion,
+  three passing some, and one passing none. No design-task patch was judged, and the run's largest patches
   are nearly three times better-auth's.
 - Senior's own judge scored only two of these patches for taste, and one of
   those with the test files restored.
