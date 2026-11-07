@@ -862,8 +862,8 @@ These trials' judges failed or were skipped, so the means leave out their scores
   task with no rubric criteria has no rubric score in any arm.
 - A judge is named when its flag is not 1, except a rubric judge whose status is
   `skipped:no_criteria`, in `judge.json` or in the verifier's
-  `verifier/judge_output.json` as `rubric_status`. A trial whose regrade has no
-  reward is not named.
+  `verifier/judge_output.json` as `rubric_status`. A trial whose regrade has
+  neither `judge.json` nor a reward is not named.
 - A judge is named in the last column by the client, model and effort its
   `judge.json` gives, and senior's verifier by the grader's `judge_model`, as
   `senior verifier anthropic/claude-sonnet-4-6`.
