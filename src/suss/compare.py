@@ -64,6 +64,8 @@ class Trial:
     # Who gave `rewards` when judge.json did. None when senior's verifier did,
     # whose judge model only the grader records.
     judge: str | None = None
+    # What graded the trial, and in which job, as an error names it.
+    grading: str = ""
 
 
 def read_trials(directory: Path, lane: str, arm: str) -> list[Trial]:
@@ -76,26 +78,34 @@ def read_trials(directory: Path, lane: str, arm: str) -> list[Trial]:
     arm_directory = Path(directory) / "results" / lane / arm
     if not arm_directory.is_dir():
         return []
+    separate = lane in lanes.SEPARATE_VERIFIER
     trials = []
     for job in sorted(_directories(arm_directory)):
         if job.name.endswith(REGRADE):
             continue
-        regrades = _by_task(arm_directory / f"{job.name}{REGRADE}")
+        regrades = {} if separate else _by_task(arm_directory / f"{job.name}{REGRADE}")
         for trial in _directories(job):
             task = _task(trial)
             # A trial that names no task cannot be paired or compared.
             if task is None:
                 continue
-            trials.append(_trial(lane, job.name, task, trial, regrades.get(task)))
+            grading = trial if separate else regrades.get(task)
+            trials.append(_trial(lane, job.name, task, trial, grading))
     return sorted(trials, key=lambda trial: (trial.job, trial.task))
 
 
 def _trial(lane: str, job: str, task: str, trial: Path, regrade: Path | None) -> Trial:
+    """
+    The trial, graded by `regrade`: the regrade's trial of its task, or on a
+    lane in `lanes.SEPARATE_VERIFIER` the trial itself.
+    """
+    separate = lane in lanes.SEPARATE_VERIFIER
     record = _json(trial / "agent" / "suss.json")
     if not isinstance(record, dict):
         record = {"status": "harness-failed"}
     patch_bytes = record.get("patch_bytes")
-    replay_path = regrade / "agent" / "replay.json" if regrade else None
+    replayed_by = "verifier" if separate else "agent"
+    replay_path = regrade / replayed_by / "replay.json" if regrade else None
     replay = _json(replay_path) if replay_path else None
     # ReplayAgent writes replay.json last, so a regrade that raised before
     # writing it counts as applying nothing.
@@ -128,6 +138,7 @@ def _trial(lane: str, job: str, task: str, trial: Path, regrade: Path | None) ->
         rewards=rewards,
         rubric_status=rubric_status,
         judge=judged_by,
+        grading=f"verifier in {job}" if separate else f"regrade in {job}{REGRADE}",
     )
 
 
@@ -537,14 +548,13 @@ def _read(directory: Path, lane: str, arms: Sequence[str]) -> dict[str, list[Tri
                 raised = f"raised {trial.regrade_raised} and " if trial.regrade_raised else ""
                 raise CompareError(
                     f"the trial of {trial.task} in results/{lane}/{arm}/{trial.job} made a "
-                    f"{trial.patch_bytes}-byte patch, but its regrade in "
-                    f"{trial.job}{REGRADE} {raised}applied none"
+                    f"{trial.patch_bytes}-byte patch, but its {trial.grading} {raised}applied none"
                 )
             # Its result is the grade of a change the harness did not make.
             if trial.regrade_refused:
                 raise CompareError(
                     f"the trial of {trial.task} in results/{lane}/{arm}/{trial.job} made a "
-                    f"patch, but its regrade in {trial.job}{REGRADE} could not apply it"
+                    f"patch, but its {trial.grading} could not apply it"
                 )
         # Such an arm has no share to print.
         if all(trial.invalid for trial in trials[arm]):

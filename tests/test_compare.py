@@ -1638,11 +1638,11 @@ def test_a_regrade_with_no_reward_has_no_scores_and_is_not_named_for_its_judges(
 
 
 def test_another_lane_prints_no_means_whatever_its_rewards_hold(senior, capsys):
-    (senior / "results" / SENIOR).rename(senior / "results" / "rebench")
-    for results in (senior / "results" / "rebench").glob(f"*/*{compare.REGRADE}/*/verifier"):
+    (senior / "results" / SENIOR).rename(senior / "results" / LANE)
+    for results in (senior / "results" / LANE).glob(f"*/*{compare.REGRADE}/*/verifier"):
         write_json(results / "report.json", TESTED)
 
-    code, out, err = run_compare(senior, capsys, "rebench", "base", "beta")
+    code, out, err = run_compare(senior, capsys, LANE, "base", "beta")
 
     assert (code, err) == (0, "")
     assert out.endswith("beta - base    +0% [+0%, +0%]\n")
@@ -1944,21 +1944,118 @@ def test_judge_json_wins_over_the_verifiers_judges(senior, capsys):
     )
 
 
-def test_a_rebench_trial_judged_for_taste_alone_has_taste_means_and_no_rubric(tmp_path, capsys):
+def test_a_trial_off_senior_judged_for_taste_alone_has_taste_means_and_no_rubric(tmp_path, capsys):
     (tmp_path / "suss.toml").write_text(SENIOR_TOML)
     for arm, practice in (("base", 4.0), ("beta", 2.0)):
         write_judged_arm(
             tmp_path,
             arm,
             {"t1": [judge_json(None, practice, 3.0, 1.0, rubric_status="skipped:no_criteria")]},
-            lane="rebench",
+            lane=LANE,
         )
 
-    code, out, err = run_compare(tmp_path, capsys, "rebench", "base", "beta")
+    code, out, err = run_compare(tmp_path, capsys, LANE, "base", "beta")
 
     assert (code, err) == (0, "")
     assert out.endswith(
         "mean (trials)  rubric  practice alignment  relative taste  patch bloat  judge\n"
         "base            - (0)            4.00 (1)        3.00 (1)     1.00 (1)  " + ARGON_JUDGE + "\n"
         "beta            - (0)            2.00 (1)        3.00 (1)     1.00 (1)  " + ARGON_JUDGE + "\n"
+    )
+
+
+# rebench, whose agent job grades each trial in its own separate verifier
+
+
+def write_graded_trial(
+    job: Path,
+    task: str,
+    suffix: str,
+    verifier_result=RESOLVED,
+    *,
+    replay_record: dict | None = None,
+    report=TESTED,
+) -> Path:
+    """
+    A rebench agent trial as Harbor leaves it once ReplayVerifier has graded it:
+    the reward in its result.json, and the verifier's replay.json and report.json.
+    """
+    trial = write_agent_trial(job, task, suffix)
+    result = json.loads((trial / "result.json").read_text())
+    write_json(trial / "result.json", dict(result, verifier_result=verifier_result))
+    if replay_record is None:
+        replay_record = {
+            "patch": "/logs/artifacts/model.patch",
+            "patch_bytes": 4182,
+            "apply_rc": 0,
+            "apply_out": "$ git apply --verbose\nApplied patch cleanly.\n",
+            "tests_reset": {"restored": [], "removed": []},
+        }
+    write_json(trial / "verifier" / "replay.json", replay_record)
+    if report is not None:
+        write_json(trial / "verifier" / "report.json", report)
+    return trial
+
+
+def rebench_arm(root: Path, arm: str = ARM) -> Path:
+    return root / "results" / "rebench" / arm
+
+
+def test_a_rebench_trial_is_graded_by_its_own_verifier(tmp_path):
+    write_graded_trial(rebench_arm(tmp_path) / "S-1", FLIPT, "kY8wt23")
+    write_graded_trial(rebench_arm(tmp_path) / "S-1", NAVIDROME, "Qp3rT9a", UNRESOLVED, report=None)
+
+    trials = {trial.task: trial for trial in read_trials(tmp_path, "rebench", ARM)}
+
+    assert (trials[FLIPT].resolved, trials[FLIPT].regrade_applied) == (True, True)
+    assert trials[FLIPT].regrade_tested is True
+    assert (trials[NAVIDROME].resolved, trials[NAVIDROME].regrade_tested) == (False, False)
+
+
+def test_a_rebench_regrade_job_beside_the_agent_job_is_not_read(tmp_path):
+    write_graded_trial(rebench_arm(tmp_path) / "S-1", FLIPT, "kY8wt23", UNRESOLVED)
+    write_regrade_trial(rebench_arm(tmp_path) / "S-1-regrade", FLIPT, "NfDX2zK", RESOLVED)
+
+    [trial] = read_trials(tmp_path, "rebench", ARM)
+
+    assert (trial.job, trial.resolved) == ("S-1", False)
+
+
+def rebench_results(root: Path) -> Path:
+    """Two arms on rebench, each with one trial of FLIPT, both resolved."""
+    (root / "suss.toml").write_text(SUSS_TOML)
+    for arm in ("base", "beta"):
+        write_graded_trial(rebench_arm(root, arm) / "S-1", FLIPT, f"agent{arm}")
+    return root
+
+
+def test_a_rebench_verifier_that_applied_none_of_a_trials_patch_is_an_error_naming_it(
+    tmp_path, capsys
+):
+    trial = trial_directory(rebench_arm(rebench_results(tmp_path), "beta") / "S-1", FLIPT, "agentbeta")
+    write_json(trial / "verifier" / "replay.json", {"patch": None})
+    record_exception(trial, replay.ReplayError("the trial left no patch"))
+
+    code, out, err = run_compare(tmp_path, capsys, "rebench", "beta", "base")
+
+    assert (code, out) == (1, "")
+    assert err == (
+        f"error: the trial of {FLIPT} in results/rebench/beta/S-1 made a 4182-byte patch, "
+        "but its verifier in S-1 applied none\n"
+    )
+
+
+def test_a_rebench_verifier_that_could_not_apply_a_trials_patch_is_an_error_naming_it(
+    tmp_path, capsys
+):
+    trial = trial_directory(rebench_arm(rebench_results(tmp_path), "beta") / "S-1", FLIPT, "agentbeta")
+    record = json.loads((trial / "verifier" / "replay.json").read_text())
+    write_json(trial / "verifier" / "replay.json", dict(record, apply_rc=1))
+
+    code, out, err = run_compare(tmp_path, capsys, "rebench", "beta", "base")
+
+    assert (code, out) == (1, "")
+    assert err == (
+        f"error: the trial of {FLIPT} in results/rebench/beta/S-1 made a patch, "
+        "but its verifier in S-1 could not apply it\n"
     )

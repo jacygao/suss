@@ -86,31 +86,47 @@ In the agent phase, suss:
 5. **captures the patch**, the whole change from the starting tree;
 6. **writes the trial record**, `suss.json`, and returns.
 
-Harbor then ends the trial without running the task's verifier, because suss
-runs every agent job with `--disable-verification`. The trial's result comes
-from a regrade in a fresh sandbox.
+The trial's result comes from a regrade in a fresh sandbox. On `rebench`,
+Harbor runs it in the same agent job, once the agent's sandbox has stopped. On
+`senior`, Harbor ends the trial without running the task's verifier, because
+suss runs that lane's agent jobs with `--disable-verification`, and a second
+job regrades it.
 
 ### Capturing the patch
 
 ```bash
 git add -A
 git diff --cached --binary <starting tree> > /logs/agent/model.patch
+cp /logs/agent/model.patch /logs/artifacts/model.patch
 ```
 
 The diff runs from the starting tree, so it holds the whole change the harness
 made, whether it committed it or not, and none of the changes the image already
 had. A regrade starts from the same image, so the patch applies there with
 `git apply`. A file of the starting tree that the harness made git ignore, but
-left in place, stays out of the patch.
+left in place, stays out of the patch. The copy in `/logs/artifacts/` is the one
+Harbor carries to a verifier in a sandbox of its own, and suss writes it however
+the run ends.
 
 ### Regrading
 
-After each agent job, suss runs a second Harbor job over the same tasks, with
-suss's own `suss.replay:ReplayAgent` as the agent. For each trial, it starts a
-fresh sandbox from the task's image, applies the trial's `model.patch` in the
-workspace, found as the trial found it, puts every test file back as the image
-held it, and runs the verifier there. That verifier's reward is the trial's
-result. It applies the patch with:
+A regrade starts a fresh sandbox from the task's image, applies the trial's
+`model.patch` in the workspace, found as the trial found it, puts every test
+file back as the image held it, and runs the task's own `test.sh` there,
+unchanged. That verifier's reward is the trial's result.
+
+On `rebench`, the agent job regrades each trial in Harbor's separate verifier,
+with `--verifier suss.replay:ReplayVerifier`. Each task's copy in the lane sets
+`[verifier] environment_mode = "separate"`, so Harbor builds the verifier's
+sandbox from the task's own `Dockerfile`, after it has stopped the agent's.
+That sandbox holds nothing of the agent's but `/logs/artifacts/`, and
+`ReplayVerifier` applies the `model.patch` there.
+
+On `senior`, suss runs a second Harbor job over the same tasks after each agent
+job, with suss's own `suss.replay:ReplayAgent` as the agent, which applies the
+`model.patch` from the agent trial's `agent/`.
+
+Both apply the patch with:
 
 ```bash
 git apply --verbose model.patch
@@ -123,8 +139,8 @@ applies there.
 A harness cannot change its result by changing the sandbox it worked in, because
 the grading happens in another.
 
-`ReplayAgent` reads the sandbox's starting tree before applying the patch.
-After applying it, it restores from that tree each test file the patch edited,
+Each reads the sandbox's starting tree before applying the patch. After
+applying it, it restores from that tree each test file the patch edited,
 deleted or renamed, and removes each test file the patch added. So the verifier
 grades every test file as the image held it, whatever the harness did to it.
 
@@ -152,16 +168,24 @@ regrade's trial, and Harbor records the exception in that trial's
 `result.json`. It fails the trial the same way when git cannot read the
 starting tree, list what changed from it, or put a test file back.
 
-It writes `agent/replay.json` in the regrade's trial. With no patch, or an empty
-one, it applies nothing and writes `"patch": null`:
+Each writes `replay.json`: `ReplayVerifier` in the agent trial's `verifier/`,
+and `ReplayAgent` in the regrade trial's `agent/`. With an empty patch, or none,
+it applies nothing and writes `"patch": null`. `ReplayAgent` also names the
+task:
 
 ```json
 { "task": "gleam-lang__gleam-5797", "patch": null }
 ```
 
+`ReplayVerifier` then runs no test, and fails the trial with `ReplayError`,
+when the sandbox holds no `/logs/artifacts/model.patch`, or one whose bytes
+differ from the agent trial's `agent/model.patch`. An empty patch it grades, as
+the agent's unchanged workspace.
+
 Otherwise it writes the patch's path, the exit code of applying it, as
 `apply_rc`, what applying it printed, as `apply_out`, and the test files it put
-back, as `tests_reset`. Both lists are empty when the patch changed no test
+back, as `tests_reset`. `ReplayVerifier` adds the patch's size and sha256, as
+`patch_bytes` and `sha256`. Both lists are empty when the patch changed no test
 file:
 
 ```json
@@ -181,11 +205,14 @@ ANTHROPIC_API_KEY = "${ANTHROPIC_API_KEY:-}"
 SSB_OVERRIDE_ALL_JUDGE_MODEL = "${SSB_OVERRIDE_ALL_JUDGE_MODEL:-}"
 ```
 
-Suss runs the regrade's Harbor with each variable the lane's tasks name this
-way that the `.env` beside `suss.toml` sets, with its value there. Neither job's
-Harbor takes these variables from suss's own environment. So a variable `.env`
-leaves out or leaves empty takes the task's default, and the agent phase gets
-one only when the harness's manifest names it in `env`.
+Suss runs the Harbor of the job that grades with each variable the lane's tasks
+name this way that the `.env` beside `suss.toml` sets, with its value there,
+and never passes one as an argument. On `rebench` that is the agent job, which
+is given only those its tasks name in `[verifier.env]` alone, since Harbor
+gives `[verifier.env]` to the command that runs `test.sh` and to no sandbox. No
+job's Harbor takes these variables from suss's own environment. So a variable
+`.env` leaves out or leaves empty takes the task's default, and the agent phase
+gets one only when the harness's manifest names it in `env`.
 
 Every `senior` task has Senior SWE-Bench's verifier. It calls LLM judges, and
 when it cannot reach their models it still writes a reward. So a run of the
@@ -278,7 +305,8 @@ record, it holds the judge, a status per judge, the scores in the shape senior's
 ### The trial record
 
 Suss writes these files to `/logs/agent/` in the sandbox. Harbor keeps that
-directory as `agent/` in the trial's directory under `results/`.
+directory as `agent/` in the trial's directory under `results/`, and the copy of
+`model.patch` in `/logs/artifacts/` as `artifacts/logs/artifacts/model.patch`.
 
 | File | Holds |
 |---|---|
@@ -451,6 +479,20 @@ closed, and an `Interface` section naming any interface it adds.
 The verifier runs the task's hidden tests. A trial resolves when the tests the
 real change made pass now pass, and the tests that passed before still pass.
 
+Each copy's `task.toml` adds `[verifier] environment_mode = "separate"`, and its
+`tests/` gains a copy of every file in `environment/`, its `Dockerfile` among
+them, since Harbor builds the separate verifier's image from `tests/`. A task
+whose `[verifier]` sets another `environment_mode` or an `environment` of its
+own, or whose `tests/` already holds a file of that name or is a link, makes
+`suss run` exit with an error naming it before it builds any lane or runs any
+job. Harbor's `oracle` agent leaves no patch for the separate verifier to
+apply, so an oracle check of the lane runs on the download, whose verifier
+shares the agent's sandbox:
+
+```bash
+harbor run -p swe-rebench-07-2026 -e modal -a oracle
+```
+
 ### `senior`
 
 All 50 tasks of Snorkel's Senior SWE-Bench snapshot `senior-swe-bench-v2026.06`,
@@ -532,25 +574,38 @@ builds `lanes/<lane>/`, a directory of copies of the lane's task directories
 from the directory its key names: `swe_rebench` for `rebench`, and
 `senior_swe_bench` for `senior`. Each copy has
 `[agent] network_mode = "no-network"` added to its `task.toml` where its
-`[agent]` sets no `network_mode`, and on `senior`, `litellm>=1.0,<1.106` in
+`[agent]` sets no `network_mode`. On `rebench` it also has the separate
+verifier the `rebench` lane describes, and on `senior`, `litellm>=1.0,<1.106` in
 place of `litellm>=1.0,<2.0` in its `tests/test.sh`. A build removes what an
 earlier build of the lane left. Harbor builds each task's image from its
 `Dockerfile` when its trial starts.
 
-Then, K times, it runs an agent job and its regrade:
+Then, K times, it runs an agent job. On `rebench` the agent job grades its own
+trials:
 
 ```bash
 <env>/bin/harbor run -p lanes/rebench -e docker -n 16 -k 1 \
   -a suss.agent:SussAgent --ak arm=peer-review --ak config=suss.toml \
   --ak lane=rebench \
   --allow-agent-host api.anthropic.com --allow-agent-host api.deepseek.com \
-  --disable-verification \
+  --verifier suss.replay:ReplayVerifier \
   --jobs-dir results/rebench/peer-review --job-name <stamp>-1
+```
 
-<env>/bin/harbor run -p lanes/rebench -e docker -n 16 -k 1 \
+On `senior` each agent job is followed by its regrade:
+
+```bash
+<env>/bin/harbor run -y -p lanes/senior -e docker -n 16 -k 1 \
+  -a suss.agent:SussAgent --ak arm=peer-review --ak config=suss.toml \
+  --ak lane=senior \
+  --allow-agent-host api.anthropic.com --allow-agent-host api.deepseek.com \
+  --disable-verification \
+  --jobs-dir results/senior/peer-review --job-name <stamp>-1
+
+<env>/bin/harbor run -y -p lanes/senior -e docker -n 16 -k 1 \
   -a suss.replay:ReplayAgent -m replay \
-  --ak source_job=<dir>/results/rebench/peer-review/<stamp>-1 \
-  --jobs-dir results/rebench/peer-review --job-name <stamp>-1-regrade
+  --ak source_job=<dir>/results/senior/peer-review/<stamp>-1 \
+  --jobs-dir results/senior/peer-review --job-name <stamp>-1-regrade
 ```
 
 `<stamp>` is the time `suss run` started, in UTC, as `20261031T142500Z`. Every
@@ -564,12 +619,13 @@ forms two absolute paths itself:
   is the agent job's directory.
 
 When a task in the lane has Harbor fill a variable from Harbor's environment,
-both jobs also take `-y`, right after `run`. Harbor asks before such a job
-whether its tasks may load those variables, and without a terminal it reads no
-answer and exits 1 with `Aborted.`. Answering yes is safe because Harbor holds
-only the values suss gives it: none in the agent job, and those `.env` sets in
-the regrade. `-y` also agrees, without asking, to share an uploaded job with an
-organization you are not a member of.
+as every `senior` task does, every job of the lane takes `-y`, right after
+`run`. Harbor asks before such a job whether its tasks may load those
+variables, and without a terminal it reads no answer and exits 1 with
+`Aborted.`. Answering yes is safe because Harbor holds only the values suss
+gives it: those `.env` sets in the job that grades, and none in an agent job
+that a regrade follows. `-y` also agrees, without asking, to share an uploaded
+job with an organization you are not a member of.
 
 A run of `senior` whose `.env` lacks a key the judges need exits with an error
 naming it before it builds any lane or runs any job, with `DRY_RUN=1` and
@@ -590,13 +646,14 @@ nothing:
 - An option suss sets on the agent job or its regrade, even with suss's own
   value: `-p`, `-e`, `-n`, `-k`, `-a`, `-m`, `--ak`, `--allow-agent-host`,
   `--disable-verification` and its opposite `--enable-verification`,
-  `--jobs-dir`, `--job-name` and `-y`.
+  `--verifier`, `--jobs-dir`, `--job-name` and `-y`.
 - `--env-file`, which would load the file into the agent job's environment, and
   `--share-org` where the jobs take `-y`.
 - An option that changes the tasks or the agent the agent job runs, or keeps it
   from leaving a trial on this machine for its regrade: `-c`, `-d`, `-t`, `-i`,
   `-x`, `-l`, `--registry-url`, `--registry-path`, `--repo`, `--task-git-url`,
-  `--task-git-commit`, `--agent-import-path`, `--environment-import-path`,
+  `--task-git-commit`, `--agent-import-path`, `--verifier-import-path`,
+  `--verifier-kwarg`, `--environment-import-path`,
   `--user-agent`, `--user-model`, `--uk`, `--user-persona-path`,
   `--user-prompt-template-path`, `--bridge`, `--bridge-prompt-path`, `--bk`,
   `--install-only`, `--launch`, `--dry-run`, `--init` and `--print-config`.
@@ -617,22 +674,22 @@ a value:
 /home/me/evals/.venv/bin/harbor run -y -p lanes/senior -e docker -n 16 -k 1 -a suss.replay:ReplayAgent -m replay --ak source_job=/home/me/evals/results/senior/peer-review/20261031T142500Z-1 --jobs-dir results/senior/peer-review --job-name 20261031T142500Z-1-regrade
 ```
 
-Every agent job is followed by its regrade, whatever its trials did and whatever
-Harbor's exit code was. A trial that failed or errored is graded as its regrade
+On `senior`, every agent job is followed by its regrade, whatever its trials
+did and whatever Harbor's exit code was. A trial that failed or errored is graded as its regrade
 grades it. The one exception is an agent job that leaves no trial in its job
 directory, as when Harbor cannot start at all: `suss run` then prints the job's
 name and Harbor's output, runs nothing more, and exits non-zero.
 
-It gives Harbor `results/<lane>/<arm>/` as its jobs directory, so each agent job
-and its regrade job are written there. Results stay there across runs, so an arm
+It gives Harbor `results/<lane>/<arm>/` as its jobs directory, so each agent job,
+and each regrade job, is written there. Results stay there across runs, so an arm
 run later is compared against a baseline graded earlier, without running the
 baseline again.
 
 `--check` tests that an arm works under suss, for the cost of one trial per
 lane. It builds `lanes/<lane>-check/` with only the lane's first task by name,
-and gives that to both jobs in place of `lanes/<lane>/`, which a full run of the
-lane may be using. It runs one agent job and its regrade whatever `k` is, and
-writes both to `checks/<lane>/<arm>/` instead of `results/`:
+and gives that to its jobs in place of `lanes/<lane>/`, which a full run of the
+lane may be using. It runs one agent job, and on `senior` its regrade, whatever
+`k` is, and writes them to `checks/<lane>/<arm>/` instead of `results/`:
 
 ```bash
 suss run peer-review rebench --check
@@ -767,8 +824,11 @@ and each arm's `baseline` from `suss.toml` in the current directory. Trials
 under `checks/` never count. It compares arms on one lane at a time, never one
 lane with another.
 
-A trial's result is the reward of its regrade. Suss pairs each trial in an agent
-job, `<stamp>-<i>`, with the trial for the same task in `<stamp>-<i>-regrade`.
+A trial's result is the reward of its regrade. On `rebench` the agent trial is
+its own regrade, and what this section reads from a regrade's trial it reads
+from the agent trial, with `replay.json` in its `verifier/`. On every other lane,
+suss pairs each trial in an agent job, `<stamp>-<i>`, with the trial for the
+same task in `<stamp>-<i>-regrade`, and reads `replay.json` in its `agent/`.
 
 It compares the arms over the tasks every one of them has a valid trial of. It
 prints two tables. The first gives each arm's trials and its resolved, failed
@@ -897,9 +957,9 @@ It exits with an error, and prints nothing else, when:
   in results/senior/self-review/20261103T090000Z-1
   ```
 - A trial whose `suss.json` has `patch_bytes` above 0 has a regrade that
-  applied no patch: its `agent/replay.json` has `"patch": null`, or it has no
-  `agent/replay.json` and its `result.json` records an exception.
-- A trial's regrade could not apply its patch: its `agent/replay.json` names a
+  applied no patch: its `replay.json` has `"patch": null`, or it has no
+  `replay.json` and its `result.json` records an exception.
+- A trial's regrade could not apply its patch: its `replay.json` names a
   patch, and its `apply_rc` is not 0.
 
 ## 7. The project
@@ -917,7 +977,7 @@ src/suss/
   harness.py      reading a manifest, installing, and running a harness
   lanes.py        building a lane's directory from the downloaded tasks
   config.py       suss.toml
-  replay.py       ReplayAgent, the regrading agent
+  replay.py       ReplayVerifier and ReplayAgent, which regrade a trial
   judge.py        JudgeAgent, the regrading agent that also judges
   compare.py      suss compare
   cli.py          the suss command

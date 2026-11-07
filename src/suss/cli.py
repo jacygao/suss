@@ -29,6 +29,9 @@ from suss.harness import Manifest, ManifestError, load_manifest
 from suss.lanes import LaneError
 
 
+VERIFIER = "suss.replay:ReplayVerifier"
+
+
 @dataclass(frozen=True)
 class Command:
     argv: list[str]
@@ -59,10 +62,12 @@ def harbor_commands(
     harbor_args: Sequence[str] = (),
     check: bool = False,
     reads: Sequence[str] = (),
-) -> tuple[Command, Command]:
+    verifier_reads: Sequence[str] = (),
+) -> tuple[Command, Command | None]:
     """
     The `harbor run` commands for agent job `trial` of the arm on `lane`, and
-    for its regrade.
+    for its regrade, which is None on a lane in `lanes.SEPARATE_VERIFIER`.
+    There the agent job grades each trial itself, in ReplayVerifier.
 
     Both must run in the directory holding suss.toml, which their relative
     paths resolve from. `harbor_args` go to the agent job only. With `check`,
@@ -70,8 +75,11 @@ def harbor_commands(
     `results/`.
 
     `reads` are the variables the lane's tasks read from Harbor's environment,
-    as `config.host_variables` gives them. Neither job takes them from suss's
-    own environment, and the regrade alone is given those .env sets.
+    as `config.host_variables` gives them. No job takes them from suss's own
+    environment. The job that grades is given those .env sets: the regrade
+    every one of `reads`, and an agent job that grades only those of
+    `verifier_reads`, which the tasks read in `[verifier.env]` alone and so
+    reach the verifier's test.sh and no sandbox.
 
     Raises ValueError, with a message for the user, when `harbor_args` include
     a positional argument, an option suss sets on either job, an option that
@@ -101,8 +109,9 @@ def harbor_commands(
     ]
     for host in manifest.allowed_hosts:
         agent += ["--allow-agent-host", host]
-    # The regrade, in a fresh sandbox, is the trial's only grading.
-    agent += ["--disable-verification"]
+    separate = lane in lanes.SEPARATE_VERIFIER
+    # Either way the trial is graded in a fresh sandbox, and only there.
+    agent += ["--verifier", VERIFIER] if separate else ["--disable-verification"]
     agent += ["--jobs-dir", str(jobs_dir), "--job-name", job_name]
 
     # Absolute, so that it names the agent job whatever directory Harbor is in.
@@ -121,6 +130,8 @@ def harbor_commands(
         _refuse_sharing(harbor_args, lane)
     agent += harbor_args
     withheld = tuple(reads)
+    if separate:
+        return Command(agent, withheld, verifier_env(config, verifier_reads)), None
     return (
         Command(agent, withheld),
         Command(regrade, withheld, verifier_env(config, reads)),
@@ -156,6 +167,7 @@ def _kwarg(key: str, value: str) -> str:
 _ALL_TASKS = "a run covers every task in its lanes, and the regrade grades them all"
 _NO_SIMULATED_USER = "suss runs SussAgent alone, with no simulated user"
 _HARBOR_STOPS = "it stops harbor before the job runs; DRY_RUN=1 prints suss's commands instead"
+_GRADED = "suss grades each rebench trial with its own verifier, which applies the trial's patch"
 
 # Every option refused after --, keyed by Harbor's name for it, with where its
 # setting comes from instead, or why suss cannot honour it.
@@ -173,8 +185,12 @@ _REFUSED = {
     "jobs_dir": "suss writes each job under results/<lane>/<arm>/, or checks/ with --check",
     "job_name": "suss names each job from the run's stamp and its trial number",
     "disable_verification": (
-        "suss grades each trial by its regrade alone, so the agent job never runs the verifier"
+        "suss grades each trial in a fresh sandbox alone: on rebench in the agent job's own"
+        " verifier, and on senior by its regrade"
     ),
+    "verifier": _GRADED,
+    "verifier_import_path": _GRADED,
+    "verifier_kwargs": _GRADED,
     "yes": "suss answers Harbor's question itself, on a lane whose tasks read Harbor's environment",
     # Those that would change what the agent job runs. The regrade still grades
     # every task in the lane, so a task the agent job skips scores 0.
@@ -205,8 +221,8 @@ _REFUSED = {
     "init": _HARBOR_STOPS,
     "print_config": _HARBOR_STOPS,
     "env_file": (
-        "it would give the agent job the variables its tasks read from Harbor's environment; "
-        "suss gives those .env sets to the regrade alone"
+        "it would give the agent job every variable its tasks read from Harbor's environment; "
+        "suss gives those .env sets only to the job that grades, for its verifier"
     ),
 }
 
@@ -289,7 +305,8 @@ class _Lane:
     needs: tuple[int, int] | None
     # Which trials those are, as the capacity error names them.
     trials: str
-    pairs: list[tuple[Command, Command]]
+    # Each agent job, followed by its regrade where the lane has one.
+    jobs: list[list[Command]]
     # The download the lane is built from.
     download: Path
 
@@ -348,8 +365,9 @@ def _parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         "run",
         allow_abbrev=False,
         usage="suss run <arm> <lane>... [--check] [-- <harbor args>]",
-        help="run an arm's agent jobs and their regrades on one or more lanes",
-        description="Run K agent jobs on each lane, each followed by its regrade. "
+        help="run an arm's agent jobs, and on senior their regrades, on one or more lanes",
+        description="Run K agent jobs on each lane, each graded in its own verifier on "
+        "rebench and followed by its regrade on senior. "
         "Arguments after -- go to every agent job. "
         "With DRY_RUN=1, print the harbor commands instead of running them.",
     )
@@ -358,7 +376,8 @@ def _parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     run.add_argument(
         "--check",
         action="store_true",
-        help="run one agent job and its regrade on each lane's first task, under checks/",
+        help="run one agent job, and on senior its regrade, on each lane's first task,"
+        " under checks/",
     )
     compare_ = commands.add_parser(
         "compare",
@@ -411,8 +430,8 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
     # A dry run builds no lane: a build empties the lane, which a running job may be reading.
     if dry_run:
         for lane in planned:
-            for pair in lane.pairs:
-                for command in pair:
+            for job in lane.jobs:
+                for command in job:
                     if command.given:
                         print(f"# from .env: {' '.join(command.given)}")
                     print(shlex.join(command.argv))
@@ -422,7 +441,7 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
     for lane in planned:
         # Harbor builds each task's image when its trial starts, so suss pulls none.
         lanes.build(lane.name, lane.download, root / "lanes", args.check)
-        for agent, regrade in lane.pairs:
+        for agent, *regrades in lane.jobs:
             code, output = _stream(agent, root)
             job = root / _option(agent.argv, "--jobs-dir") / _option(agent.argv, "--job-name")
             if not _has_trial(job):
@@ -431,10 +450,11 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
                     f"runs nothing more. Harbor exited {code}, and printed:\n{output.rstrip()}"
                 )
             # Whatever the agent job's exit code, which is not its trials' result.
-            code, _ = _stream(regrade, root)
-            if code != 0:
-                name = _option(regrade.argv, "--job-name")
-                failed_regrades.append(f"regrade {name} on {lane.name} exited {code}")
+            for regrade in regrades:
+                code, _ = _stream(regrade, root)
+                if code != 0:
+                    name = _option(regrade.argv, "--job-name")
+                    failed_regrades.append(f"regrade {name} on {lane.name} exited {code}")
     for failure in failed_regrades:
         print(f"error: {failure}, so its trials may not be graded", file=sys.stderr)
     return 1 if failed_regrades else 0
@@ -478,7 +498,7 @@ def _plan(
     harbor: Path,
 ) -> _Lane:
     """
-    The lane's pairs of commands, each run as `harbor`, and what its trials need.
+    The lane's commands, each run as `harbor`, and what its trials need.
 
     Raises LaneError, or _Stop for the arguments after `--`, for a lane the
     arm cannot run.
@@ -491,30 +511,40 @@ def _plan(
     lanes.check_buildable(lane, download, settings.path.parent / "lanes", check)
     used = dict(list(found.items())[:1]) if check else found
     reads = config.host_variables(used)
+    # A variable [environment.env] reads would reach the agent's sandbox too.
+    in_sandbox = config.host_variables(used, ("environment",))
+    verifier_reads = [
+        name for name in config.host_variables(used, ("verifier",)) if name not in in_sandbox
+    ]
     config.check_grading_keys(settings, lane)
     on_docker = settings.environment == "docker"
-    pairs = []
+    jobs = []
     for trial in range(1, 2 if check else settings.k + 1):
         try:
             commands = harbor_commands(
-                settings, manifest, lane, run_stamp, trial, harbor_args, check, reads
+                settings, manifest, lane, run_stamp, trial, harbor_args, check, reads,
+                verifier_reads,
             )
         except ValueError as error:
             raise _Stop(str(error)) from None
-        pairs.append(
-            tuple(replace(command, argv=[str(harbor), *command.argv[1:]]) for command in commands)
+        jobs.append(
+            [
+                replace(command, argv=[str(harbor), *command.argv[1:]])
+                for command in commands
+                if command is not None
+            ]
         )
     needs = None
     trials = f"the first task in {lane}" if check else f"the tasks in {lane}"
     if on_docker:
         cpus, memory_mb = lanes.needs(used)
         overrides = _overrides(harbor_args)
-        # The regrade runs each trial at its task's own size, after the agent job.
+        # A regrade's sandbox takes its task's own size, after the agent job's.
         cpus = max(cpus, overrides.get("--override-cpus", 0))
         memory_mb = max(memory_mb, overrides.get("--override-memory-mb", 0))
         needs = (cpus, memory_mb)
         trials += "".join(f" under {option} {value}" for option, value in overrides.items())
-    return _Lane(lane, needs, trials, pairs, download)
+    return _Lane(lane, needs, trials, jobs, download)
 
 
 def _docker_capacity(docker: str, root: Path) -> tuple[int, int]:

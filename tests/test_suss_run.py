@@ -203,18 +203,33 @@ def test_the_default_harbor_is_the_one_beside_this_python():
 # What runs, and in what order
 
 
-def test_the_lane_runs_k_agent_jobs_each_followed_by_its_regrade(project):
-    assert project.run("peer-review", "rebench") == 0
+def test_the_senior_lane_runs_k_agent_jobs_each_followed_by_its_regrade(project):
+    write_dotenv(project, JUDGES_KEY)
+
+    assert project.run("peer-review", "senior") == 0
 
     runs = [
         (value(record["argv"], "-p"), value(record["argv"], "-a"), value(record["argv"], "--job-name"))
         for record in project.records("harbor")
     ]
     assert runs == [
-        ("lanes/rebench", "suss.agent:SussAgent", f"{STAMP}-1"),
-        ("lanes/rebench", "suss.replay:ReplayAgent", f"{STAMP}-1-regrade"),
-        ("lanes/rebench", "suss.agent:SussAgent", f"{STAMP}-2"),
-        ("lanes/rebench", "suss.replay:ReplayAgent", f"{STAMP}-2-regrade"),
+        ("lanes/senior", "suss.agent:SussAgent", f"{STAMP}-1"),
+        ("lanes/senior", "suss.replay:ReplayAgent", f"{STAMP}-1-regrade"),
+        ("lanes/senior", "suss.agent:SussAgent", f"{STAMP}-2"),
+        ("lanes/senior", "suss.replay:ReplayAgent", f"{STAMP}-2-regrade"),
+    ]
+
+
+def test_the_rebench_lane_runs_k_agent_jobs_each_grading_its_own_trials(project):
+    assert project.run("peer-review", "rebench") == 0
+
+    runs = [
+        (value(record["argv"], "-p"), value(record["argv"], "--verifier"), value(record["argv"], "--job-name"))
+        for record in project.records("harbor")
+    ]
+    assert runs == [
+        ("lanes/rebench", "suss.replay:ReplayVerifier", f"{STAMP}-1"),
+        ("lanes/rebench", "suss.replay:ReplayVerifier", f"{STAMP}-2"),
     ]
 
 
@@ -374,7 +389,8 @@ def test_both_jobs_run_in_suss_own_environment_unchanged(project, monkeypatch, p
 
 
 def test_arguments_after_the_separator_reach_every_agent_job_and_no_regrade(project):
-    assert project.run("peer-review", "rebench", "--", "--max-retries", "2") == 0
+    write_dotenv(project, JUDGES_KEY)
+    assert project.run("peer-review", "senior", "--", "--max-retries", "2") == 0
 
     assert len(project.records("harbor")) == 4
     for record in project.records("harbor"):
@@ -384,7 +400,8 @@ def test_arguments_after_the_separator_reach_every_agent_job_and_no_regrade(proj
 
 
 def test_harbors_output_is_shown_as_it_runs(project, capfd):
-    project.run("peer-review", "rebench")
+    write_dotenv(project, JUDGES_KEY)
+    project.run("peer-review", "senior")
 
     out, err = capfd.readouterr()
     assert f"stand-in harbor ran {STAMP}-1\n" in out
@@ -408,9 +425,10 @@ def test_on_a_terminal_harbor_writes_to_one_so_its_live_progress_shows(tmp_path,
 
 
 def test_a_regrade_follows_an_agent_job_that_exits_non_zero(project):
+    write_dotenv(project, JUDGES_KEY)
     project.plan_jobs(**{f"{STAMP}_1": {"exit": 1}})
 
-    project.run("peer-review", "rebench")
+    project.run("peer-review", "senior")
 
     assert project.job_names() == [f"{STAMP}-1", f"{STAMP}-1-regrade", f"{STAMP}-2", f"{STAMP}-2-regrade"]
 
@@ -426,9 +444,10 @@ def test_a_regrade_follows_an_agent_job_that_exits_non_zero(project):
     ids=["job-directory-without-a-trial", "no-job-directory", "no-trial-and-exit-0", "only-harbors-own-directory"],
 )
 def test_an_agent_job_that_leaves_no_trial_stops_the_run(project, capfd, job):
+    write_dotenv(project, JUDGES_KEY)
     project.plan_jobs(**{f"{STAMP}_2": job})
 
-    code = project.run("peer-review", "rebench")
+    code = project.run("peer-review", "senior")
 
     out, err = capfd.readouterr()
     assert code != 0
@@ -440,14 +459,15 @@ def test_an_agent_job_that_leaves_no_trial_stops_the_run(project, capfd, job):
 
 
 def test_a_regrade_that_exits_non_zero_is_reported_after_the_run_finishes(project, capfd):
+    write_dotenv(project, JUDGES_KEY)
     project.plan_jobs(**{f"{STAMP}_1_regrade": {"exit": 2}})
 
-    code = project.run("peer-review", "rebench")
+    code = project.run("peer-review", "senior")
 
     _, err = capfd.readouterr()
     assert code != 0
     assert len(project.job_names()) == 4
-    assert f"error: regrade {STAMP}-1-regrade on rebench exited 2" in err
+    assert f"error: regrade {STAMP}-1-regrade on senior exited 2" in err
 
 
 # Refused before anything runs
@@ -838,7 +858,7 @@ def test_a_modal_client_that_fails_to_import_is_not_reported_as_missing(
     code = project.run("peer-review", "rebench")
 
     assert code == 0, capfd.readouterr().err
-    assert len(project.records("harbor")) == 4
+    assert len(project.records("harbor")) == 2
 
 
 def test_docker_runs_without_modals_client(project, monkeypatch):
@@ -846,7 +866,7 @@ def test_docker_runs_without_modals_client(project, monkeypatch):
 
     assert project.run("peer-review", "rebench") == 0
 
-    assert len(project.records("harbor")) == 4
+    assert len(project.records("harbor")) == 2
 
 
 # Docker's CPUs and memory
@@ -950,7 +970,7 @@ def test_a_check_counts_only_its_one_task_and_one_trial_at_a_time(project, monke
 
     assert project.run("peer-review", "rebench", "--check") == 0
 
-    assert len(project.records("harbor")) == 2
+    assert len(project.records("harbor")) == 1
 
 
 def test_a_check_whose_task_does_not_fit_in_docker_is_refused_before_anything_runs(
@@ -1118,7 +1138,7 @@ def test_no_image_is_pulled_on_docker_even_for_a_task_that_names_one(project):
     assert project.run("peer-review", "rebench") == 0
 
     assert [record["argv"][:1] for record in project.records("docker")] == [["info"]]
-    assert len(project.records("harbor")) == 4
+    assert len(project.records("harbor")) == 2
 
 
 def test_nothing_is_pulled_when_the_sandboxes_run_on_modal(project):
@@ -1127,13 +1147,13 @@ def test_nothing_is_pulled_when_the_sandboxes_run_on_modal(project):
     assert project.run("peer-review", "rebench") == 0
 
     assert project.records("docker") == []
-    assert len(project.records("harbor")) == 4
+    assert len(project.records("harbor")) == 2
 
 
 # Dry run
 
 
-def test_a_dry_run_prints_each_pair_in_run_order_and_runs_nothing(project, capfd, monkeypatch):
+def test_a_dry_run_prints_each_job_in_run_order_and_runs_nothing(project, capfd, monkeypatch):
     monkeypatch.setenv("DRY_RUN", "1")
 
     code = project.run("peer-review", "rebench")
@@ -1142,7 +1162,6 @@ def test_a_dry_run_prints_each_pair_in_run_order_and_runs_nothing(project, capfd
     assert code == 0, err
     assert [record["argv"][0] for record in project.records()] == ["info"]
     assert not (project.directory / "lanes").exists()
-    root = project.directory.resolve()
     expected = []
     for lane in ("rebench",):
         for trial in (1, 2):
@@ -1150,13 +1169,8 @@ def test_a_dry_run_prints_each_pair_in_run_order_and_runs_nothing(project, capfd
             common = f"{project.harbor} run -p lanes/{lane} -e docker -n 4 -k 1"
             expected.append(
                 f"{common} -a suss.agent:SussAgent --ak arm=peer-review --ak config=suss.toml "
-                f"--ak lane={lane} --allow-agent-host api.anthropic.com --disable-verification "
-                f"--jobs-dir {jobs} --job-name {STAMP}-{trial}"
-            )
-            expected.append(
-                f"{common} -a suss.replay:ReplayAgent -m replay "
-                f"--ak source_job={root}/{jobs}/{STAMP}-{trial} --jobs-dir {jobs} "
-                f"--job-name {STAMP}-{trial}-regrade"
+                f"--ak lane={lane} --allow-agent-host api.anthropic.com "
+                f"--verifier suss.replay:ReplayVerifier --jobs-dir {jobs} --job-name {STAMP}-{trial}"
             )
     assert out.splitlines() == expected
 
@@ -1173,11 +1187,11 @@ def test_a_dry_run_quotes_what_a_shell_would_split(project, capfd, monkeypatch):
 # Check
 
 
-def test_a_check_runs_one_pair_on_the_first_task_and_writes_under_checks(project):
+def test_a_check_runs_one_job_on_the_first_task_and_writes_under_checks(project):
     assert project.run("peer-review", "rebench", "--check") == 0
 
     records = project.records("harbor")
-    assert [value(record["argv"], "--job-name") for record in records] == [f"{STAMP}-1", f"{STAMP}-1-regrade"]
+    assert [value(record["argv"], "--job-name") for record in records] == [f"{STAMP}-1"]
     assert {value(record["argv"], "-p") for record in records} == {"lanes/rebench-check"}
     assert {value(record["argv"], "--jobs-dir") for record in records} == {"checks/rebench/peer-review"}
     check = project.directory / "lanes" / "rebench-check"
@@ -1202,8 +1216,8 @@ def test_a_second_run_leaves_the_first_runs_jobs_in_place(project):
     project.run("peer-review", "rebench", clock=lambda: STARTED + timedelta(days=1))
 
     after = sorted(path.name for path in jobs.iterdir())
-    assert first == [f"{STAMP}-1", f"{STAMP}-1-regrade", f"{STAMP}-2", f"{STAMP}-2-regrade"]
-    assert set(first) < set(after) and len(after) == 8
+    assert first == [f"{STAMP}-1", f"{STAMP}-2"]
+    assert set(first) < set(after) and len(after) == 4
     assert all(Path(trial).is_dir() for trial in trials)
 
 
@@ -1363,7 +1377,7 @@ def test_a_run_of_both_lanes_builds_each_from_its_own_download(project, capfd):
         for record in project.records("harbor")
         if "suss.replay:ReplayAgent" in record["argv"]
     ]
-    assert regrades == [("lanes/rebench", False, False)] * 2 + [("lanes/senior", True, True)] * 2
+    assert regrades == [("lanes/senior", True, True)] * 2
 
 
 def test_a_senior_check_builds_the_check_lane_from_its_first_task(project, capfd):

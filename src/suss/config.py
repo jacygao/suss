@@ -197,16 +197,18 @@ def _cap(key: str, *tables: dict[str, Any]) -> Any:
 HOST_ENV_TABLES = ("environment", "verifier")
 
 
-def host_variables(tasks: Mapping[Path, dict]) -> tuple[str, ...]:
+def host_variables(
+    tasks: Mapping[Path, dict], tables: Iterable[str] = HOST_ENV_TABLES
+) -> tuple[str, ...]:
     """
-    The names the tasks' `[environment.env]` and `[verifier.env]` values read
-    from Harbor's environment, as `${NAME}` or `${NAME:-default}`, sorted.
+    The names the tasks' `[<table>.env]` values read from Harbor's environment,
+    as `${NAME}` or `${NAME:-default}`, sorted, for each of `tables`.
 
     `tasks` are as `lanes.read_tasks` gives them. A literal value reads nothing.
     """
     names = set()
     for toml in tasks.values():
-        for table in HOST_ENV_TABLES:
+        for table in tables:
             section = toml.get(table)
             env = section.get("env") if isinstance(section, dict) else None
             if isinstance(env, dict):

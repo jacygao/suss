@@ -1,16 +1,20 @@
 """
-ReplayAgent, the Harbor custom agent that regrades a trial of an agent job.
+Replaying a trial's model.patch in a fresh sandbox, so that the task's verifier
+grades the change and nothing else the harness did to its sandbox.
 
-It applies the trial's model.patch in a fresh sandbox, so that the task's
-verifier grades the change and nothing else the harness did to its sandbox.
 Every test file the patch changed is then put back as it was in the starting
 tree, so the change is graded against the tests and not against the harness's
-edits to them. Harbor constructs it on the host, where the agent job is.
+edits to them. ReplayVerifier does this in Harbor's separate verifier, inside
+the agent job. ReplayAgent does it as the agent of a second job, the regrade.
+Harbor constructs both on the host, where the agent job is.
 """
 
+import hashlib
 import json
 import re
 import shlex
+import tempfile
+from collections.abc import Awaitable, Callable
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -18,8 +22,10 @@ from typing import Any
 from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
+from harbor.models.verifier.result import VerifierResult
+from harbor.verifier.verifier import Verifier
 
-from suss.workspace import PATCH_NAME, find_workspace, read_start_tree
+from suss.workspace import ARTIFACTS_DIR, PATCH_NAME, find_workspace, read_start_tree
 
 RECORD_NAME = "replay.json"
 APPLY_METHOD = "git apply --verbose"
@@ -34,9 +40,83 @@ GIT_ESCAPES = {
 
 class ReplayError(Exception):
     """
-    A regrade that cannot find the one trial of its task in the source job, or
-    whose workspace git cannot read or put a test file back in.
+    A regrade that cannot find the one trial of its task in the source job, a
+    verifier with no patch it can trust, or a workspace git cannot read or put
+    a test file back in.
     """
+
+
+class ReplayVerifier(Verifier):
+    """
+    Harbor's verifier for a trial graded in a sandbox of its own, which applies
+    the patch the agent's sandbox left in its artifacts directory, then runs
+    the task's own test.sh, unchanged.
+
+    The verifier's image is the task's own, so Harbor uploads the task's tests
+    to it as it does to a verifier in the agent's sandbox.
+    """
+
+    def __init__(self, *, artifacts: str = ARTIFACTS_DIR, **kwargs: Any):
+        """`artifacts` is where the patch is in the verifier's sandbox. Harbor never passes it."""
+        super().__init__(**kwargs)
+        self.artifacts = artifacts
+
+    async def verify(self) -> VerifierResult:
+        """
+        Apply the patch, put back every test file it changed, write
+        verifier/replay.json, and grade as Harbor's own verifier does.
+
+        An empty patch applies nothing and records `"patch": null`, and the
+        unchanged workspace is graded, since the agent changed nothing. A patch
+        git refuses is recorded and graded as ReplayAgent grades it. Raises
+        ReplayError, with `"patch": null` recorded and no test run, when the
+        sandbox holds no patch, or one that differs from the agent's
+        model.patch on the host: grading the workspace then would score a
+        change the agent may not have made.
+        """
+        target = f"{self.artifacts.rstrip('/')}/{PATCH_NAME}"
+        record: dict[str, Any] = {"patch": None}
+        try:
+            patch = await self._read(target)
+            if patch:
+                replayed = await replay(self.environment, patch, target)
+                record = {
+                    "patch": target,
+                    "patch_bytes": len(patch),
+                    "sha256": hashlib.sha256(patch).hexdigest(),
+                    **replayed,
+                }
+        finally:
+            self.trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
+            (self.trial_paths.verifier_dir / RECORD_NAME).write_text(
+                json.dumps(record, indent=2) + "\n"
+            )
+        return await super().verify()
+
+    async def _read(self, target: str) -> bytes:
+        """
+        The patch at `target` in the sandbox, raising ReplayError when there is
+        none or it differs from the agent's model.patch on the host.
+
+        A trial whose agent left no model.patch on the host, as Harbor's own
+        agents leave none, is graded by the sandbox's alone.
+        """
+        found = await self.environment.exec(f"test -f {shlex.quote(target)}")
+        if found.return_code != 0:
+            raise ReplayError(
+                f"the trial left no patch at {target}, so its change cannot be graded"
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            local = Path(directory) / PATCH_NAME
+            await self.environment.download_file(target, local)
+            patch = local.read_bytes()
+        agents = self.trial_paths.agent_dir / PATCH_NAME
+        if agents.is_file() and agents.read_bytes() != patch:
+            raise ReplayError(
+                f"the patch at {target}, {len(patch)} bytes, differs from the agent's {agents},"
+                f" {agents.stat().st_size} bytes, so its change cannot be graded"
+            )
+        return patch
 
 
 class ReplayAgent(BaseAgent):
@@ -98,17 +178,15 @@ class ReplayAgent(BaseAgent):
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         record: dict[str, Any] = {"task": task, "patch": None}
         if patch.is_file() and patch.stat().st_size > 0:
-            workspace = await find_workspace(environment)
-            added = [path for path in _created(patch.read_bytes()) if is_test_file(path)]
-            start = await read_start_tree(environment, workspace)
-            # An ignored file the image holds is in no tree, but is not the
-            # patch's either, so it stays.
-            held = await _present(environment, workspace, added)
-            applied = await self._apply(environment, patch, workspace)
-            await self._after_apply(environment, workspace, patch, applied)
-            added = [path for path in added if path not in held]
-            tests_reset = await _reset_tests(environment, workspace, start, added)
-            record = {"task": task, "patch": str(patch), **applied, "tests_reset": tests_reset}
+            await environment.upload_file(patch, self.patch_target)
+
+            async def after_apply(workspace: str, applied: dict[str, Any]) -> None:
+                await self._after_apply(environment, workspace, patch, applied)
+
+            replayed = await replay(
+                environment, patch.read_bytes(), self.patch_target, after_apply
+            )
+            record = {"task": task, "patch": str(patch), **replayed}
         (self.logs_dir / RECORD_NAME).write_text(json.dumps(record, indent=2) + "\n")
 
     async def _after_apply(
@@ -137,26 +215,56 @@ class ReplayAgent(BaseAgent):
             )
         return trials[0]
 
-    async def _apply(
-        self, environment: BaseEnvironment, patch: Path, workspace: str
-    ) -> dict[str, Any]:
-        """
-        Apply the patch, and return git's exit code and everything it printed.
 
-        Git applies the whole patch or none of it. The patch runs from the
-        starting tree this sandbox holds, so a patch suss captured applies
-        whole. The output follows a line naming the command, stderr too. The patch goes
-        in as a file, since exec passes text, which corrupts bytes that are not
-        valid UTF-8.
-        """
-        await environment.upload_file(patch, self.patch_target)
-        target = shlex.quote(self.patch_target)
-        command = f"{{ echo {shlex.quote('$ ' + APPLY_METHOD)}; {APPLY_METHOD} {target} 2>&1; }}"
-        result = await environment.exec(command, cwd=workspace, timeout_sec=APPLY_SECONDS)
-        return {
-            "apply_rc": result.return_code,
-            "apply_out": (result.stdout or "") + (result.stderr or ""),
-        }
+async def replay(
+    environment: BaseEnvironment,
+    patch: bytes,
+    target: str,
+    after_apply: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+) -> dict[str, Any]:
+    """
+    Apply `patch`, which is at `target` in the sandbox, in the workspace, then
+    put back every test file it changed as it was in the starting tree.
+
+    Return git's exit code and what it printed, as `apply_rc` and `apply_out`,
+    and the test files put back, as `tests_reset`. A patch git refuses is
+    recorded, not raised, so the verifier still grades the workspace.
+    `after_apply` is given the workspace while it holds the whole patch, test
+    files included. Raises ReplayError when git cannot compare the workspace
+    with its starting tree or put a test file back, and WorkspaceError when it
+    cannot build the starting tree.
+    """
+    workspace = await find_workspace(environment)
+    added = [path for path in _created(patch) if is_test_file(path)]
+    start = await read_start_tree(environment, workspace)
+    # An ignored file the image holds is in no tree, but is not the patch's
+    # either, so it stays.
+    held = await _present(environment, workspace, added)
+    applied = await _apply(environment, target, workspace)
+    if after_apply is not None:
+        await after_apply(workspace, applied)
+    added = [path for path in added if path not in held]
+    tests_reset = await _reset_tests(environment, workspace, start, added)
+    return {**applied, "tests_reset": tests_reset}
+
+
+async def _apply(environment: BaseEnvironment, target: str, workspace: str) -> dict[str, Any]:
+    """
+    Apply the patch at `target`, and return git's exit code and everything it
+    printed.
+
+    Git applies the whole patch or none of it. The patch runs from the starting
+    tree this sandbox holds, so a patch suss captured applies whole. The output
+    follows a line naming the command, stderr too. The patch is read from a
+    file, since exec passes text, which corrupts bytes that are not valid UTF-8.
+    """
+    quoted = shlex.quote(target)
+    command = f"{{ echo {shlex.quote('$ ' + APPLY_METHOD)}; {APPLY_METHOD} {quoted} 2>&1; }}"
+    result = await environment.exec(command, cwd=workspace, timeout_sec=APPLY_SECONDS)
+    return {
+        "apply_rc": result.return_code,
+        "apply_out": (result.stdout or "") + (result.stderr or ""),
+    }
 
 
 def is_test_file(path: str) -> bool:
@@ -354,3 +462,4 @@ def _task(config: Path) -> str:
     if not isinstance(path, str):
         raise ReplayError(f"cannot read the task from {config}: task.path is {path!r}")
     return Path(path).name
+
