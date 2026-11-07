@@ -82,10 +82,13 @@ recheck-when: Harbor upgrades past 0.22.0, ReplayAgent changes how it applies a 
   agent phase. `harbor jobs regrade` starts one sandbox per trial, with no
   agent phase, and its verifier phase took 26 seconds, as the agent job's took
   30, so nothing was rebuilt.
-- **Have `suss compare` read the agent job's own trials.** A trial's reward is
-  then its `result.json`'s `verifier_result`, its test result
-  `verifier/report.json` in the same trial directory, and the apply record
-  `verifier/replay.json` where `agent/replay.json` was. A re-grade by
+- **Have `suss compare` read the agent job's own trials.** Each file it reads
+  is the one it reads now, but in the agent trial's directory rather than the
+  regrade's: the reward in `result.json`'s `verifier_result`, and the test
+  result in `verifier/report.json` on rebench and
+  `verifier/verifier_results.json` on senior, each parsed as now. Only the
+  apply record moves, to `verifier/replay.json` from `agent/replay.json`. A
+  re-grade by
   `harbor jobs regrade` is a new job directory with one trial per task, read the
   same way, so `compare` would need to be told which job grades a run.
 
