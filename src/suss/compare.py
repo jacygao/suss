@@ -11,12 +11,13 @@ is unresolved, unless its verifier judged it invalid.
 import json
 import random
 import statistics
+from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
-from suss import config, lanes
+from suss import config, judge, lanes
 
 REGRADE = "-regrade"
 
@@ -54,10 +55,15 @@ class Trial:
     invalid: bool
     # The agent trial's directory.
     path: Path
-    # The regrade's `verifier_result.rewards`, or None when it has none.
+    # The judges' scores and flags, in the shape of the verifier's rewards:
+    # the regrade's agent/judge.json when it has one, and on senior its
+    # `verifier_result.rewards` otherwise. None when it has neither.
     rewards: Mapping | None = None
-    # `rubric_status` in the regrade's verifier/judge_output.json, or None.
+    # The rubric judge's status, from the same place as `rewards`, or None.
     rubric_status: str | None = None
+    # Who gave `rewards` when judge.json did. None when senior's verifier did,
+    # whose judge model only the grader records.
+    judge: str | None = None
 
 
 def read_trials(directory: Path, lane: str, arm: str) -> list[Trial]:
@@ -98,6 +104,13 @@ def _trial(lane: str, job: str, task: str, trial: Path, regrade: Path | None) ->
         applied = replay["patch"] is not None
     else:
         applied = False if raised is not None else None
+    judged = _json(regrade / "agent" / judge.RECORD_NAME) if regrade else None
+    if isinstance(judged, dict):
+        rewards, rubric_status, judged_by = _judge_scores(judged)
+    elif regrade and lane == lanes.SENIOR:
+        rewards, rubric_status, judged_by = _rewards(regrade), _rubric_status(regrade), None
+    else:
+        rewards, rubric_status, judged_by = None, None, None
     return Trial(
         job=job,
         task=task,
@@ -112,8 +125,30 @@ def _trial(lane: str, job: str, task: str, trial: Path, regrade: Path | None) ->
         and (_senior_tested(regrade) if lane == lanes.SENIOR else _tested(regrade)),
         invalid=regrade is not None and _exception(regrade) == "RewardFileEmptyError",
         path=trial,
-        rewards=_rewards(regrade) if regrade else None,
-        rubric_status=_rubric_status(regrade) if regrade else None,
+        rewards=rewards,
+        rubric_status=rubric_status,
+        judge=judged_by,
+    )
+
+
+def _judge_scores(record: dict) -> tuple[dict, str | None, str]:
+    """
+    The scores in a judge.json with each judge's flag 1 exactly when its
+    status is `ok`, then the rubric judge's status, then who gave the scores.
+
+    The status is the judge's, not its first session's, so a judge that
+    answered on its retry is judged.
+    """
+    scores = record.get("scores")
+    flags = {f"{kind}_judge_ok": int(record.get(f"{kind}_status") == "ok") for kind in judge.JUDGES}
+    status = record.get("rubric_status")
+    named = record.get("judge")
+    parts = [named.get(key) for key in ("client", "model", "effort")] if isinstance(named, dict) else []
+    judged_by = " ".join(part for part in parts if isinstance(part, str) and part)
+    return (
+        (scores if isinstance(scores, dict) else {}) | flags,
+        status if isinstance(status, str) else None,
+        judged_by or "a judge.json that names no judge",
     )
 
 
@@ -327,12 +362,15 @@ class Mean:
 
 @dataclass(frozen=True)
 class Means:
-    """An arm's mean score from each of a senior regrade's judges."""
+    """An arm's mean score from each of a regrade's judges."""
 
     rubric: Mean
     practice: Mean
     relative: Mean
     bloat: Mean
+    # Each judge that gave the arm's trials a score, and how many trials it
+    # scored. With more than one, every mean above is None.
+    judges: Mapping[str, int] = field(default_factory=dict)
 
 
 # Each mean's field, the score's key in a regrade's rewards, and the judge's
@@ -367,9 +405,11 @@ def report(directory: Path, lane: str, arms: Sequence[str]) -> str:
     After them come the counted trials whose regrade recorded no test result,
     then the invalid trials of tasks every arm has a trial of, valid or not.
     Each list goes by arm in the order given, then by job and task.
-    On the senior lane, a third table gives each arm's mean judges' scores over
-    the counted trials, and a last list names the counted trials whose judges
-    failed or were skipped, in the same order.
+    On the senior lane, and on any lane where a regrade wrote judge.json, a
+    third table gives each arm's mean judges' scores over the counted trials,
+    and a last list names the counted trials whose judges failed or were
+    skipped, in the same order. The table names the judges when judge.json
+    gave any score, since senior's verifier is otherwise the only one.
 
     Raises ConfigError when suss.toml does not define every arm, and
     CompareError when an arm has no trials or only invalid ones, a trial's
@@ -404,38 +444,63 @@ def report(directory: Path, lane: str, arms: Sequence[str]) -> str:
         for trial in trials[arm]
         if trial.invalid and trial.task in shared
     ]
-    if lane != lanes.SENIOR:
+    # Elsewhere than senior, only judge.json gives scores.
+    by_judge = any(trial.judge is not None for found in kept.values() for trial in found)
+    if lane != lanes.SENIOR and not by_judge:
         return render(shares, differences, untested, invalid)
-    means = {arm: _means(kept[arm]) for arm in arms}
+    verifier = _verifier_judge(trials)
+    means = {arm: _means(kept[arm], verifier) for arm in arms}
     unjudged = [
         (arm, trial.job, trial.task, judges)
         for arm in arms
         for trial in kept[arm]
         if (judges := _unjudged(trial))
     ]
-    return render(shares, differences, untested, invalid, means, unjudged)
+    return render(shares, differences, untested, invalid, means, unjudged, by_judge)
 
 
-def _means(trials: Sequence[Trial]) -> Means:
+def _verifier_judge(trials: Mapping[str, Sequence[Trial]]) -> str:
     """
-    Each score's mean over the trials whose regrade has it under a flag of 1.
+    Senior's verifier as a judge, named by the judge model in the grader.
+
+    Every grader is the same one by now, so a trial with none takes the others'.
+    """
+    graders = (trial.grader for found in trials.values() for trial in found if trial.grader is not None)
+    grader = next(graders, None)
+    model = grader.get("judge_model") if isinstance(grader, dict) else None
+    if isinstance(model, str) and model:
+        return f"senior verifier {model}"
+    return "senior verifier, whose judge model no grader records"
+
+
+def _means(trials: Sequence[Trial], verifier: str) -> Means:
+    """
+    Each score's mean over the trials whose regrade has it under a flag of 1,
+    when one judge scored them all. `verifier` names senior's verifier as a judge.
 
     A trial whose judge failed, was skipped, or never ran has no score, and
-    takes no part in that mean.
+    takes no part in that mean, nor in which judges scored the arm.
     """
+    judges = Counter(
+        trial.judge or verifier
+        for trial in trials
+        if trial.rewards is not None
+        and any(_number(trial.rewards.get(flag)) == 1 for _, _, flag in SCORES)
+    )
     means = {}
-    for field, key, flag in SCORES:
+    for name, key, flag in SCORES:
         scores = [
             score
             for trial in trials
-            if trial.rewards is not None
+            if len(judges) == 1
+            and trial.rewards is not None
             and _number(trial.rewards.get(flag)) == 1
             and (score := _number(trial.rewards.get(key))) is not None
         ]
         # In decimal, so that a mean half way between two places is not a float just under it.
         total = sum(Decimal(str(score)) for score in scores)
-        means[field] = Mean(total / len(scores) if scores else None, len(scores))
-    return Means(**means)
+        means[name] = Mean(total / len(scores) if scores else None, len(scores))
+    return Means(**means, judges=dict(judges))
 
 
 def _unjudged(trial: Trial) -> list[str]:
@@ -570,13 +635,15 @@ def render(
     invalid: Sequence[tuple[str, str, str]] = (),
     means: Mapping[str, Means] | None = None,
     unjudged: Sequence[tuple[str, str, str, Sequence[str]]] = (),
+    name_judges: bool = False,
 ) -> str:
     """
     The first table, of each arm's shares, and the second, of each
     (arm, baseline, difference), unless there are none. Then the table of
-    `means`, unless it is None. Then each (arm, job, task) in `untested`, then
-    in `invalid`, and each (arm, job, task, judges) in `unjudged`, each under
-    its own heading, unless there are none.
+    `means`, unless it is None, as render_means gives it. Then each
+    (arm, job, task) in `untested`, then in `invalid`, and each
+    (arm, job, task, judges) in `unjudged`, each under its own heading, unless
+    there are none.
     """
     header = ["arm", "trials", "resolved", "failed", "timed out"]
     rows = [
@@ -596,7 +663,7 @@ def render(
                 f"[{_signed(difference.low)}, {_signed(difference.high)}]"
             )
     if means is not None:
-        lines += ["", *render_means(means)]
+        lines += ["", *render_means(means, name_judges)]
     lines += _named(
         "These trials' regrades recorded no test result, so their grading may have broken:", untested
     )
@@ -620,13 +687,44 @@ def _named(heading: str, trials: Sequence[tuple[str, str, str]]) -> list[str]:
     ]
 
 
-def render_means(means: Mapping[str, Means]) -> list[str]:
-    """The lines of the table of each arm's mean judges' scores."""
+def render_means(means: Mapping[str, Means], name_judges: bool = False) -> list[str]:
+    """
+    The lines of the table of each arm's mean judges' scores, then a line for
+    each arm that more than one judge scored, then one saying the arms' means
+    do not compare when the other arms' judges differ.
+
+    The table names each arm's judge in a last column when `name_judges` is
+    true or some arm has more than one.
+    """
     header = ["mean (trials)", "rubric", "practice alignment", "relative taste", "patch bloat"]
     rows = [
-        [arm] + [_mean(getattr(m, field)) for field, _, _ in SCORES] for arm, m in means.items()
+        [arm] + [_mean(getattr(m, name)) if len(m.judges) < 2 else "-" for name, _, _ in SCORES]
+        for arm, m in means.items()
     ]
-    return _table(header, rows)
+    mixed = {arm: m.judges for arm, m in means.items() if len(m.judges) > 1}
+    single = {arm: next(iter(m.judges)) for arm, m in means.items() if len(m.judges) == 1}
+    lines = _table(header, rows)
+    if name_judges or mixed:
+        cells = ["more than one" if arm in mixed else single.get(arm, "-") for arm in means]
+        lines = [f"{line}  {cell}" for line, cell in zip(lines, ["judge", *cells])]
+    notes = []
+    for arm, judges in mixed.items():
+        counted = [f"{name} on {_trials(count)}" for name, count in judges.items()]
+        notes.append(f"{arm} was judged by {_joined(counted)}, so it has no mean.")
+    if len(set(single.values())) > 1:
+        judged_by = [f"{arm} by {name}" for arm, name in single.items()]
+        judged_by[0] = judged_by[0].replace(" by ", " was judged by ", 1)
+        notes.append(f"The means do not compare across arms: {', '.join(judged_by)}.")
+    return lines + (["", *notes] if notes else [])
+
+
+def _trials(count: int) -> str:
+    return f"{count} trial" if count == 1 else f"{count} trials"
+
+
+def _joined(items: Sequence[str]) -> str:
+    """The items as a list in a sentence: `a`, `a and b`, `a, b and c`."""
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
 
 
 def _table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> list[str]:

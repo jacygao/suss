@@ -1750,3 +1750,215 @@ def test_a_rebench_trial_recorded_before_senior_graders_compares_with_one_record
     code, out, err = run_compare(tmp_path, capsys, "rebench", "base", "beta")
 
     assert (code, err) == (0, ""), "a rebench trial recorded before senior graders no longer compares"
+
+
+ARGON = "gemini-4-argon"
+SOL = "gpt-6.1-sol"
+
+
+def judge_json(
+    rubric=None,
+    practice=None,
+    relative=None,
+    bloat=None,
+    *,
+    model=ARGON,
+    rubric_status="ok",
+    taste_status="ok",
+    sessions=None,
+) -> dict:
+    """
+    The agent/judge.json JudgeAgent writes, trimmed to what compare reads.
+
+    A judge that did not finish ok has no scores, as JudgeAgent writes them,
+    except the patch bloat, which it measures without the taste judge.
+    """
+    scores = {}
+    if rubric_status == "ok":
+        scores |= {"rubric_score": rubric, "rubric_f2p_score": 1.0, "rubric_p2p_score": 1.0}
+    if bloat is not None:
+        scores["taste_patch_bloat"] = bloat
+    if taste_status == "ok":
+        scores |= {"taste_practice_alignment": practice, "taste_relative_taste": relative}
+    for kind, status in (("rubric", rubric_status), ("taste", taste_status)):
+        scores[f"{kind}_judge_ok"] = 1 if status == "ok" else 0
+    return {
+        "judge": {
+            "client": "copilot-cli",
+            "version": "1.0.105",
+            "requested_version": "1.0.105",
+            "model": model,
+            "effort": "high",
+            "classifier_model": "claude-haiku-4.5",
+        },
+        "sessions": sessions
+        or [
+            {"name": "classify-agent", "model": "claude-haiku-4.5", "status": "ok"},
+            {"name": "classify-oracle", "model": "claude-haiku-4.5", "status": "ok"},
+            {"name": "rubric", "model": model, "effort": "high", "status": rubric_status},
+            {"name": "taste", "model": model, "effort": "high", "status": taste_status},
+        ],
+        "rubric_status": rubric_status,
+        "taste_status": taste_status,
+        "scores": scores,
+        "credits": 25.1933,
+    }
+
+
+def write_judged_arm(root: Path, arm: str, tasks: dict[str, list[dict]], lane: str = SENIOR) -> None:
+    """
+    The arm's results with JudgeAgent as each regrade's agent: the i-th trial of
+    each task in agent job `S-<i>`, with the judge.json given. On senior, the
+    regrade's rewards are those of a verifier with no key, whose judges failed.
+    """
+    for task, records in tasks.items():
+        for i, record in enumerate(records, start=1):
+            job = root / "results" / lane / arm / f"S-{i}"
+            write_agent_trial(job, task, f"agent{i}", grader=SENIOR_GRADER if lane == SENIOR else GRADER)
+            regrade = write_regrade_trial(
+                job.with_name(f"{job.name}{compare.REGRADE}"),
+                task,
+                f"regrd{i}",
+                {"rewards": JUDGES_FAILED if lane == SENIOR else {"reward": 1.0}},
+                report=None if lane == SENIOR else TESTED,
+            )
+            if lane == SENIOR:
+                write_json(regrade / "verifier" / "verifier_results.json", SENIOR_TESTED)
+            write_json(regrade / "agent" / "judge.json", record)
+
+
+BASE_JUDGED = {"s1": [judge_json(1.0, 4.0, 3.0, 1.0)], "s2": [judge_json(0.5, 2.0, 2.0, 2.0)]}
+BETA_JUDGED = {"s1": [judge_json(0.75, 5.0, 4.0, 1.5)], "s2": [judge_json(0.25, 3.0, 3.0, 0.5)]}
+
+
+def write_copilot_judged(root: Path, base=BASE_JUDGED, beta=BETA_JUDGED) -> Path:
+    """Two senior arms over s1 and s2, every regrade judged by Copilot CLI with Argon unless given."""
+    (root / "suss.toml").write_text(SENIOR_TOML)
+    write_judged_arm(root, "base", base)
+    write_judged_arm(root, "beta", beta)
+    return root
+
+
+MEANS_HEADER = "mean (trials)    rubric  practice alignment  relative taste  patch bloat  judge\n"
+ARGON_JUDGE = "copilot-cli gemini-4-argon high"
+BASE_MEANS = "base           0.75 (2)            3.00 (2)        2.50 (2)     1.50 (2)  " + ARGON_JUDGE + "\n"
+BETA_MEANS = "beta           0.50 (2)            4.00 (2)        3.50 (2)     1.00 (2)  " + ARGON_JUDGE + "\n"
+
+
+def test_compare_gives_each_arms_mean_scores_from_judge_json_and_names_its_judge(tmp_path, capsys):
+    code, out, err = run_compare(write_copilot_judged(tmp_path), capsys, SENIOR, "base", "beta")
+
+    # The verifier's rewards have both judges failed, so reading them would
+    # give no mean and name every trial.
+    assert (code, err) == (0, "")
+    assert out.endswith("beta - base    +0% [+0%, +0%]\n\n" + MEANS_HEADER + BASE_MEANS + BETA_MEANS)
+
+
+def test_a_trial_whose_copilot_judges_failed_counts_in_no_mean_and_is_named(tmp_path, capsys):
+    failed = judge_json(bloat=9.0, rubric_status="failed:timeout", taste_status="failed:exit_1")
+    root = write_copilot_judged(tmp_path, base=BASE_JUDGED | {"s1": [*BASE_JUDGED["s1"], failed]})
+
+    code, out, err = run_compare(root, capsys, SENIOR, "base", "beta")
+
+    assert (code, err) == (0, "")
+    assert BASE_MEANS in out, "a failed judge's missing scores, or its bloat, moved base's means"
+    assert out.endswith(JUDGES_NAMED + "  base  S-2  s1  rubric, taste\n")
+
+
+def test_a_judge_that_answered_on_its_retry_is_judged(tmp_path, capsys):
+    # As judge-argon-1 recorded it: the first rubric session gave no JSON, and its retry did.
+    retried = judge_json(
+        1.0,
+        4.0,
+        3.0,
+        1.0,
+        sessions=[
+            {"name": "classify-agent", "status": "ok"},
+            {"name": "classify-oracle", "status": "ok"},
+            {"name": "rubric", "status": "failed:no_json", "error": "the reply holds no JSON object"},
+            {"name": "rubric-retry", "status": "ok"},
+            {"name": "taste", "status": "ok"},
+        ],
+    )
+    root = write_copilot_judged(tmp_path, base=BASE_JUDGED | {"s1": [retried]})
+
+    code, out, err = run_compare(root, capsys, SENIOR, "base", "beta")
+
+    assert (code, err) == (0, "")
+    assert BASE_MEANS in out
+    assert JUDGES_NAMED not in out, "a judge that answered on its retry was named as failed"
+
+
+def test_an_arm_judged_by_two_judges_has_no_mean_and_says_which(tmp_path, capsys):
+    sol = judge_json(0.0, 1.0, 1.0, 1.0, model=SOL)
+    root = write_copilot_judged(tmp_path, beta=BETA_JUDGED | {"s1": [*BETA_JUDGED["s1"], sol]})
+
+    code, out, err = run_compare(root, capsys, SENIOR, "base", "beta")
+
+    assert (code, err) == (0, "")
+    assert out.endswith(
+        MEANS_HEADER + BASE_MEANS
+        + "beta                  -                   -               -            -  more than one\n"
+        "\n"
+        "beta was judged by copilot-cli gemini-4-argon high on 2 trials and "
+        "copilot-cli gpt-6.1-sol high on 1 trial, so it has no mean.\n"
+    )
+
+
+def test_arms_judged_by_different_judges_get_means_and_no_comparison(senior, capsys):
+    shutil.rmtree(senior / "results" / SENIOR / "beta")
+    write_judged_arm(
+        senior, "beta", {"s1": [judge_json(1.0, 4.0, 4.0, 1.0)], "s2": [judge_json(0.5, 2.0, 2.0, 3.0)]}
+    )
+
+    code, out, err = run_compare(senior, capsys, SENIOR, "base", "beta")
+
+    # base's means are over the verifier's rewards for s1 and s2 alone, as beta has no s3.
+    assert (code, err) == (0, "")
+    assert out.endswith(
+        MEANS_HEADER
+        + "base           0.58 (3)            3.00 (3)        2.67 (3)     1.16 (3)  "
+        "senior verifier anthropic/claude-sonnet-4-6\n"
+        "beta           0.75 (2)            3.00 (2)        3.00 (2)     2.00 (2)  " + ARGON_JUDGE + "\n"
+        "\n"
+        "The means do not compare across arms: base was judged by senior verifier "
+        "anthropic/claude-sonnet-4-6, beta by copilot-cli gemini-4-argon high.\n"
+        "\n" + JUDGES_NAMED + "  base  S-1  s2  rubric, taste\n"
+    )
+
+
+def test_judge_json_wins_over_the_verifiers_judges(senior, capsys):
+    # Every regrade of the senior fixture has the verifier's judges' scores.
+    for task in ("s1", "s2", "s3"):
+        for i in (1, 2):
+            write_json(
+                regrade_of_senior(senior, "base", task, i) / "agent" / "judge.json",
+                judge_json(0.0, 1.0, 1.0, 5.0),
+            )
+
+    code, out, err = run_compare(senior, capsys, SENIOR, "base", "beta")
+
+    assert (code, err) == (0, "")
+    assert "base           0.00 (6)            1.00 (6)        1.00 (6)     5.00 (6)  " + ARGON_JUDGE + "\n" in out, (
+        "base's means are not judge.json's, which wins over the verifier's"
+    )
+
+
+def test_a_rebench_trial_judged_for_taste_alone_has_taste_means_and_no_rubric(tmp_path, capsys):
+    (tmp_path / "suss.toml").write_text(SENIOR_TOML)
+    for arm, practice in (("base", 4.0), ("beta", 2.0)):
+        write_judged_arm(
+            tmp_path,
+            arm,
+            {"t1": [judge_json(None, practice, 3.0, 1.0, rubric_status="skipped:no_criteria")]},
+            lane="rebench",
+        )
+
+    code, out, err = run_compare(tmp_path, capsys, "rebench", "base", "beta")
+
+    assert (code, err) == (0, "")
+    assert out.endswith(
+        "mean (trials)  rubric  practice alignment  relative taste  patch bloat  judge\n"
+        "base            - (0)            4.00 (1)        3.00 (1)     1.00 (1)  " + ARGON_JUDGE + "\n"
+        "beta            - (0)            2.00 (1)        3.00 (1)     1.00 (1)  " + ARGON_JUDGE + "\n"
+    )
