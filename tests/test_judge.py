@@ -120,15 +120,19 @@ def box(tmp_path, monkeypatch, found) -> Path:
 def write_scenario(box: Path, **kinds) -> None:
     """
     What the stand-in copilot does in each kind of session. A kind left out
-    answers validly, at one credit.
+    answers validly, and its `retry`, the scenario of a resumed call, answers
+    validly for 2 credits.
     """
     defaults = {
         "classify": {"answer": json.dumps(CLASSIFY_ANSWER), "nano": 1_000_000_000},
         "rubric": {"answer": json.dumps(RUBRIC_ANSWER), "nano": 8_000_000_000},
         "taste": {"answer": json.dumps(TASTE_ANSWER), "nano": 20_000_000_000},
     }
+    for kind, scenario in defaults.items():
+        scenario["retry"] = {"answer": scenario["answer"], "nano": 2_000_000_000}
     for kind, changes in kinds.items():
-        defaults[kind] = {**defaults[kind], **changes}
+        retry = {**defaults[kind]["retry"], **changes.get("retry", {})}
+        defaults[kind] = {**defaults[kind], **changes, "retry": retry}
     (box / "copilot" / "scenario.json").write_text(json.dumps(defaults))
 
 
@@ -213,7 +217,7 @@ def regraded_input(box: Path, workspace: Path, job: Path, environment) -> dict:
 # Loading
 
 
-def test_harbor_loads_it_with_gpt_6_1_sol_at_high_effort_by_default(tmp_path):
+def test_harbor_loads_it_with_gemini_4_argon_at_high_effort_by_default(tmp_path):
     job = tmp_path / "agent-job"
     job.mkdir()
     config = AgentConfig(
@@ -226,7 +230,7 @@ def test_harbor_loads_it_with_gpt_6_1_sol_at_high_effort_by_default(tmp_path):
 
     assert isinstance(agent, JudgeAgent)
     assert (agent.model, agent.effort, agent.classifier_model) == (
-        "gpt-6.1-sol",
+        "gemini-4-argon",
         "high",
         "claude-haiku-4.5",
     )
@@ -339,12 +343,12 @@ def test_records_the_client_the_model_and_effort_asked_for_and_reported_and_the_
         "client": "copilot-cli",
         "version": "1.0.106",
         "requested_version": "1.0.105",
-        "model": "gpt-6.1-sol",
+        "model": "gemini-4-argon",
         "effort": "high",
         "classifier_model": "claude-haiku-4.5",
     }
     rubric = next(session for session in record["sessions"] if session["name"] == "rubric")
-    assert rubric["reported_models"] == ["gpt-6.1-sol"]
+    assert rubric["reported_models"] == ["gemini-4-argon"]
     assert rubric["reported_efforts"] == ["high"]
     classify = next(session for session in record["sessions"] if session["name"] == "classify-agent")
     assert (classify["model"], classify["effort"]) == ("claude-haiku-4.5", None)
@@ -357,13 +361,13 @@ def test_judges_with_a_model_of_another_family_as_with_the_default(
 ):
     job = source_job(box, workspace)
 
-    record = judge(judge_agent(box, job, model="gemini-4-argon", effort=effort), local_environment)
+    record = judge(judge_agent(box, job, model="gpt-6.1-sol", effort=effort), local_environment)
 
     assert (record["rubric_status"], record["taste_status"]) == ("ok", "ok")
-    assert (record["judge"]["model"], record["judge"]["effort"]) == ("gemini-4-argon", effort or None)
+    assert (record["judge"]["model"], record["judge"]["effort"]) == ("gpt-6.1-sol", effort or None)
     judged = [call for call in calls(box) if call["kind"] in ("rubric", "taste")]
     for call in judged:
-        assert call["flags"]["--model"] == ["gemini-4-argon"]
+        assert call["flags"]["--model"] == ["gpt-6.1-sol"]
         assert call["flags"].get("--reasoning-effort") == ([effort] if effort else None)
 
 
@@ -438,14 +442,15 @@ def without(answer: dict, *path: str) -> dict:
     ids=["taste-prose", "taste-missing-relative-taste", "taste-missing-a-dimension", "rubric-empty",
          "rubric-missing-a-criterion", "rubric-unknown-criterion", "rubric-out-of-range"],
 )
-def test_an_answer_that_is_missing_or_invalid_fails_and_records_no_score(
+def test_an_answer_that_is_missing_or_invalid_twice_fails_and_records_no_score(
     box, workspace, local_environment, kind, answer, status
 ):
-    write_scenario(box, **{kind: {"answer": answer}})
+    write_scenario(box, **{kind: {"answer": answer, "retry": {"answer": answer}}})
     job = source_job(box, workspace)
 
     record = judge(judge_agent(box, job), local_environment)
 
+    assert [call["resumed"] for call in calls(box) if call["kind"] == kind] == [False, True]
     assert record[f"{kind}_status"] == status
     assert record[f"{kind}_error"]
     assert record["scores"][f"{kind}_judge_ok"] == 0
@@ -711,7 +716,11 @@ def test_a_reservation_whose_process_died_counts_as_spent_and_is_not_waited_for(
 def test_a_token_in_a_reply_or_an_error_never_reaches_the_record(box, workspace, local_environment):
     leaky = json.loads(json.dumps(TASTE_ANSWER))
     leaky["practice_alignment"]["style_consistency"]["rationale"] = f"saw {TOKEN}"
-    write_scenario(box, taste={"answer": json.dumps(leaky)}, rubric={"answer": f"no scores, {TOKEN}"})
+    write_scenario(
+        box,
+        taste={"answer": json.dumps(leaky)},
+        rubric={"answer": f"no scores, {TOKEN}", "retry": {"answer": f"still none, {TOKEN}"}},
+    )
     job = source_job(box, workspace)
     agent = judge_agent(box, job)
 
@@ -856,3 +865,137 @@ def test_a_dotenv_with_no_token_leaves_the_judges_files_alone(box, workspace, lo
 
     assert (Path(agent.paths.logs) / "install.log").exists()
     assert (Path(agent.paths.adapter) / "install.sh").exists()
+
+
+# Retrying an answer that fails the schema
+
+# Argon's one answer that was not JSON quoted a word in a rationale without escaping it.
+UNESCAPED_TASTE = json.dumps(TASTE_ANSWER).replace('"fits"', '"reads "events" as the queue"', 1)
+ARGON_CHECKPOINT = {"checkpoint": {"vendor": "openai", "api_endpoint": "/chat/completions", "transport": "http"}}
+
+
+def session_named(record: dict, name: str) -> dict:
+    return next(session for session in record["sessions"] if session["name"] == name)
+
+
+def test_an_answer_that_is_not_json_is_retried_by_resuming_the_same_session(box, workspace, local_environment):
+    write_scenario(box, taste={"answer": UNESCAPED_TASTE})
+    job = source_job(box, workspace)
+
+    record = judge(judge_agent(box, job), local_environment)
+
+    first = next(call for call in calls(box) if call["kind"] == "taste")
+    retry = next(call for call in calls(box) if call["prompt"].startswith("Your final reply cannot be scored"))
+    assert retry["flags"].get("--resume") == first["flags"]["--session-id"], "the retry started a new session"
+    assert "Expecting ',' delimiter" in retry["prompt"], "the retry does not say where the JSON broke"
+    assert retry["copilot_home"] == first["copilot_home"]
+    for flag in ("--model", "--reasoning-effort", "--available-tools", "--deny-tool"):
+        assert retry["flags"][flag] == first["flags"][flag], flag
+    assert record["taste_status"] == "ok"
+    assert record["scores"]["taste_practice_alignment"] == 4.0
+
+
+def test_the_retry_names_what_was_wrong_and_both_answers_are_recorded(box, workspace, local_environment):
+    partial = json.dumps({"criteria": RUBRIC_ANSWER["criteria"][:1]})
+    write_scenario(box, rubric={"answer": partial})
+    job = source_job(box, workspace)
+
+    record = judge(judge_agent(box, job), local_environment)
+
+    retried = [call for call in calls(box) if call["kind"] == "rubric"][1]
+    assert "keeps_other_lines" in retried["prompt"], "the retry does not say which criterion was missing"
+    first, retry = session_named(record, "rubric"), session_named(record, "rubric-retry")
+    assert first["status"] == "failed:invalid_answer"
+    assert "keeps_other_lines" in first["error"]
+    assert first["reply"] == partial
+    assert (retry["status"], retry["reply"]) == ("ok", json.dumps(RUBRIC_ANSWER))
+    assert record["rubric_status"] == "ok"
+    assert record["scores"]["rubric_score"] == 0.5
+
+
+def test_the_retry_charges_the_jobs_ledger_what_it_spent_after_reserving(box, workspace, local_environment):
+    write_scenario(box, taste={"answer": "no scores", "retry": {"nano": 3_500_000_000}})
+    job = source_job(box, workspace)
+    agent = judge_agent(box, job)
+
+    record = judge(agent, local_environment)
+
+    # Copilot CLI counts on across a resume: the retry reports 23.5, of which the first call spent 20.
+    assert (session_named(record, "taste")["credits"], session_named(record, "taste-retry")["credits"]) == (20.0, 3.5)
+    assert record["credits"] == 33.5
+    path = agent.logs_dir.parent.parent / "judge-credits.jsonl"
+    entries = [json.loads(line) for line in path.read_text().splitlines()]
+    reserved = next(i for i, e in enumerate(entries) if e.get("label", "").endswith("/taste-retry"))
+    settled = next(i for i, e in enumerate(entries) if e.get("settle") == entries[reserved]["reserve"])
+    assert reserved < settled
+    assert entries[settled]["credits"] == 3.5
+    assert CreditLedger(path, 1000).spent() == 33.5
+
+
+def test_a_retry_the_budget_cannot_hold_is_skipped_and_the_first_failure_stands(
+    box, workspace, local_environment
+):
+    # The classifiers and the rubric judge spend 10 and the taste judge 55,
+    # which leaves 5 of 70: less than a retry holds.
+    write_scenario(box, taste={"answer": "no scores", "nano": 55_000_000_000})
+    job = source_job(box, workspace)
+
+    record = judge(judge_agent(box, job, credit_budget=70), local_environment)
+
+    assert [call["resumed"] for call in calls(box) if call["kind"] == "taste"] == [False]
+    assert session_named(record, "taste-retry")["status"] == "skipped:budget"
+    assert record["taste_status"] == "failed:no_json"
+
+
+@pytest.mark.parametrize(
+    "scenario, settings",
+    [
+        ({}, {}),
+        ({"model": "gpt-5-mini"}, {}),
+        ({"effort": "low"}, {}),
+        ({"exit": 1}, {}),
+        ({"write": "notes.txt"}, {}),
+        ({"sleep": 30}, {"session_seconds": 1}),
+    ],
+    ids=["valid", "wrong-model", "wrong-effort", "exits-1", "changes-the-repository", "times-out"],
+)
+def test_only_an_answer_that_fails_the_schema_is_retried(
+    box, workspace, local_environment, scenario, settings
+):
+    write_scenario(box, rubric=scenario)
+    job = source_job(box, workspace)
+
+    record = judge(judge_agent(box, job, **settings), local_environment)
+
+    assert [call["resumed"] for call in calls(box) if call["kind"] == "rubric"] == [False]
+    assert "rubric-retry" not in [session["name"] for session in record["sessions"]]
+
+
+def test_a_retry_that_changes_the_repository_fails_and_the_change_is_undone(
+    box, workspace, local_environment
+):
+    job = source_job(box, workspace)
+    expected = regraded_input(box, workspace, job, local_environment)
+    write_scenario(box, rubric={"answer": "no scores", "retry": {"write": "notes.txt"}})
+
+    record = judge(judge_agent(box, job), local_environment)
+
+    retry = session_named(record, "rubric-retry")
+    assert (retry["repo_unchanged"], retry["restored"]) == (False, True)
+    assert record["rubric_status"] == "failed:repo_changed"
+    assert "rubric_score" not in record["scores"]
+    assert verifier_input(workspace) == expected
+
+
+def test_reads_back_argons_effort_from_a_checkpoint_that_names_its_vendor_openai(
+    box, workspace, local_environment
+):
+    write_scenario(box, rubric=ARGON_CHECKPOINT, taste=ARGON_CHECKPOINT)
+    job = source_job(box, workspace)
+
+    record = judge(judge_agent(box, job, model="gemini-4-argon", effort="high"), local_environment)
+
+    assert (record["rubric_status"], record["taste_status"]) == ("ok", "ok")
+    for name in ("rubric", "taste"):
+        session = session_named(record, name)
+        assert (session["reported_models"], session["reported_efforts"]) == (["gemini-4-argon"], ["high"])

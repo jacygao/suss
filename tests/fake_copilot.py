@@ -4,7 +4,10 @@ from a scenario a test writes, and records how it was started.
 
 It is copied into each test's sandbox with the scenario directory as its
 first line's argument, so concurrent tests never share one. The session it
-plays is told from the prompt, by the tool the prompt says to call.
+plays is told from the prompt, by the tool the prompt says to call, or for a
+resumed session from what its first call left in COPILOT_HOME. A resumed call
+plays the kind's `retry` scenario, and reports usage counted on from the
+first call's, as Copilot CLI does.
 """
 
 import hashlib
@@ -43,15 +46,31 @@ def main() -> int:
         return 0
     flags = options(argv)
     prompt = flags["-p"][0]
-    kind = next(kind for marker, kind in KINDS if marker in prompt)
     scenarios = json.loads((SCENARIO_DIR / "scenario.json").read_text())
-    scenario = scenarios.get(kind, {})
+    states = Path(os.environ["COPILOT_HOME"]) / "session-state"
+    resumed = (flags.get("--resume") or [None])[0]
+    spent_before = 0
+    # A call it cannot place is recorded, then fails, so a test sees how it was started.
+    unplaced = None
+    if resumed is not None:
+        state_file = states / f"{resumed}.json"
+        if state_file.exists():
+            state = json.loads(state_file.read_text())
+            kind, spent_before = state["kind"], state["nano"]
+        else:
+            kind, unplaced = None, f"No session {resumed} in {states}"
+        scenario = scenarios.get(kind, {}).get("retry", {})
+    else:
+        kind = next((kind for marker, kind in KINDS if marker in prompt), None)
+        unplaced = None if kind else "The prompt names no tool the stand-in knows"
+        scenario = scenarios.get(kind, {})
     token = os.environ.get("COPILOT_GITHUB_TOKEN", "")
     status = subprocess.run(
         ["git", "status", "--porcelain=v1", "-uall"], capture_output=True, text=True
     ).stdout
     record = {
         "kind": kind,
+        "resumed": resumed is not None,
         "argv": argv,
         "flags": flags,
         "cwd": os.getcwd(),
@@ -64,6 +83,9 @@ def main() -> int:
     }
     with open(SCENARIO_DIR / "calls.jsonl", "a") as calls:
         calls.write(json.dumps(record) + "\n")
+    if unplaced:
+        print(unplaced, file=sys.stderr)
+        return 1
 
     if scenario.get("leak"):
         log_dir = Path(flags["--log-dir"][0])
@@ -76,16 +98,22 @@ def main() -> int:
 
     model = scenario.get("model", flags["--model"][0])
     effort = scenario.get("effort", (flags.get("--reasoning-effort") or [None])[0])
+    nano = spent_before + scenario.get("nano", 1_000_000_000)
+    session_id = resumed or (flags.get("--session-id") or [None])[0]
+    if session_id is not None:
+        states.mkdir(parents=True, exist_ok=True)
+        (states / f"{session_id}.json").write_text(json.dumps({"kind": kind, "nano": nano}))
+    # What Copilot CLI reports beside the effort, which for gemini-4-argon names
+    # the vendor openai, though its catalog says Google.
+    reported = {"model": model, "reasoning_effort": effort, **scenario.get("checkpoint", {})}
     # Usage comes first, so a session stopped while it sleeps has reported some.
     started = [
         {"type": "model.call_start", "data": {"turnId": "0", "model": model}},
         {
             "type": "session.usage_checkpoint",
             "data": {
-                "totalNanoAiu": scenario.get("nano", 1_000_000_000),
-                "promptCacheBreakState": [
-                    {"models": {model: {"model": model, "reasoning_effort": effort}}}
-                ],
+                "totalNanoAiu": nano,
+                "promptCacheBreakState": [{"conversation": "main", "models": {model: reported}}],
             },
         },
     ]
