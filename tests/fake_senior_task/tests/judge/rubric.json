@@ -1,0 +1,9 @@
+{
+  "files": ["lines.txt"],
+  "fail_to_pass": [
+    {"name": "fixes_line_three", "description": "Line three says the fix."}
+  ],
+  "pass_to_pass": [
+    {"name": "keeps_other_lines", "description": "Every other line is unchanged."}
+  ]
+}
