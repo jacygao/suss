@@ -99,8 +99,8 @@ through Copilot CLI on `gemini-4-argon` at effort `high`.
 - **Taste moves between runs.** Judging 5 patches a second time left every
   rubric criterion where it was, but moved 11 of 50 taste dimensions by one
   point. Treat a taste difference under about 0.5 as noise.
-- **Judging cost 2,018 AI credits** (≈ $20), about 40 a patch, on top of the
-  run's own 4,739. 5 patches the main job's budget did not reach were judged in
+- **Judging cost 2,018 AI credits** (≈ $20) on top of the run's own 4,739:
+  1,835 for the 50 patches, about 37 a patch, and 183 for the repeats. 5 patches the main job's budget did not reach were judged in
   `20261105T205511Z-1-judge-fill` and moved into the regrade. The repeats are
   in `20261105T205511Z-1-judge-repeat`.
 
