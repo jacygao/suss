@@ -1,40 +1,26 @@
 # Suss leaderboard
 
-Every harness run suss has records for, one trial per task. The resolved share
-is resolved trials over valid trials, as `suss compare` prints it. A run with a
-`baseline` also shows its resolved difference from that baseline, with a 95%
-interval. `suss compare` gives an interval only for a difference, so a run with
-no baseline has none.
+Every harness run suss has records for, one trial per task, a section for each
+lane. The lanes measure different things, so their numbers never compare
+across lanes: `rebench` grades by tests alone, and `senior` adds judges of code
+quality.
 
-| Lane | Arm | Harness | Model | Date | Tasks | Resolved | Unresolved | Invalid | Timed out | Harness failed | Resolved share | vs. baseline | AI credits | Agent time, sum of trials | Elapsed |
-|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|
-| `rebench` | `copilot-sonnet` | `copilot-cli` | claude-sonnet-5.5 | 2026-11-04 | 108 | 71 | 37 | 0 | 0 | 0 | 66% | none set | 3,058 (≈ $31) | 7.1 h | 0.5 h |
-| `rebench` | `copilot-gpt` | `copilot-cli` | gpt-6.1-sol | 2026-11-04 | 108 | 70 | 38 | 0 | 0 | 0 | 65% | −1% [−10%, +8%] vs. `copilot-sonnet` | 5,500 (≈ $55) | 13.4 h | 0.7 h |
-| `rebench` | `hve-sol` | `copilot-cli-hve` | gpt-6.1-sol | 2026-11-04 | 108 | 65 | 43 | 0 | 2 | 0 | 60% | −5% [−10%, +1%] vs. `copilot-gpt` | 19,151 (≈ $192) | 34.8 h | 1.4 h |
-| `senior` | `copilot-gpt` | `copilot-cli` | gpt-6.1-sol | 2026-11-05 | 50 | 8 | 17 | 25 | 0 | 0 | 32% | none set | 4,739 (≈ $47) | 11.3 h | |
-
-How to read the columns:
-
-- **Unresolved** counts every valid trial that did not resolve, timed-out and
-  harness-failed ones included.
-- **Invalid** counts trials whose regrade wrote an empty reward. No share counts
-  them.
-- **AI credits** are Copilot CLI's own count, its `totalNanoAiu` divided by
-  10⁹. A trial's credits are the largest value in its `agent/run.log`, and a
-  run's are the sum over its trials. One credit is about $0.01. Every run here
-  was on Modal, and Modal's cost is recorded nowhere, so no figure includes it.
-- **Agent time, sum of trials** is every trial's `run_seconds` added
-  together. Modal bills each sandbox for its own time, so this is what tracks
-  the run's Modal cost.
-- **Elapsed** is how long the agent job took, from its first trial's start to
-  its last trial's finish. Up to 32 trials ran at once. The regrade that
-  follows is not included.
-- **Date** is the UTC day in the job id.
+The resolved share is resolved trials over valid trials, as `suss compare`
+prints it. A run with a `baseline` also shows its resolved difference from that
+baseline, with a 95% interval. `suss compare` gives an interval only for a
+difference, so a run with no baseline has none.
 
 ## `rebench`
 
-The lane is SWE-rebench's July 2026 snapshot, 108 tasks. All three runs carry
-the same grader: dataset `swe-rebench-07-2026`, digest `1263fe54…`.
+The lane is SWE-rebench's July 2026 snapshot, 108 tasks, each graded by its
+tests. All three runs carry the same grader: dataset `swe-rebench-07-2026`,
+digest `1263fe54…`.
+
+| Arm | Harness | Model | Date | Tasks | Resolved | Unresolved | Invalid | Timed out | Harness failed | Resolved share | vs. baseline | AI credits | Agent time, sum of trials | Elapsed |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|
+| `copilot-sonnet` | `copilot-cli` | claude-sonnet-5.5 | 2026-11-04 | 108 | 71 | 37 | 0 | 0 | 0 | 66% | none set | 3,058 (≈ $31) | 7.1 h | 0.5 h |
+| `copilot-gpt` | `copilot-cli` | gpt-6.1-sol | 2026-11-04 | 108 | 70 | 38 | 0 | 0 | 0 | 65% | −1% [−10%, +8%] vs. `copilot-sonnet` | 5,500 (≈ $55) | 13.4 h | 0.7 h |
+| `hve-sol` | `copilot-cli-hve` | gpt-6.1-sol | 2026-11-04 | 108 | 65 | 43 | 0 | 2 | 0 | 60% | −5% [−10%, +1%] vs. `copilot-gpt` | 19,151 (≈ $192) | 34.8 h | 1.4 h |
 
 | Arm | Job | Params | Median trial |
 |---|---|---|---:|
@@ -68,25 +54,30 @@ hve-sol - copilot-gpt          -5% [-10%, +1%]
 
 ## `senior`
 
-`copilot-gpt` ran on Senior SWE-Bench, job `20261105T205511Z-1`, with the
-same params as on `rebench` and `max_seconds` 5400. The job ran in two parts,
-after Modal's spend limit stopped the first, so it has no single elapsed time.
+The lane is Senior SWE-Bench `v2026.06`, 50 tasks: 25 investigate tasks,
+graded by their tests, and 25 design tasks, graded by senior's validation agent.
+The validation agent runs only on API credit, so no design task has a reward
+yet. Every patch is scored for quality by suss's judge: senior's rubric and
+taste judges, run through Copilot CLI on `gemini-4-argon` at effort `high`.
 
-Its regrade, `20261105T205511Z-1-regrade`, ran the tests with no API key and
-judged every patch with suss's own judge: senior's rubric and taste judges, run
-through Copilot CLI on `gemini-4-argon` at effort `high`.
+### Correctness
 
-- **Resolved** counts the 25 investigate tasks, which the tests alone grade.
-  Their 95% interval is about 17% to 52%.
-- **Invalid** is the 25 design tasks. Their reward needs senior's validation
-  agent, which runs only on API credit, so they have no reward. They do have
-  judge scores.
+| Arm | Harness | Model | Date | Investigate tasks | Resolved | Resolved share | Design tasks graded | vs. baseline | AI credits | Agent time, sum of trials |
+|---|---|---|---|---:|---:|---:|---:|---|---:|---:|
+| `copilot-gpt` | `copilot-cli` | gpt-6.1-sol | 2026-11-05 | 25 | 8 | 32% | 0 of 25 | none set | 4,739 (≈ $47) | 11.3 h |
 
-| Segment | Tasks | Resolved | Rubric | Practice alignment | Relative taste | Patch bloat, median |
-|---|---:|---:|---:|---:|---:|---:|
-| investigate | 25 | 8 | 0.56 (16) | 4.56 | 3.44 | 0.81 |
-| design | 25 | not graded | 0.74 (21) | 4.44 | 3.72 | 0.55 |
-| all | 50 | 8 of 25 | 0.66 (37) | 4.50 | 3.58 | 0.65 |
+### Code quality
+
+| Arm | Judge | Rubric | Practice alignment | Relative taste | Patch bloat, median | Judging, AI credits |
+|---|---|---:|---:|---:|---:|---:|
+| `copilot-gpt` | `gemini-4-argon`, effort high | 0.66 (37) | 4.50 (50) | 3.58 (50) | 0.65 | 1,835 (≈ $18) |
+
+`copilot-gpt`'s scores by segment:
+
+| Segment | Rubric | Practice alignment | Relative taste | Patch bloat, median |
+|---|---:|---:|---:|---:|
+| investigate | 0.56 (16) | 4.56 (25) | 3.44 (25) | 0.81 |
+| design | 0.74 (21) | 4.44 (25) | 3.72 (25) | 0.55 |
 
 - **Rubric** is the mean share of a task's criteria met, from 0 to 1, over the
   tasks that have criteria; the count is in brackets. 13 tasks have none.
@@ -99,10 +90,37 @@ through Copilot CLI on `gemini-4-argon` at effort `high`.
 - **Taste moves between runs.** Judging 5 patches a second time left every
   rubric criterion where it was, but moved 11 of 50 taste dimensions by one
   point. Treat a taste difference under about 0.5 as noise.
-- **Judging cost 2,018 AI credits** (≈ $20) on top of the run's own 4,739:
-  1,835 for the 50 patches, about 37 a patch, and 183 for the repeats. 5 patches the main job's budget did not reach were judged in
-  `20261105T205511Z-1-judge-fill` and moved into the regrade. The repeats are
-  in `20261105T205511Z-1-judge-repeat`.
+
+### The runs
+
+| Arm | Job | Params | Regrade |
+|---|---|---|---|
+| `copilot-gpt` | `20261105T205511Z-1` | version 1.0.105, effort high, `max_ai_credits` 1000, `max_seconds` 5400 | `20261105T205511Z-1-regrade`, by `JudgeAgent` with no API key |
+
+- The resolved share's 95% interval is about 17% to 52%, over 25 tasks.
+- The agent job ran in two parts, after Modal's spend limit stopped the first,
+  so it has no single elapsed time.
+- 5 patches the main judge job's budget did not reach were judged in
+  `20261105T205511Z-1-judge-fill` and moved into the regrade. The repeats, 183
+  credits more, are in `20261105T205511Z-1-judge-repeat`.
+
+## How to read the columns
+
+- **Unresolved** counts every valid trial that did not resolve, timed-out and
+  harness-failed ones included.
+- **Invalid** counts trials whose regrade wrote an empty reward. No share counts
+  them.
+- **AI credits** are Copilot CLI's own count, its `totalNanoAiu` divided by
+  10⁹. A trial's credits are the largest value in its `agent/run.log`, and a
+  run's are the sum over its trials. One credit is about $0.01. Every run here
+  was on Modal, and Modal's cost is recorded nowhere, so no figure includes it.
+- **Agent time, sum of trials** is every trial's `run_seconds` added
+  together. Modal bills each sandbox for its own time, so this is what tracks
+  the run's Modal cost.
+- **Elapsed** is how long the agent job took, from its first trial's start to
+  its last trial's finish. Up to 32 trials ran at once. The regrade that
+  follows is not included.
+- **Date** is the UTC day in the job id.
 
 ## Retired lane: SWE-bench Pro
 
