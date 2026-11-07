@@ -11,7 +11,7 @@ no baseline has none.
 | `rebench` | `copilot-sonnet` | `copilot-cli` | claude-sonnet-5.5 | 2026-11-04 | 108 | 71 | 37 | 0 | 0 | 0 | 66% | none set | 3,058 (≈ $31) | 7.1 h | 0.5 h |
 | `rebench` | `copilot-gpt` | `copilot-cli` | gpt-6.1-sol | 2026-11-04 | 108 | 70 | 38 | 0 | 0 | 0 | 65% | −1% [−10%, +8%] vs. `copilot-sonnet` | 5,500 (≈ $55) | 13.4 h | 0.7 h |
 | `rebench` | `hve-sol` | `copilot-cli-hve` | gpt-6.1-sol | 2026-11-04 | 108 | 65 | 43 | 0 | 2 | 0 | 60% | −5% [−10%, +1%] vs. `copilot-gpt` | 19,151 (≈ $192) | 34.8 h | 1.4 h |
-| `senior` | `copilot-gpt` | `copilot-cli` | gpt-6.1-sol | 2026-11-05 | 50 | not graded | | | | | | | 4,739 (≈ $47) | 11.3 h | |
+| `senior` | `copilot-gpt` | `copilot-cli` | gpt-6.1-sol | 2026-11-05 | 50 | 8 | 17 | 25 | 0 | 0 | 32% | none set | 4,739 (≈ $47) | 11.3 h | |
 
 How to read the columns:
 
@@ -69,11 +69,40 @@ hve-sol - copilot-gpt          -5% [-10%, +1%]
 ## `senior`
 
 `copilot-gpt` ran on Senior SWE-Bench, job `20261105T205511Z-1`, with the
-same params as on `rebench` and `max_seconds` 5400. All 50 agent trials
-finished, and their patches are kept, but none has been graded. Grading needs
-Anthropic API credit for the judges and the validation agent, about $75–100
-for the 50 tasks, and the regrade waits on that. The job ran in two parts,
+same params as on `rebench` and `max_seconds` 5400. The job ran in two parts,
 after Modal's spend limit stopped the first, so it has no single elapsed time.
+
+Its regrade, `20261105T205511Z-1-regrade`, ran the tests with no API key and
+judged every patch with suss's own judge: senior's rubric and taste judges, run
+through Copilot CLI on `gemini-4-argon` at effort `high`.
+
+- **Resolved** counts the 25 investigate tasks, which the tests alone grade.
+  Their 95% interval is about 17% to 52%.
+- **Invalid** is the 25 design tasks. Their reward needs senior's validation
+  agent, which runs only on API credit, so they have no reward. They do have
+  judge scores.
+
+| Segment | Tasks | Resolved | Rubric | Practice alignment | Relative taste | Patch bloat, median |
+|---|---:|---:|---:|---:|---:|---:|
+| investigate | 25 | 8 | 0.56 (16) | 4.56 | 3.44 | 0.81 |
+| design | 25 | not graded | 0.74 (21) | 4.44 | 3.72 | 0.55 |
+| all | 50 | 8 of 25 | 0.66 (37) | 4.50 | 3.58 | 0.65 |
+
+- **Rubric** is the mean share of a task's criteria met, from 0 to 1, over the
+  tasks that have criteria; the count is in brackets. 13 tasks have none.
+- **Practice alignment** and **relative taste** run from 1 to 5. Relative taste
+  compares the patch with the task's reference fix.
+- **Patch bloat** is the patch's lines of code over the reference fix's, after
+  test and doc files are dropped.
+- **These are suss's scores, not senior's published ones.** Copilot CLI runs
+  the judges, so compare them only with other runs judged the same way.
+- **Taste moves between runs.** Judging 5 patches a second time left every
+  rubric criterion where it was, but moved 11 of 50 taste dimensions by one
+  point. Treat a taste difference under about 0.5 as noise.
+- **Judging cost 2,018 AI credits** (≈ $20), about 40 a patch, on top of the
+  run's own 4,739. 5 patches the main job's budget did not reach were judged in
+  `20261105T205511Z-1-judge-fill` and moved into the regrade. The repeats are
+  in `20261105T205511Z-1-judge-repeat`.
 
 ## Retired lane: SWE-bench Pro
 
@@ -135,6 +164,8 @@ job's directory such as `results/rebench/hve-sol/20261104T205810Z-1`:
 ```bash
 jq -r .status <job>/*/agent/suss.json | sort | uniq -c
 jq .verifier_result.rewards.reward <job>-regrade/*/result.json | sort | uniq -c
+jq -s 'map(.scores.rubric_score // empty) | add / length' <job>-regrade/*/agent/judge.json
+jq -s 'map(.credits) | add' <job>-regrade/*/agent/judge.json
 jq -s '[.[].run_seconds // empty] | add / 3600' <job>/*/agent/suss.json
 jq -s '((map(.finished_at) | max | sub("\\.[0-9]+";"") | fromdateiso8601) - (map(.started_at) | min | sub("\\.[0-9]+";"") | fromdateiso8601)) / 3600' <job>/*/result.json
 for f in <job>/*/agent/run.log; do
@@ -143,5 +174,6 @@ done | awk '{ s += $1 } END { print s / 1e9 }'
 ```
 
 The runs under `hve-dev/`, `hve-hard/` and `checks/`, and the oracle, validation-agent and
-network checks under `m4-check/`, `m5/` and `senior-swe-survey/`, are checks
+network checks under `m4-check/`, `m5/` and `senior-swe-survey/`, and the
+judge checks under `spike-judge/`, `judge-check/` and `spike-leak/`, are checks
 rather than harness runs, and are left out. `docs/notes/` holds what they found.
