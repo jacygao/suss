@@ -347,14 +347,33 @@ def build(lane: str, download: Path, lanes: Path, check: bool = False) -> Path:
             ignore=lambda at, names: [n for n in names if str(Path(at) / n) in skipped],
         )
         for name, (content, source) in files.items():
-            (copy / name).parent.mkdir(parents=True, exist_ok=True)
-            parent = (copy / name).parent
-            mode = parent.stat().st_mode
-            parent.chmod(mode | stat.S_IWUSR)
-            (copy / name).write_bytes(content)
-            shutil.copymode(source, copy / name)
-            parent.chmod(mode)
+            _write(copy, name, content, source)
     return directory
+
+
+def _write(copy: Path, name: str, content: bytes, source: Path) -> None:
+    """
+    Write `content` at `name` in the task's copy, with the mode of `source`,
+    making the directories it lacks.
+
+    A directory copied read-only from the download is made writable for the
+    write alone, and keeps its own mode.
+    """
+    restore = []
+    directory = copy
+    try:
+        for part in Path(name).parent.parts:
+            restore.append((directory, directory.stat().st_mode))
+            directory.chmod(restore[-1][1] | stat.S_IWUSR)
+            directory = directory / part
+            directory.mkdir(exist_ok=True)
+        restore.append((directory, directory.stat().st_mode))
+        directory.chmod(restore[-1][1] | stat.S_IWUSR)
+        (copy / name).write_bytes(content)
+        shutil.copymode(source, copy / name)
+    finally:
+        for path, mode in reversed(restore):
+            path.chmod(mode)
 
 
 def _plan_build(
@@ -415,6 +434,15 @@ def _verifier_build(task: Path) -> dict[str, tuple[bytes, Path]]:
                 f"{path}: not a file, so the lane cannot copy it to build the task's verifier"
             )
         name = f"tests/{path.relative_to(environment).as_posix()}"
+        # The copy keeps a link, so a file written beneath one would land where it points.
+        for parent in reversed((task / name).relative_to(task).parents[:-1]):
+            if (task / parent).is_symlink() or (
+                (task / parent).exists() and not (task / parent).is_dir()
+            ):
+                raise LaneError(
+                    f"{task / parent}: not a directory, so the lane cannot put {path} in it"
+                    " to build the task's verifier"
+                )
         if (task / name).exists() or (task / name).is_symlink():
             raise LaneError(
                 f"{task / name}: the task's verifier is built from tests/, where the lane"

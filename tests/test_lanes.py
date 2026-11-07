@@ -1200,6 +1200,41 @@ def test_a_rebench_tests_file_the_verifiers_build_would_replace_is_refused_namin
     assert str(error.value).startswith(f"{task / 'tests' / name}: ")
 
 
+def test_a_link_inside_rebench_tests_is_refused_and_what_it_names_left_alone(tmp_path: Path):
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"])
+    task = source / "owner__repo-1"
+    (task / "environment" / "conf").mkdir()
+    (task / "environment" / "conf" / "a.ini").write_text("a = 1\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (task / "tests" / "conf").symlink_to(outside)
+
+    with pytest.raises(LaneError) as error:
+        lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
+
+    assert str(error.value).startswith(f"{task / 'tests' / 'conf'}: ")
+    assert list(outside.iterdir()) == []
+
+
+def test_a_nested_verifier_file_is_written_into_a_read_only_tests_directory(tmp_path: Path):
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"])
+    task = source / "owner__repo-1"
+    (task / "environment" / "conf").mkdir()
+    (task / "environment" / "conf" / "a.ini").write_text("a = 1\n")
+    (task / "tests").chmod(0o555)
+    try:
+        lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
+        built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes") / "owner__repo-1"
+
+        assert (built / "tests" / "conf" / "a.ini").read_text() == "a = 1\n"
+        assert oct((built / "tests").stat().st_mode) == oct((task / "tests").stat().st_mode)
+    finally:
+        # Left read-only, they would stop pytest removing tmp_path.
+        for directory in tmp_path.rglob("*"):
+            if directory.is_dir() and not directory.is_symlink():
+                directory.chmod(0o755)
+
+
 def test_a_rebench_tests_directory_that_is_a_link_is_refused_and_the_download_left_alone(
     tmp_path: Path,
 ):
