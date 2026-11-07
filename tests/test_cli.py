@@ -67,46 +67,50 @@ def harbor_parses(argv: list[str]) -> dict:
     return parse_kwargs([token for flag, token in zip(argv, argv[1:]) if flag == "--ak"])
 
 
-def spec_commands(root: Path, env: Path) -> tuple[list[str], list[str]]:
+def spec_commands(root: Path, env: Path, lane: str) -> list[list[str]]:
     """
-    The two `harbor run` commands from the spec's `suss run`, split into tokens,
-    with `root` as the directory holding suss.toml, and `env` as the
+    The `harbor run` commands the spec's `suss run` gives for `lane`, split into
+    tokens, with `root` as the directory holding suss.toml, and `env` as the
     environment suss is installed in.
     """
     blocks = re.findall(r"```bash\n(.*?)```", SPEC.read_text(), re.DOTALL)
-    found = [block for block in blocks if "-a suss.agent:SussAgent" in block]
-    assert len(found) == 1, f"expected one block with the agent job in {SPEC}, found {len(found)}"
-    agent, regrade = found[0].replace("\\\n", " ").strip().split("\n\n")
-    return tuple(
+    found = [
+        block for block in blocks
+        if "-a suss.agent:SussAgent" in block and f"--ak lane={lane}" in block
+    ]
+    assert len(found) == 1, f"expected one block with the {lane} agent job in {SPEC}, found {len(found)}"
+    return [
         shlex.split(
             command.replace("<stamp>", STAMP)
             .replace("<dir>", shlex.quote(str(root)))
             .replace("<env>", shlex.quote(str(env)))
         )
-        for command in (agent, regrade)
-    )
+        for command in found[0].replace("\\\n", " ").strip().split("\n\n")
+    ]
 
 
-def spec_config(tmp_path: Path) -> Config:
+def spec_config(tmp_path: Path, lane: str) -> Config:
     blocks = re.findall(r"```toml\n(.*?)```", SPEC.read_text(), re.DOTALL)
     examples = [block for block in blocks if "[arms." in block]
     assert len(examples) == 1, f"expected one example suss.toml in {SPEC}, found {len(examples)}"
     path = tmp_path / "suss" / "suss.toml"
     path.parent.mkdir()
     path.write_text(examples[0])
-    return config.load(path, "peer-review", "rebench")
+    return config.load(path, "peer-review", lane)
 
 
-def test_both_commands_match_the_spec_token_for_token(tmp_path):
-    loaded = spec_config(tmp_path)
+@pytest.mark.parametrize(
+    "lane, reads", [("rebench", ()), ("senior", ("ANTHROPIC_API_KEY",))]
+)
+def test_each_lanes_commands_match_the_spec_token_for_token(tmp_path, lane, reads):
+    loaded = spec_config(tmp_path, lane)
     harbor = harbor_executable()
-    expected_agent, expected_regrade = spec_commands(loaded.path.parent, harbor.parent.parent)
+    expected = spec_commands(loaded.path.parent, harbor.parent.parent, lane)
 
-    agent, regrade = harbor_commands(loaded, make_manifest(), "rebench", STAMP, 1)
+    commands = harbor_commands(loaded, make_manifest(), lane, STAMP, 1, reads=reads)
 
     # suss runs each command with its own harbor in place of the first token.
-    assert [str(harbor), *agent.argv[1:]] == expected_agent
-    assert [str(harbor), *regrade.argv[1:]] == expected_regrade
+    assert [[str(harbor), *command.argv[1:]] for command in commands if command] == expected
 
 
 def test_the_stamp_is_utc_in_basic_iso_form():
@@ -125,14 +129,14 @@ def test_a_start_time_with_no_zone_is_refused():
 
 
 def test_the_jobs_are_named_from_the_stamp_and_the_trial_number(tmp_path):
-    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 3)
+    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "senior", STAMP, 3)
 
     assert agent.argv[agent.argv.index("--job-name") + 1] == f"{STAMP}-3"
     assert regrade.argv[regrade.argv.index("--job-name") + 1] == f"{STAMP}-3-regrade"
 
 
 def test_the_regrade_replays_the_agent_job_it_follows(tmp_path):
-    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 2)
+    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "senior", STAMP, 2)
 
     jobs_dir = agent.argv[agent.argv.index("--jobs-dir") + 1]
     job_name = agent.argv[agent.argv.index("--job-name") + 1]
@@ -144,32 +148,32 @@ def test_the_regrade_replays_the_agent_job_it_follows(tmp_path):
 def test_the_regrade_names_its_source_job_by_an_absolute_path_from_the_suss_toml_directory(
     tmp_path,
 ):
-    _, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1)
+    _, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "senior", STAMP, 1)
 
     source_job = harbor_parses(regrade.argv)["source_job"]
-    assert source_job == f"{tmp_path}/results/rebench/peer-review/{STAMP}-1"
+    assert source_job == f"{tmp_path}/results/senior/peer-review/{STAMP}-1"
     assert Path(source_job).is_absolute()
 
 
 def test_a_check_takes_the_check_lane_and_writes_under_checks(tmp_path):
     agent, regrade = harbor_commands(
-        make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, check=True
+        make_config(tmp_path), make_manifest(), "senior", STAMP, 1, check=True
     )
 
     for command in (agent, regrade):
-        assert command.argv[command.argv.index("-p") + 1] == "lanes/rebench-check"
-        assert command.argv[command.argv.index("--jobs-dir") + 1] == "checks/rebench/peer-review"
-    assert harbor_parses(regrade.argv)["source_job"] == f"{tmp_path}/checks/rebench/peer-review/{STAMP}-1"
+        assert command.argv[command.argv.index("-p") + 1] == "lanes/senior-check"
+        assert command.argv[command.argv.index("--jobs-dir") + 1] == "checks/senior/peer-review"
+    assert harbor_parses(regrade.argv)["source_job"] == f"{tmp_path}/checks/senior/peer-review/{STAMP}-1"
 
 
 def test_both_jobs_take_the_environment_and_concurrency_from_the_config(tmp_path):
     agent, regrade = harbor_commands(
-        make_config(tmp_path, environment="modal", concurrency=4), make_manifest(), "rebench", STAMP, 1
+        make_config(tmp_path, environment="modal", concurrency=4), make_manifest(), "senior", STAMP, 1
     )
 
     for command in (agent, regrade):
         assert command.argv[:10] == [
-            "harbor", "run", "-p", "lanes/rebench", "-e", "modal", "-n", "4", "-k", "1",
+            "harbor", "run", "-p", "lanes/senior", "-e", "modal", "-n", "4", "-k", "1",
         ]
 
 
@@ -183,19 +187,85 @@ def test_the_agent_job_allows_each_manifest_host_in_order_and_no_others(tmp_path
 
 
 def test_a_harness_with_no_allowed_hosts_gets_no_allow_agent_host(tmp_path):
-    agent, _ = harbor_commands(make_config(tmp_path), make_manifest(()), "rebench", STAMP, 1)
+    agent, _ = harbor_commands(make_config(tmp_path), make_manifest(()), "senior", STAMP, 1)
 
+    assert agent.argv == [
+        "harbor", "run", "-p", "lanes/senior", "-e", "docker", "-n", "16", "-k", "1",
+        "-a", "suss.agent:SussAgent", "--ak", "arm=peer-review", "--ak", "config=suss.toml",
+        "--ak", "lane=senior", "--disable-verification",
+        "--jobs-dir", "results/senior/peer-review", "--job-name", f"{STAMP}-1",
+    ]
+
+
+def test_a_senior_run_builds_the_commands_it_built_before_rebench_graded_in_its_agent_job(
+    tmp_path,
+):
+    settings = with_dotenv(tmp_path, {"ANTHROPIC_API_KEY": "sk-ant-1"})
+
+    agent, regrade = harbor_commands(
+        settings, make_manifest(), "senior", STAMP, 2, ["--max-retries", "1"], reads=READS
+    )
+
+    common = ["harbor", "run", "-y", "-p", "lanes/senior", "-e", "docker", "-n", "16", "-k", "1"]
+    assert agent.argv == [
+        *common,
+        "-a", "suss.agent:SussAgent", "--ak", "arm=peer-review", "--ak", "config=suss.toml",
+        "--ak", "lane=senior",
+        "--allow-agent-host", "api.anthropic.com", "--allow-agent-host", "api.deepseek.com",
+        "--disable-verification",
+        "--jobs-dir", "results/senior/peer-review", "--job-name", f"{STAMP}-2",
+        "--max-retries", "1",
+    ]
+    assert (agent.withheld, agent.given) == (READS, {})
+    assert regrade.argv == [
+        *common,
+        "-a", "suss.replay:ReplayAgent", "-m", "replay",
+        "--ak", f"source_job={tmp_path}/results/senior/peer-review/{STAMP}-2",
+        "--jobs-dir", "results/senior/peer-review", "--job-name", f"{STAMP}-2-regrade",
+    ]
+    assert (regrade.withheld, regrade.given) == (READS, {"ANTHROPIC_API_KEY": "sk-ant-1"})
+
+
+def test_a_rebench_agent_job_grades_its_trials_in_suss_verifier_with_no_regrade(tmp_path):
+    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(()), "rebench", STAMP, 1)
+
+    assert regrade is None
     assert agent.argv == [
         "harbor", "run", "-p", "lanes/rebench", "-e", "docker", "-n", "16", "-k", "1",
         "-a", "suss.agent:SussAgent", "--ak", "arm=peer-review", "--ak", "config=suss.toml",
-        "--ak", "lane=rebench", "--disable-verification",
+        "--ak", "lane=rebench", "--verifier", "suss.replay:ReplayVerifier",
         "--jobs-dir", "results/rebench/peer-review", "--job-name", f"{STAMP}-1",
     ]
 
 
+GRADING_OPTIONS = ("--ve", "--verifier-env", "--ae", "--agent-env", "--ek", "--environment-kwarg")
+
+
+def test_a_rebench_agent_job_takes_grading_keys_from_harbors_environment_never_its_arguments(
+    tmp_path,
+):
+    settings = with_dotenv(tmp_path, {"GRADER_KEY": "sk-grade-secret", "SHARED": "sk-both"})
+
+    agent, _ = harbor_commands(
+        settings,
+        make_manifest(),
+        "rebench",
+        STAMP,
+        1,
+        reads=("GRADER_KEY", "SHARED"),
+        verifier_reads=("GRADER_KEY",),
+    )
+
+    # Harbor fills [verifier.env] from its own environment, and only test.sh's command gets it.
+    assert agent.given == {"GRADER_KEY": "sk-grade-secret"}
+    assert agent.withheld == ("GRADER_KEY", "SHARED")
+    assert not any(token.partition("=")[0] in GRADING_OPTIONS for token in agent.argv)
+    assert not any("sk-" in token for token in agent.argv)
+
+
 def test_the_regrade_runs_the_verifier(tmp_path):
     _, regrade = harbor_commands(
-        make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, ["--max-retries", "2"]
+        make_config(tmp_path), make_manifest(), "senior", STAMP, 1, ["--max-retries", "2"]
     )
 
     # Its verifier's reward is the trial's result, and with verification disabled it records none.
@@ -204,7 +274,7 @@ def test_the_regrade_runs_the_verifier(tmp_path):
 
 
 def test_the_regrade_allows_no_agent_host(tmp_path):
-    _, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1)
+    _, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "senior", STAMP, 1)
 
     assert regrade.argv[0] == "harbor"
     assert "--allow-agent-host" not in regrade.argv
@@ -213,8 +283,8 @@ def test_the_regrade_allows_no_agent_host(tmp_path):
 def test_arguments_after_the_separator_go_to_the_agent_job_only(tmp_path):
     extra = ["--max-retries", "2", "--ae", "FOO=bar"]
 
-    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, extra)
-    plain_agent, plain_regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1)
+    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "senior", STAMP, 1, extra)
+    plain_agent, plain_regrade = harbor_commands(make_config(tmp_path), make_manifest(), "senior", STAMP, 1)
 
     assert agent.argv == plain_agent.argv + extra
     assert regrade == plain_regrade
@@ -258,6 +328,9 @@ def test_a_refused_option_as_another_options_value_passes_through(tmp_path):
         ["--job-name=other"],
         ["--disable-verification"],
         ["--enable-verification"],
+        ["--verifier", "other:Verifier"],
+        ["--verifier-import-path=other:Verifier"],
+        ["--verifier-kwarg", "artifacts=/tmp"],
         ["--max-retries", "2", "-k", "2"],
     ],
 )
@@ -280,7 +353,7 @@ def options_suss_sets(tmp_path) -> set[str]:
         make_config(tmp_path), make_manifest(), "senior", STAMP, 1, reads=("ANTHROPIC_API_KEY",)
     )
     emitted = set()
-    for command in commands:
+    for command in filter(None, commands):
         _, _, found = run.make_parser(run.context_class(run)).parse_args(command.argv[2:])
         emitted |= {param.name for param in found}
     return emitted
@@ -302,16 +375,18 @@ def refused_options(tmp_path) -> set[str]:
 def test_every_option_suss_sets_on_either_job_is_refused(tmp_path):
     emitted = options_suss_sets(tmp_path)
 
-    assert len(emitted) == 12
+    assert len(emitted) == 13
     assert emitted <= refused_options(tmp_path)
 
 
 def test_the_options_refused_beyond_those_suss_sets_are_these(tmp_path):
-    # Each selects other tasks or another agent, or keeps the agent job from leaving a
-    # local trial, so its regrade would find no patch and score 0.
+    # Each selects other tasks, another agent or another verifier, or keeps the agent job
+    # from leaving a local trial, so its regrade would find no patch and score 0.
     assert refused_options(tmp_path) - options_suss_sets(tmp_path) == {
         "config_path",
         "agent_import_path",
+        "verifier_import_path",
+        "verifier_kwargs",
         "environment_import_path",
         "dataset_name_version",
         "registry_url",
@@ -360,7 +435,7 @@ def test_both_jobs_answer_harbors_question_when_the_tasks_read_its_environment(t
 
 
 def test_neither_job_answers_a_question_harbor_does_not_ask(tmp_path):
-    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1)
+    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "senior", STAMP, 1)
 
     assert "-y" not in agent.argv
     assert "-y" not in regrade.argv
@@ -412,8 +487,9 @@ def test_an_env_file_after_the_separator_is_refused(tmp_path):
         )
 
     assert str(refused.value) == (
-        "--env-file can't be passed after --: it would give the agent job the variables its "
-        "tasks read from Harbor's environment; suss gives those .env sets to the regrade alone"
+        "--env-file can't be passed after --: it would give the agent job every variable its "
+        "tasks read from Harbor's environment; suss gives those .env sets only to the job that "
+        "grades, for its verifier"
     )
 
 
@@ -567,12 +643,14 @@ def test_an_options_value_is_not_taken_for_a_positional_argument(tmp_path):
         (
             ["--disable-verification"],
             "--disable-verification/--enable-verification can't be passed after --: suss grades"
-            " each trial by its regrade alone, so the agent job never runs the verifier",
+            " each trial in a fresh sandbox alone: on rebench in the agent job's own"
+            " verifier, and on senior by its regrade",
         ),
         (
             ["--enable-verification"],
             "--disable-verification/--enable-verification can't be passed after --: suss grades"
-            " each trial by its regrade alone, so the agent job never runs the verifier",
+            " each trial in a fresh sandbox alone: on rebench in the agent job's own"
+            " verifier, and on senior by its regrade",
         ),
         (
             ["--job-name", "x"],
@@ -604,7 +682,7 @@ def test_an_option_harbor_does_not_know_is_refused(tmp_path):
 
 
 def test_the_regrade_runs_suss_replay_agent(tmp_path):
-    _, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1)
+    _, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "senior", STAMP, 1)
 
     assert regrade.argv[0] == "harbor"
     assert regrade.argv[regrade.argv.index("-a") + 1] == "suss.replay:ReplayAgent"
@@ -625,7 +703,7 @@ print(type(agent).__module__, type(agent).__name__)
 
 
 def test_the_harbor_suss_runs_loads_the_regrades_agent_with_no_pythonpath(tmp_path):
-    _, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1)
+    _, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "senior", STAMP, 1)
     Path(harbor_parses(regrade.argv)["source_job"]).mkdir(parents=True)
     # The interpreter the harbor script starts, which is whatever its first line names.
     python = harbor_executable().read_text().splitlines()[0].removeprefix("#!")
@@ -647,6 +725,34 @@ def test_the_harbor_suss_runs_loads_the_regrades_agent_with_no_pythonpath(tmp_pa
 
     assert loaded.returncode == 0, loaded.stderr
     assert loaded.stdout == "suss.replay ReplayAgent\n"
+
+
+# What Harbor does with --verifier, in the process `harbor` starts in.
+LOAD_THE_VERIFIER = """
+import sys
+from harbor.utils.import_path import import_class
+from harbor.verifier.base import BaseVerifier
+
+found = import_class(sys.argv[1], base=BaseVerifier, label="verifier")
+print(found.__module__, found.__name__)
+"""
+
+
+def test_the_harbor_suss_runs_loads_the_rebench_verifier_with_no_pythonpath(tmp_path):
+    agent, _ = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1)
+    python = harbor_executable().read_text().splitlines()[0].removeprefix("#!")
+    env = {name: value for name, value in os.environ.items() if name != "PYTHONPATH"}
+
+    loaded = subprocess.run(
+        [python, "-c", LOAD_THE_VERIFIER, agent.argv[agent.argv.index("--verifier") + 1]],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert loaded.returncode == 0, loaded.stderr
+    assert loaded.stdout == "suss.replay ReplayVerifier\n"
 
 
 @pytest.mark.parametrize(
@@ -675,17 +781,17 @@ def test_the_harbor_suss_runs_loads_the_regrades_agent_with_no_pythonpath(tmp_pa
     ],
 )
 def test_every_ak_value_reaches_the_agent_as_the_string_it_was(arm, tmp_path):
-    agent, regrade = harbor_commands(make_config(tmp_path, arm=arm), make_manifest(), "rebench", STAMP, 1)
+    agent, regrade = harbor_commands(make_config(tmp_path, arm=arm), make_manifest(), "senior", STAMP, 1)
 
-    assert harbor_parses(agent.argv) == {"arm": arm, "config": "suss.toml", "lane": "rebench"}
-    assert harbor_parses(regrade.argv) == {"source_job": f"{tmp_path}/results/rebench/{arm}/{STAMP}-1"}
+    assert harbor_parses(agent.argv) == {"arm": arm, "config": "suss.toml", "lane": "senior"}
+    assert harbor_parses(regrade.argv) == {"source_job": f"{tmp_path}/results/senior/{arm}/{STAMP}-1"}
 
 
 def test_an_ordinary_ak_value_is_not_quoted(tmp_path):
-    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1)
+    agent, regrade = harbor_commands(make_config(tmp_path), make_manifest(), "senior", STAMP, 1)
 
-    assert ak_values(agent.argv) == {"arm": "peer-review", "config": "suss.toml", "lane": "rebench"}
-    assert ak_values(regrade.argv) == {"source_job": f"{tmp_path}/results/rebench/peer-review/{STAMP}-1"}
+    assert ak_values(agent.argv) == {"arm": "peer-review", "config": "suss.toml", "lane": "senior"}
+    assert ak_values(regrade.argv) == {"source_job": f"{tmp_path}/results/senior/peer-review/{STAMP}-1"}
 
 
 def test_an_arm_harbor_would_read_as_a_number_is_quoted_as_a_json_string(tmp_path):

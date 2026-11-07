@@ -3,8 +3,8 @@ A lane's directory, which Harbor reads as `-p lanes/<lane>`, and the checks
 made on a lane before any job.
 
 Each lane holds copies of the downloaded tasks, since a task.toml that leaves
-the agent's network open must close it, and a senior task's test.sh must pin
-litellm.
+the agent's network open must close it, a rebench task must grade in a
+separate verifier, and a senior task's test.sh must pin litellm.
 """
 
 import hashlib
@@ -35,10 +35,9 @@ SENIOR = "senior"
 
 LANES = (REBENCH, SENIOR)
 
-NO_NETWORK = 'network_mode = "no-network"'
+# The lanes whose trials Harbor grades in a sandbox of their own, in the agent job.
+SEPARATE_VERIFIER = (REBENCH,)
 
-# The `[agent]` header as TOML allows it to be spelled, bare-keyed.
-AGENT_HEADER = re.compile(r"[ \t]*\[[ \t]*agent[ \t]*\][ \t]*(#.*)?\r?\n?\Z")
 
 
 def check_lane(lane: str) -> None:
@@ -318,15 +317,18 @@ def build(lane: str, download: Path, lanes: Path, check: bool = False) -> Path:
     """
     Make `lanes/<lane>/` hold a copy of each task `lane_tasks` gives, whose
     task.toml adds `[agent] network_mode = "no-network"` unless its agent's
-    network is already closed. On senior, each copy's tests/test.sh also
-    pins litellm, as `_pinned` gives it.
+    network is already closed. On a lane in SEPARATE_VERIFIER, the task.toml
+    also sets `[verifier] environment_mode = "separate"`, as `_separate` gives
+    it, and tests/ gains the files `_verifier_build` gives. On senior, each
+    copy's tests/test.sh pins litellm, as `_pinned` gives it.
 
     With `check`, it makes `lanes/<lane>-check/` instead, holding only the
     first task by name. Every other file is copied as it is, mode included.
     Whatever an earlier build left is removed. Raises LaneError as
     `lane_tasks` does, naming a task.toml whose agent network `_without_network`
-    refuses or that the key cannot be added to, naming a test.sh `_pinned`
-    refuses, and when the lane's path is a link or anything else but a
+    refuses or that a key cannot be added to, naming what `_separate`,
+    `_verifier_build` and `_pinned` refuse, naming a tests/ that is a link, and
+    when the lane's path is a link or anything else but a
     directory. Every file it rewrites is read before the lane is touched, so
     an error leaves an earlier build as it was.
     """
@@ -344,22 +346,43 @@ def build(lane: str, download: Path, lanes: Path, check: bool = False) -> Path:
             symlinks=True,
             ignore=lambda at, names: [n for n in names if str(Path(at) / n) in skipped],
         )
-        for name, content in files.items():
-            parent = (copy / name).parent
-            mode = parent.stat().st_mode
-            parent.chmod(mode | stat.S_IWUSR)
-            (copy / name).write_bytes(content)
-            shutil.copymode(task / name, copy / name)
-            parent.chmod(mode)
+        for name, (content, source) in files.items():
+            _write(copy, name, content, source)
     return directory
+
+
+def _write(copy: Path, name: str, content: bytes, source: Path) -> None:
+    """
+    Write `content` at `name` in the task's copy, with the mode of `source`,
+    making the directories it lacks.
+
+    A directory copied read-only from the download is made writable for the
+    write alone, and keeps its own mode.
+    """
+    restore = []
+    directory = copy
+    try:
+        for part in Path(name).parent.parts:
+            restore.append((directory, directory.stat().st_mode))
+            directory.chmod(restore[-1][1] | stat.S_IWUSR)
+            directory = directory / part
+            directory.mkdir(exist_ok=True)
+        restore.append((directory, directory.stat().st_mode))
+        directory.chmod(restore[-1][1] | stat.S_IWUSR)
+        (copy / name).write_bytes(content)
+        shutil.copymode(source, copy / name)
+    finally:
+        for path, mode in reversed(restore):
+            path.chmod(mode)
 
 
 def _plan_build(
     lane: str, download: Path, lanes: Path, check: bool
-) -> tuple[Path, dict[Path, dict[str, bytes]]]:
+) -> tuple[Path, dict[Path, dict[str, tuple[bytes, Path]]]]:
     """
     The lane's directory, and each task it takes with the files its copy
-    rewrites, by path from the task, reading everything and changing nothing.
+    writes, by path from the task, each with its content and the file whose
+    mode it takes. It reads everything and changes nothing.
 
     Raises LaneError as `build` does.
     """
@@ -376,16 +399,57 @@ def _plan_build(
         raise LaneError(f"{directory}: a link, so the {lane} lane is not built through it")
     rewritten = {}
     for task in found:
-        rewritten[task] = {"task.toml": _without_network(task / "task.toml")}
+        toml = _without_network(task / "task.toml")
+        if lane in SEPARATE_VERIFIER:
+            toml = _separate(task / "task.toml", toml)
+        rewritten[task] = {"task.toml": (toml, task / "task.toml")}
+        # The copy keeps the link, so a file written into tests/ would be written through it.
+        tests = (task / TEST_SH).parent
+        if tests.is_symlink():
+            raise LaneError(f"{tests}: a link, so the lane cannot write into a copy of it")
         if lane == SENIOR:
-            # The copy keeps the link, so the pinned test.sh would be written through it.
-            tests = (task / TEST_SH).parent
-            if tests.is_symlink():
-                raise LaneError(
-                    f"{tests}: a link, so the lane cannot pin litellm in a copy of it"
-                )
-            rewritten[task][TEST_SH] = _pinned(task / TEST_SH)
+            rewritten[task][TEST_SH] = (_pinned(task / TEST_SH), task / TEST_SH)
+        if lane in SEPARATE_VERIFIER:
+            rewritten[task] |= _verifier_build(task)
     return directory, rewritten
+
+
+def _verifier_build(task: Path) -> dict[str, tuple[bytes, Path]]:
+    """
+    The files the task's tests/ gains, so that Harbor builds the separate
+    verifier's image as it builds the agent's: every file of environment/,
+    under the same path in tests/, with its Dockerfile.
+
+    Harbor builds that image with tests/ as its context. Raises LaneError
+    naming a file of tests/ one would replace, or an entry of environment/
+    that is neither a file nor a directory.
+    """
+    environment = task / "environment"
+    found = {}
+    for path in sorted(environment.rglob("*")):
+        if path.is_dir() and not path.is_symlink():
+            continue
+        if path.is_symlink() or not path.is_file():
+            raise LaneError(
+                f"{path}: not a file, so the lane cannot copy it to build the task's verifier"
+            )
+        name = f"tests/{path.relative_to(environment).as_posix()}"
+        # The copy keeps a link, so a file written beneath one would land where it points.
+        for parent in reversed((task / name).relative_to(task).parents[:-1]):
+            if (task / parent).is_symlink() or (
+                (task / parent).exists() and not (task / parent).is_dir()
+            ):
+                raise LaneError(
+                    f"{task / parent}: not a directory, so the lane cannot put {path} in it"
+                    " to build the task's verifier"
+                )
+        if (task / name).exists() or (task / name).is_symlink():
+            raise LaneError(
+                f"{task / name}: the task's verifier is built from tests/, where the lane"
+                f" would put {path} in its place"
+            )
+        found[name] = (path.read_bytes(), path)
+    return found
 
 
 TEST_SH = "tests/test.sh"
@@ -460,8 +524,56 @@ def _without_network(path: Path) -> bytes:
             f"{path}: sets [agent] allowed_hosts with no network_mode, which Harbor "
             'refuses; it takes them only with network_mode = "allowlist"'
         )
-    lines = path.read_bytes().decode().splitlines(keepends=True)
-    headers = [number for number, line in enumerate(lines) if AGENT_HEADER.match(line)]
+    return _add_key(path, path.read_bytes(), original, "agent", "network_mode", "no-network")
+
+
+def _separate(path: Path, text: bytes) -> bytes:
+    """
+    The task.toml `text`, read from `path`, with `environment_mode =
+    "separate"` added to its `[verifier]` table, so that Harbor grades each
+    trial in a sandbox of its own. One that already sets it is returned as
+    it is.
+
+    Raises LaneError naming the file when its verifier sets another mode, or
+    an environment of its own, which ReplayVerifier does not grade in, and as
+    `_add_key` does.
+    """
+    original = tomllib.loads(text.decode())
+    verifier = original.get("verifier", {})
+    if not isinstance(verifier, dict):
+        verifier = {}
+    if "environment" in verifier:
+        raise LaneError(
+            f"{path}: sets [verifier] environment, but the lane grades its trials in a"
+            " sandbox built from the task's own environment"
+        )
+    mode = verifier.get("environment_mode")
+    if mode == "separate":
+        return text
+    if mode is not None:
+        raise LaneError(
+            f"{path}: sets [verifier] environment_mode = {mode!r}, but the lane grades its"
+            ' trials in a separate verifier; it takes only "separate"'
+        )
+    return _add_key(path, text, original, "verifier", "environment_mode", "separate")
+
+
+def _add_key(
+    path: Path, text: bytes, original: dict, table: str, key: str, value: str
+) -> bytes:
+    """
+    The task.toml `text`, read from `path` as `original`, with `key = "value"`
+    added to its `[table]`, its text otherwise unchanged.
+
+    The line goes directly under the table's header, or under a new one at
+    the end where there is none. Raises LaneError naming the file when the
+    result does not parse to the original plus that one key.
+    """
+    line = f'{key} = "{value}"'
+    # The header as TOML allows it to be spelled, bare-keyed.
+    header_line = re.compile(rf"[ \t]*\[[ \t]*{table}[ \t]*\][ \t]*(#.*)?\r?\n?\Z")
+    lines = text.decode().splitlines(keepends=True)
+    headers = [number for number, found in enumerate(lines) if header_line.match(found)]
     if len(headers) == 1:
         header = lines[headers[0]]
         # The added line ends as the header does, \r\n or \n, and a header
@@ -470,27 +582,28 @@ def _without_network(path: Path) -> bytes:
         if not newline:
             lines[headers[0]] += "\n"
             newline = "\n"
-        lines.insert(headers[0] + 1, NO_NETWORK + newline)
+        lines.insert(headers[0] + 1, line + newline)
     else:
         if lines and not lines[-1].endswith("\n"):
             lines[-1] += "\n"
-        lines.append(f"\n[agent]\n{NO_NETWORK}\n")
-    text = "".join(lines)
-    if not isinstance(agent, dict):
-        agent = {}
-    expected = {**original, "agent": {**agent, "network_mode": "no-network"}}
+        lines.append(f"\n[{table}]\n{line}\n")
+    added_text = "".join(lines)
+    existing = original.get(table, {})
+    if not isinstance(existing, dict):
+        existing = {}
+    expected = {**original, table: {**existing, key: value}}
     try:
-        added = tomllib.loads(text)
+        added = tomllib.loads(added_text)
     except tomllib.TOMLDecodeError:
         added = None
     # A header inside a multi-line string, or a table made some other way,
     # puts the line where it changes something else, or breaks the file.
     if added != expected:
         raise LaneError(
-            f"{path}: [agent] network_mode cannot be added to it without changing "
+            f"{path}: [{table}] {key} cannot be added to it without changing "
             "anything else, so it must be added by hand"
         )
-    return text.encode()
+    return added_text.encode()
 
 
 def _seconds(value: float) -> str:

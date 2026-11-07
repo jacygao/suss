@@ -10,6 +10,8 @@ import shlex
 from harbor.environments.base import BaseEnvironment
 
 LOGS_DIR = "/logs/agent"
+# What Harbor collects from the agent's sandbox for a verifier in a sandbox of its own.
+ARTIFACTS_DIR = "/logs/artifacts"
 PATCH_NAME = "model.patch"
 
 

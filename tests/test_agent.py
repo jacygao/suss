@@ -86,6 +86,10 @@ class Trial:
         return Path(self.paths.logs)
 
     @property
+    def artifacts(self) -> Path:
+        return Path(self.paths.artifacts)
+
+    @property
     def sandbox_adapter(self) -> Path:
         return Path(self.paths.adapter)
 
@@ -154,6 +158,7 @@ def trial(tmp_path, local_environment) -> Trial:
         instruction=str(opt / "instruction.md"),
         params=str(opt / "params.json"),
         logs=str(sandbox / "logs" / "agent"),
+        artifacts=str(sandbox / "logs" / "artifacts"),
     )
     return Trial(
         host=host,
@@ -542,6 +547,7 @@ def test_harbors_own_construction_keeps_the_specs_sandbox_paths(trial):
         instruction="/opt/suss/instruction.md",
         params="/opt/suss/params.json",
         logs="/logs/agent",
+        artifacts="/logs/artifacts",
     )
     assert agent.to_agent_info().name == SussAgent.name()
 
@@ -704,4 +710,64 @@ def test_a_run_that_finishes_leaves_no_process_group_behind(local_environment, t
     left = sorted(path.name for path in trial.logs.iterdir())
     assert left == ["install.log", "model.patch", "run.log", "suss.json"], (
         "a finished run left a file a later cancel could act on"
+    )
+
+
+def end_normally(trial: Trial, env) -> None:
+    trial.then("run", KNOWN_CHANGE)
+    trial.run(env)
+
+
+def end_at_max_seconds(trial: Trial, env) -> None:
+    trial.then("run", f"{KNOWN_CHANGE}\nsleep 30")
+    trial.run(env, trial.agent(arm="quick"))
+
+
+def end_at_harbors_timeout(trial: Trial, env) -> None:
+    trial.then("run", STILL_WORKING)
+    agent = trial.agent()
+
+    async def under_harbors_timeout():
+        await agent.setup(environment=env)
+        await asyncio.wait_for(
+            agent.run(instruction=INSTRUCTION, environment=env, context=AgentContext()),
+            timeout=1,
+        )
+
+    with pytest.raises(TimeoutError):
+        go(under_harbors_timeout())
+
+
+def end_by_raising(trial: Trial, env) -> None:
+    trial.then("run", KNOWN_CHANGE)
+    exec_as_given = env.exec
+
+    async def failing_after_run(command, **kwargs):
+        result = await exec_as_given(command, **kwargs)
+        if "run.sh" in command:
+            raise ConnectionError("the sandbox went away")
+        return result
+
+    agent = trial.agent()
+    go(agent.setup(environment=env))
+    env.exec = failing_after_run
+    try:
+        with pytest.raises(ConnectionError):
+            go(agent.run(instruction=INSTRUCTION, environment=env, context=AgentContext()))
+    finally:
+        del env.exec
+
+
+@pytest.mark.parametrize(
+    "end", [end_normally, end_at_max_seconds, end_at_harbors_timeout, end_by_raising]
+)
+def test_the_patch_in_artifacts_is_the_agents_patch_however_the_run_ends(
+    local_environment, trial, end
+):
+    end(trial, local_environment)
+
+    patch = (trial.logs / "model.patch").read_bytes()
+    assert b"a known change" in patch
+    assert (trial.artifacts / "model.patch").read_bytes() == patch, (
+        "the verifier would grade a patch other than the one the trial captured"
     )

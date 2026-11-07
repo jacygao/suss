@@ -120,7 +120,9 @@ class LocalEnvironment(BaseEnvironment):
         shutil.copytree(source_dir, target_dir, symlinks=True, dirs_exist_ok=True)
 
     async def download_file(self, source_path: str, target_path: Path | str):
-        raise NotImplementedError
+        """Copy the file, failing as Docker does when it is missing."""
+        Path(target_path).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
 
     async def download_dir(self, source_dir: str, target_dir: Path | str):
         raise NotImplementedError

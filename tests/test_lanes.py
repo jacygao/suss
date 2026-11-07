@@ -6,7 +6,8 @@ import tomllib
 from pathlib import Path
 
 import pytest
-from harbor.models.task.config import NetworkMode, TaskConfig
+from harbor.models.task.config import NetworkMode, TaskConfig, VerifierEnvironmentMode
+from harbor.models.task.verifier_mode import resolve_task_verifier_mode
 
 from suss import config, lanes
 from suss.lanes import LaneError
@@ -212,6 +213,16 @@ def files_of(task: Path) -> dict[str, bytes]:
     }
 
 
+def copied_files(task: Path) -> dict[str, bytes]:
+    """The files a rebench copy of `task` holds: the task's, and its Dockerfile in tests/ too."""
+    return {**files_of(task), "tests/Dockerfile": (task / "environment" / "Dockerfile").read_bytes()}
+
+
+SEPARATE = 'environment_mode = "separate"'
+# What a rebench task.toml with no [verifier] table gains at its end.
+SEPARATE_TABLE = f"\n[verifier]\n{SEPARATE}\n"
+
+
 def test_the_rebench_lane_holds_a_copy_of_each_task_and_nothing_else(tmp_path: Path):
     names = ["apache__pulsar-25793", "ArcadeData__arcadedb-4281", "HKUDS__nanobot-4048"]
     source = make_rebench(tmp_path / "swe-rebench-07-2026", names)
@@ -228,13 +239,16 @@ def test_the_rebench_lane_holds_a_copy_of_each_task_and_nothing_else(tmp_path: P
         assert (built / name).is_dir()
 
 
-def test_each_task_toml_parses_to_the_downloads_plus_the_agents_network_mode(tmp_path: Path):
+def test_each_task_toml_parses_to_the_downloads_plus_the_agents_network_and_verifiers_mode(
+    tmp_path: Path,
+):
     source = make_rebench(tmp_path / "source", ["owner__repo-1"])
 
     built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
     expected = toml_of(source / "owner__repo-1")
     expected["agent"]["network_mode"] = "no-network"
+    expected["verifier"]["environment_mode"] = "separate"
     assert toml_of(built / "owner__repo-1") == expected
 
 
@@ -246,7 +260,7 @@ def test_the_task_toml_keeps_its_text_and_gains_one_line_in_its_agent_table(tmp_
     original = (source / "owner__repo-1" / "task.toml").read_text().splitlines()
     copied = (built / "owner__repo-1" / "task.toml").read_text().splitlines()
     assert copied.count("[agent]") == 1, "a second [agent] header makes the file invalid TOML"
-    assert [line for line in copied if line != NO_NETWORK] == original
+    assert [line for line in copied if line not in (NO_NETWORK, SEPARATE)] == original
     assert copied[copied.index("[agent]") + 1] == NO_NETWORK
 
 
@@ -268,7 +282,9 @@ def test_a_task_toml_with_no_final_newline_changes_only_where_the_line_goes(
 
     built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
-    assert (built / "owner__repo-1" / "task.toml").read_bytes() == copied.encode()
+    # The verifier's table comes after, from the text the agent's line went into.
+    with_verifier = copied + ("" if copied.endswith("\n") else "\n") + SEPARATE_TABLE
+    assert (built / "owner__repo-1" / "task.toml").read_bytes() == with_verifier.encode()
 
 
 def test_a_task_with_no_agent_table_gains_one(tmp_path: Path):
@@ -279,6 +295,7 @@ def test_a_task_with_no_agent_table_gains_one(tmp_path: Path):
 
     expected = toml_of(source / "owner__repo-1")
     expected["agent"] = {"network_mode": "no-network"}
+    expected["verifier"]["environment_mode"] = "separate"
     assert toml_of(built / "owner__repo-1") == expected
 
 
@@ -291,6 +308,7 @@ def test_an_agent_header_spelled_otherwise_gains_the_key_inside_it(tmp_path: Pat
 
     expected = toml_of(source / "owner__repo-1")
     expected["agent"]["network_mode"] = "no-network"
+    expected["verifier"]["environment_mode"] = "separate"
     assert toml_of(built / "owner__repo-1") == expected
 
 
@@ -341,7 +359,7 @@ allowed_hosts = [
     [ALLOWLIST_AGENT, '[agent]\ntimeout_sec = 3000.0\nnetwork_mode = "no-network"\n'],
     ids=["allowlist", "no-network"],
 )
-def test_a_task_whose_agent_already_has_a_closed_network_is_copied_unchanged(
+def test_a_task_whose_agent_already_has_a_closed_network_keeps_its_agent_table(
     tmp_path: Path, agent: str
 ):
     toml = REBENCH_TOML.replace("[agent]\ntimeout_sec = 3000.0\n", agent)
@@ -349,8 +367,9 @@ def test_a_task_whose_agent_already_has_a_closed_network_is_copied_unchanged(
 
     built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
-    original = (source / "owner__repo-1" / "task.toml").read_bytes()
-    assert (built / "owner__repo-1" / "task.toml").read_bytes() == original
+    original = (source / "owner__repo-1" / "task.toml").read_text().splitlines()
+    copied = (built / "owner__repo-1" / "task.toml").read_text().splitlines()
+    assert [line for line in copied if line != SEPARATE] == original
 
 
 def test_a_task_with_agent_hosts_and_no_allowlist_is_an_error_naming_it(tmp_path: Path):
@@ -382,7 +401,7 @@ def test_every_other_file_is_copied_byte_for_byte(tmp_path: Path):
 
     built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
-    assert files_of(built / "owner__repo-1") == files_of(source / "owner__repo-1")
+    assert files_of(built / "owner__repo-1") == copied_files(source / "owner__repo-1")
 
 
 def test_file_modes_are_kept_so_executable_scripts_stay_executable(tmp_path: Path):
@@ -431,7 +450,7 @@ def test_a_rebuild_leaves_only_the_tasks_of_the_latest_download(tmp_path: Path):
     lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
     assert [entry.name for entry in built.iterdir()] == ["owner__repo-1"]
-    assert files_of(built / "owner__repo-1") == files_of(source / "owner__repo-1")
+    assert files_of(built / "owner__repo-1") == copied_files(source / "owner__repo-1")
 
 
 def test_the_rebench_check_lane_holds_only_the_first_task_by_name(tmp_path: Path):
@@ -1074,6 +1093,162 @@ def test_a_rebench_build_leaves_its_test_sh_unpinned(tmp_path: Path):
     built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
     assert (built / "owner__repo-1" / "tests" / "test.sh").read_bytes() == LITELLM + b"\n"
+
+
+def test_harbor_grades_a_rebench_copy_in_a_separate_verifier_and_the_download_in_shared_mode(
+    tmp_path: Path,
+):
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"])
+
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
+
+    copied = TaskConfig.model_validate_toml((built / "owner__repo-1" / "task.toml").read_text())
+    downloaded = TaskConfig.model_validate_toml((source / "owner__repo-1" / "task.toml").read_text())
+    assert resolve_task_verifier_mode(copied) == VerifierEnvironmentMode.SEPARATE
+    # Harbor's oracle leaves no patch for a separate verifier, so a check of it takes the download.
+    assert resolve_task_verifier_mode(downloaded) == VerifierEnvironmentMode.SHARED
+
+
+def test_a_rebench_task_toml_gains_one_line_in_its_verifier_table(tmp_path: Path):
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"])
+
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
+
+    original = (source / "owner__repo-1" / "task.toml").read_text().splitlines()
+    copied = (built / "owner__repo-1" / "task.toml").read_text().splitlines()
+    assert [line for line in copied if line not in (NO_NETWORK, SEPARATE)] == original
+    assert copied[copied.index("[verifier]") + 1] == SEPARATE
+
+
+def test_a_rebench_task_with_no_verifier_table_gains_one(tmp_path: Path):
+    toml = REBENCH_TOML.replace("[verifier]\ntimeout_sec = 3000.0\ncollect = []\n", "")
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"], toml)
+
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
+
+    expected = toml_of(source / "owner__repo-1")
+    expected["agent"]["network_mode"] = "no-network"
+    expected["verifier"] = {**expected["verifier"], "environment_mode": "separate"}
+    assert toml_of(built / "owner__repo-1") == expected
+
+
+def test_a_rebench_task_already_graded_in_a_separate_verifier_is_left_as_it_is(tmp_path: Path):
+    toml = REBENCH_TOML.replace("[verifier]\n", f"[verifier]\n{SEPARATE}\n")
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"], toml)
+
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
+
+    copied = (built / "owner__repo-1" / "task.toml").read_text().splitlines()
+    assert copied.count(SEPARATE) == 1
+
+
+@pytest.mark.parametrize(
+    "verifier",
+    ['environment_mode = "shared"', "environment = { cpus = 2 }"],
+    ids=["shared", "its-own-environment"],
+)
+def test_a_rebench_task_whose_verifier_sets_its_own_sandbox_is_refused_naming_it(
+    tmp_path: Path, verifier: str
+):
+    toml = REBENCH_TOML.replace("[verifier]\n", f"[verifier]\n{verifier}\n")
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"], toml)
+
+    with pytest.raises(LaneError) as error:
+        lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
+
+    assert str(error.value).startswith(f"{source / 'owner__repo-1' / 'task.toml'}: ")
+
+
+def test_a_rebench_copy_builds_its_verifier_from_the_tasks_own_dockerfile_and_files(
+    tmp_path: Path,
+):
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"])
+    environment = source / "owner__repo-1" / "environment"
+    (environment / "Dockerfile").write_text("FROM scratch\nCOPY fix.patch /fix.patch\n")
+    (environment / "fix.patch").write_bytes(b"\xff not text\n")
+    (environment / "fix.patch").chmod(0o640)
+    (environment / "conf").mkdir()
+    (environment / "conf" / "a.ini").write_text("a = 1\n")
+
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes") / "owner__repo-1"
+
+    assert files_of(built) == {
+        **files_of(source / "owner__repo-1"),
+        "tests/Dockerfile": b"FROM scratch\nCOPY fix.patch /fix.patch\n",
+        "tests/fix.patch": b"\xff not text\n",
+        "tests/conf/a.ini": b"a = 1\n",
+    }
+    assert oct((built / "tests" / "fix.patch").stat().st_mode) == oct(
+        (environment / "fix.patch").stat().st_mode
+    )
+
+
+@pytest.mark.parametrize("name", ["Dockerfile", "config.json"])
+def test_a_rebench_tests_file_the_verifiers_build_would_replace_is_refused_naming_it(
+    tmp_path: Path, name: str
+):
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"])
+    task = source / "owner__repo-1"
+    if name == "Dockerfile":
+        (task / "tests" / "Dockerfile").write_text("FROM other\n")
+    else:
+        (task / "environment" / "config.json").write_text("{}\n")
+
+    with pytest.raises(LaneError) as error:
+        lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
+
+    assert str(error.value).startswith(f"{task / 'tests' / name}: ")
+
+
+def test_a_link_inside_rebench_tests_is_refused_and_what_it_names_left_alone(tmp_path: Path):
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"])
+    task = source / "owner__repo-1"
+    (task / "environment" / "conf").mkdir()
+    (task / "environment" / "conf" / "a.ini").write_text("a = 1\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (task / "tests" / "conf").symlink_to(outside)
+
+    with pytest.raises(LaneError) as error:
+        lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
+
+    assert str(error.value).startswith(f"{task / 'tests' / 'conf'}: ")
+    assert list(outside.iterdir()) == []
+
+
+def test_a_nested_verifier_file_is_written_into_a_read_only_tests_directory(tmp_path: Path):
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"])
+    task = source / "owner__repo-1"
+    (task / "environment" / "conf").mkdir()
+    (task / "environment" / "conf" / "a.ini").write_text("a = 1\n")
+    (task / "tests").chmod(0o555)
+    try:
+        lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
+        built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes") / "owner__repo-1"
+
+        assert (built / "tests" / "conf" / "a.ini").read_text() == "a = 1\n"
+        assert oct((built / "tests").stat().st_mode) == oct((task / "tests").stat().st_mode)
+    finally:
+        # Left read-only, they would stop pytest removing tmp_path.
+        for directory in tmp_path.rglob("*"):
+            if directory.is_dir() and not directory.is_symlink():
+                directory.chmod(0o755)
+
+
+def test_a_rebench_tests_directory_that_is_a_link_is_refused_and_the_download_left_alone(
+    tmp_path: Path,
+):
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"])
+    tests = source / "owner__repo-1" / "tests"
+    shutil.move(tests, source / "owner__repo-1" / "real-tests")
+    tests.symlink_to("real-tests")
+    downloaded = files_of(source)
+
+    with pytest.raises(LaneError) as error:
+        lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
+
+    assert str(error.value).startswith(f"{tests}: ")
+    assert files_of(source) == downloaded
 
 
 def test_harbor_reads_a_senior_copy_with_its_own_agent_allowlist(tmp_path: Path):

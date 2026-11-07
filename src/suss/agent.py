@@ -23,7 +23,13 @@ from harbor.models.agent.context import AgentContext
 from suss import config as suss_config
 from suss import harness, lanes
 from suss.harness import SandboxPaths
-from suss.workspace import capture_patch, find_workspace, read_base, read_start_tree
+from suss.workspace import (
+    PATCH_NAME,
+    capture_patch,
+    find_workspace,
+    read_base,
+    read_start_tree,
+)
 
 RECORD_NAME = "suss.json"
 # The dataset each lane's tasks come from, which names its trials' grader.
@@ -135,9 +141,7 @@ class SussAgent(BaseAgent):
                 self.paths,
             )
         except BaseException:
-            await capture_patch(
-                environment, prepared.workspace, prepared.start_tree, self.paths.logs
-            )
+            await self._capture(environment, prepared)
             raise
 
         try:
@@ -152,9 +156,7 @@ class SussAgent(BaseAgent):
         self, environment: BaseEnvironment, prepared: _Prepared, result: harness.HarnessResult
     ) -> None:
         """Capture the patch, then write suss.json beside it."""
-        patch_bytes = await capture_patch(
-            environment, prepared.workspace, prepared.start_tree, self.paths.logs
-        )
+        patch_bytes = await self._capture(environment, prepared)
         record = {
             "arm": self._config.arm.name,
             "harness": {"name": self._manifest.name, "version": self._manifest.version},
@@ -172,6 +174,25 @@ class SussAgent(BaseAgent):
             f"{self.paths.logs.rstrip('/')}/{RECORD_NAME}",
         )
 
+
+    async def _capture(self, environment: BaseEnvironment, prepared: _Prepared) -> int:
+        """
+        Capture the patch, copy it byte for byte to the artifacts directory,
+        and return its size.
+
+        Harbor collects only that directory for a verifier in a sandbox of its
+        own, so the copy is the patch such a verifier grades.
+        """
+        patch_bytes = await capture_patch(
+            environment, prepared.workspace, prepared.start_tree, self.paths.logs
+        )
+        logs = f"{self.paths.logs.rstrip('/')}/{PATCH_NAME}"
+        await _run(
+            environment,
+            f"mkdir -p {shlex.quote(self.paths.artifacts)}"
+            f" && cp {shlex.quote(logs)} {shlex.quote(self.paths.artifacts)}",
+        )
+        return patch_bytes
 
 def grader(settings: suss_config.Config, lane: str) -> dict[str, str]:
     """
@@ -233,6 +254,14 @@ async def _as_root(env: BaseEnvironment, command: str) -> None:
     """
     user = "root" if env.default_user is not None else None
     result = await env.exec(command, user=user)
+    if result.return_code != 0:
+        output = (result.stdout or "").strip()
+        raise harness.HarnessError(f"`{command}` exited {result.return_code}: {output}")
+
+
+async def _run(env: BaseEnvironment, command: str) -> None:
+    """Run a command as the agent's user, raising HarnessError naming it when it fails."""
+    result = await env.exec(command)
     if result.return_code != 0:
         output = (result.stdout or "").strip()
         raise harness.HarnessError(f"`{command}` exited {result.return_code}: {output}")

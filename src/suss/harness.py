@@ -17,7 +17,7 @@ from typing import Literal
 from harbor.environments.base import BaseEnvironment
 
 from suss.config import Arm
-from suss.workspace import LOGS_DIR
+from suss.workspace import ARTIFACTS_DIR, LOGS_DIR
 
 MANIFEST_NAME = "suss-harness.toml"
 INSTALL_LOG = "install.log"
@@ -121,6 +121,7 @@ class SandboxPaths:
     instruction: str = "/opt/suss/instruction.md"
     params: str = "/opt/suss/params.json"
     logs: str = LOGS_DIR
+    artifacts: str = ARTIFACTS_DIR
 
 
 Status = Literal["ok", "harness-failed", "timed-out"]

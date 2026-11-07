@@ -8,18 +8,25 @@ Harbor starts the agent. The sandbox's workspace is a git repository beside them
 """
 
 import asyncio
+import hashlib
 import json
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 from harbor.agents.factory import AgentFactory
 from harbor.cli.utils import parse_kwargs
 from harbor.models.agent.context import AgentContext
-from harbor.models.trial.config import AgentConfig
+from harbor.models.task.task import Task
+from harbor.models.trial.config import AgentConfig, VerifierConfig
+from harbor.models.trial.paths import TrialPaths
+from harbor.models.verifier.result import VerifierResult
+from harbor.verifier.factory import VerifierFactory
+from harbor.verifier.verifier import Verifier
 
 import suss.replay
-from suss.replay import ReplayAgent, ReplayError, is_test_file
+from suss.replay import ReplayAgent, ReplayError, ReplayVerifier, is_test_file
 
 TASK = "gleam-lang__gleam-5797"
 # Git sees no NUL as text, and writes these bytes into the patch raw, where
@@ -619,3 +626,175 @@ def test_a_reset_git_refuses_is_an_error_naming_what_git_printed(
     with pytest.raises(ReplayError, match="index.lock"):
         replay(agent, modal_environment)
     assert not (agent.logs_dir / "replay.json").exists()
+
+
+# ReplayVerifier: the same apply and reset, in Harbor's separate verifier.
+#
+# The verifier's sandbox holds the workspace at its base and the agent trial's
+# patch in its artifacts directory. The host holds the trial's directory, with
+# the agent/model.patch Harbor downloaded from the agent's sandbox.
+
+AGENT_TRIAL = "gleam-lang__gleam-57__XyZ1234"
+
+
+@dataclass
+class Graded:
+    record: dict | None
+    # The workspace's files as the task's test.sh found them, or None when it never ran.
+    seen: dict[str, bytes | None] | None
+    result: VerifierResult | None
+
+
+def a_task(root: Path) -> Task:
+    task = root / "task"
+    (task / "environment").mkdir(parents=True)
+    (task / "environment" / "Dockerfile").write_text("FROM scratch\n")
+    (task / "tests").mkdir()
+    (task / "tests" / "test.sh").write_text("#!/bin/bash\n")
+    (task / "instruction.md").write_text("Fix it.\n")
+    (task / "task.toml").write_text('[verifier]\nenvironment_mode = "separate"\n')
+    return Task(task)
+
+
+def replay_verifier(tmp_path: Path, environment) -> ReplayVerifier:
+    """A ReplayVerifier for the agent's trial, built as Harbor builds a separate verifier."""
+    paths = TrialPaths(tmp_path / "agent-job" / AGENT_TRIAL)
+    paths.mkdir()
+    return VerifierFactory.create_verifier_from_config(
+        VerifierConfig(import_path="suss.replay:ReplayVerifier"),
+        task=a_task(tmp_path),
+        trial_paths=paths,
+        environment=environment,
+        skip_tests_upload=True,
+        artifacts=str(tmp_path / "sandbox" / "logs" / "artifacts"),
+    )
+
+
+def grade(
+    tmp_path,
+    environment,
+    workspace,
+    monkeypatch,
+    artifact: bytes | None,
+    agents: bytes | None = None,
+    watched: tuple[str, ...] = ("lines.txt",),
+) -> Graded:
+    """
+    Grade the trial whose artifact is `artifact`, and whose agent/model.patch on
+    the host is `agents`, or the artifact where that is None.
+
+    Harbor's own verifier is stood in for by one that reads `watched` as the
+    task's test.sh would find them.
+    """
+    verifier = replay_verifier(tmp_path, environment)
+    if artifact is not None:
+        target = tmp_path / "sandbox" / "logs" / "artifacts" / "model.patch"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(artifact)
+    agents = agents if agents is not None else artifact
+    if agents is not None:
+        verifier.trial_paths.agent_dir.mkdir(parents=True, exist_ok=True)
+        (verifier.trial_paths.agent_dir / "model.patch").write_bytes(agents)
+    seen: dict[str, bytes | None] | None = None
+
+    async def run_test_sh(self) -> VerifierResult:
+        nonlocal seen
+        seen = {
+            name: (workspace / name).read_bytes() if (workspace / name).exists() else None
+            for name in watched
+        }
+        return VerifierResult(rewards={"reward": 1.0})
+
+    monkeypatch.setattr(Verifier, "verify", run_test_sh)
+    result = go(verifier.verify())
+    return Graded(recorded(tmp_path), seen, result)
+
+
+def recorded(tmp_path: Path) -> dict | None:
+    """The trial's verifier/replay.json, or None when the verifier wrote none."""
+    path = tmp_path / "agent-job" / AGENT_TRIAL / "verifier" / "replay.json"
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def test_the_verifier_applies_the_artifact_and_puts_test_files_back_before_test_sh(
+    tmp_path, local_environment, workspace, found, monkeypatch
+):
+    commit(workspace, {"tests/test_lines.py": b"assert snapshot_written\n"})
+    patch = patch_of(
+        workspace,
+        write({"tests/test_lines.py": b"assert not snapshot_written\n", "lines.txt": b"fix\n"}),
+    )
+
+    graded = grade(
+        tmp_path, local_environment, workspace, monkeypatch, patch,
+        watched=("lines.txt", "tests/test_lines.py"),
+    )
+
+    assert graded.seen == {
+        "lines.txt": b"fix\n",
+        "tests/test_lines.py": b"assert snapshot_written\n",
+    }, "test.sh ran on a workspace without the patch, or with the patch's test files"
+    assert graded.result.rewards == {"reward": 1.0}
+    assert graded.record == {
+        "patch": str(tmp_path / "sandbox" / "logs" / "artifacts" / "model.patch"),
+        "patch_bytes": len(patch),
+        "sha256": hashlib.sha256(patch).hexdigest(),
+        "apply_rc": 0,
+        "apply_out": graded.record["apply_out"],
+        "tests_reset": {"restored": ["tests/test_lines.py"], "removed": []},
+    }
+
+
+def test_the_verifier_applies_bytes_that_are_not_utf8_exactly(
+    tmp_path, local_environment, workspace, found, monkeypatch
+):
+    patch = patch_of(workspace, write({"high.bin": HIGH_BYTES}))
+
+    graded = grade(
+        tmp_path, local_environment, workspace, monkeypatch, patch, watched=("high.bin",)
+    )
+
+    assert graded.seen == {"high.bin": HIGH_BYTES}
+
+
+def test_a_trial_that_left_no_artifact_records_null_and_runs_no_test(
+    tmp_path, local_environment, workspace, found, monkeypatch
+):
+    with pytest.raises(ReplayError, match="no patch"):
+        grade(tmp_path, local_environment, workspace, monkeypatch, None)
+
+    assert recorded(tmp_path) == {"patch": None}
+
+
+def test_an_artifact_other_than_the_agents_patch_records_null_and_runs_no_test(
+    tmp_path, local_environment, workspace, found, monkeypatch
+):
+    patch = patch_of(workspace, edit_line(3, "ours"))
+
+    with pytest.raises(ReplayError, match="differs"):
+        grade(tmp_path, local_environment, workspace, monkeypatch, b"", agents=patch)
+
+    assert recorded(tmp_path) == {"patch": None}
+    assert git(workspace, "status", "--porcelain") == ""
+
+
+def test_an_empty_artifact_records_null_and_grades_the_unchanged_workspace(
+    tmp_path, local_environment, workspace, found, monkeypatch
+):
+    graded = grade(tmp_path, local_environment, workspace, monkeypatch, b"")
+
+    assert graded.record == {"patch": None}
+    assert graded.seen == {"lines.txt": LINES.encode()}
+
+
+def test_a_patch_the_verifier_cannot_apply_is_recorded_and_still_graded(
+    tmp_path, local_environment, workspace, found, monkeypatch
+):
+    patch = patch_of(workspace, edit_line(3, "ours"))
+    write({"lines.txt": b"moved on\n"})(workspace)
+    git(workspace, "commit", "-qam", "the base moved")
+
+    graded = grade(tmp_path, local_environment, workspace, monkeypatch, patch)
+
+    assert graded.record["apply_rc"] != 0
+    assert graded.seen == {"lines.txt": b"moved on\n"}
