@@ -47,7 +47,7 @@ RECORD_NAME = "judge.json"
 LEDGER_NAME = "judge-credits.jsonl"
 ADAPTER = Path(__file__).resolve().parents[2] / "adapters" / "copilot-cli"
 CLIENT = "copilot-cli"
-MODEL = "gpt-6.1-sol"
+MODEL = "gemini-4-argon"
 EFFORT = "high"
 CLASSIFIER_MODEL = "claude-haiku-4.5"
 COPILOT_VERSION = "1.0.105"
@@ -58,6 +58,11 @@ TOOLS = {"classify": ("view",), "rubric": ("view",), "taste": ("view", "glob", "
 # Credits a session holds while it runs: about twice what each took on the
 # largest patch the spike judged.
 RESERVE = {"classify": 5.0, "rubric": 30.0, "taste": 60.0}
+# About four times what a resumed session spent in the spike, since a retry
+# only answers again and reads nothing new.
+RETRY_RESERVE = 20.0
+# Answer failures a retry may fix. Every other failure is the session's, not the answer's.
+RETRIED = ("failed:no_json", "failed:invalid_answer")
 # Each running session's JSON lines that the record reads. The rest are deltas.
 EVENTS = ("model.call_start", "model.call_final_result", "assistant.message",
           "session.usage_checkpoint", "tool.execution_start", "result")
@@ -95,15 +100,23 @@ TOOLS_TEXT = {
     ),
     "classify": "You need no tools for this. Do not change any file.",
 }
+# The message that resumes a session whose answer failed, after what was wrong with it.
+RETRY = """Your final reply cannot be scored: {why}
+
+Reply again with only the JSON object the instructions ask for, valid against
+the JSON schema they give: no other text, and no code fence. Inside a string,
+escape each double quote as \\" and each backslash as \\\\.
+"""
 
 # Run as `session.sh <workspace> <prompt> <out> <home> <log dir> <copilot>
-# <model> <effort, or empty> <tool>...`, with the token in the environment.
+# <model> <effort, or empty> <--session-id or --resume> <session id> <tool>...`,
+# with the token in the environment.
 SESSION = """#!/bin/sh
 # One judge session: Copilot CLI reads the workspace, changes nothing, and
 # ends in a reply. Its JSON lines go to the out file, and its stderr here.
-[ $# -ge 9 ] || { echo "session.sh: expected at least 9 arguments" >&2; exit 2; }
-workspace=$1 prompt=$2 out=$3 home=$4 logs=$5 copilot=$6 model=$7 effort=$8
-shift 8
+[ $# -ge 11 ] || { echo "session.sh: expected at least 11 arguments" >&2; exit 2; }
+workspace=$1 prompt=$2 out=$3 home=$4 logs=$5 copilot=$6 model=$7 effort=$8 start=$9 id=${10}
+shift 10
 [ -n "$COPILOT_GITHUB_TOKEN" ] || { echo "session.sh: COPILOT_GITHUB_TOKEN is empty" >&2; exit 2; }
 mkdir -p "$home/copilot" "$home/gh" "$logs" || exit 2
 # Copilot CLI falls back to these tokens, to a login in its config home and to
@@ -113,7 +126,8 @@ export COPILOT_HOME="$home/copilot" GH_CONFIG_DIR="$home/gh" COPILOT_AUTO_UPDATE
 [ -n "$HOME" ] && PATH="$HOME/.local/bin:$PATH"
 text=$(cat "$prompt") || exit 2
 cd "$workspace" || exit 2
-set -- -p "$text" --model "$model" --available-tools "$@"
+# A resumed session keeps its conversation in the same COPILOT_HOME.
+set -- -p "$text" --model "$model" "$start" "$id" --available-tools "$@"
 # Copilot CLI refuses --reasoning-effort for a model that takes none.
 [ -n "$effort" ] && set -- "$@" --reasoning-effort "$effort"
 # --available-tools decides what the model is offered; --deny-tool refuses a call.
@@ -567,25 +581,35 @@ class JudgeAgent(ReplayAgent):
         self, environment: BaseEnvironment, workspace: str, senior: "_Senior", kind: str,
         prompt: str, rubric: dict[str, Any],
     ) -> None:
-        """Run one judge's session, and record its scores once senior's schema accepts its answer."""
+        """
+        Run one judge's session, and record its scores once senior's schema
+        accepts its answer.
+
+        An answer that is not JSON or fails the schema is retried once, by
+        resuming the session with what was wrong, so the judge keeps what it
+        read. Both answers stay in the session records.
+        """
         record = self._record
-        session, final = await self._session(environment, workspace, kind, kind, prompt, self.model, self.effort)
-        if session["status"] != "ok":
-            record[f"{kind}_status"] = session["status"]
-            record[f"{kind}_error"] = session.get("error", "")
-            return
-        answer, session["json"] = extract_json(final)
-        if answer is None:
-            record[f"{kind}_status"] = "failed:no_json"
-            record[f"{kind}_error"] = f"the reply holds no JSON object: {final[:500]!r}"
-            return
-        scored = await senior.call(
-            "score", judge=kind, answer=answer,
-            **{key: rubric.get(key, []) for key in ("criteria", "fail_to_pass", "pass_to_pass")},
+        session, final = await self._session(
+            environment, workspace, kind, kind, prompt, self.model, self.effort, keep_home=True
         )
-        if not scored["valid"]:
-            record[f"{kind}_status"] = "failed:invalid_answer"
-            record[f"{kind}_error"] = scored["error"]
+        status, error, why, scored = await self._answer(senior, kind, session, final, rubric)
+        if status in RETRIED:
+            session["status"], session["error"] = status, error
+            message = RETRY.format(why=why).replace(self._token, "[redacted]")
+            session, final = await self._session(
+                environment, workspace, f"{kind}-retry", kind, message, self.model, self.effort, resumes=session
+            )
+            if session["status"] == "skipped:budget":
+                record[f"{kind}_status"], record[f"{kind}_error"] = status, error
+                return
+            status, error, _, scored = await self._answer(senior, kind, session, final, rubric)
+            if status in RETRIED:
+                session["status"], session["error"] = status, error
+        else:
+            await _run(environment, f"rm -rf {shlex.quote(self._home(session))}")
+        if status != "ok":
+            record[f"{kind}_status"], record[f"{kind}_error"] = status, error
             return
         record[f"{kind}_status"] = "ok"
         if kind == "rubric":
@@ -596,23 +620,65 @@ class JudgeAgent(ReplayAgent):
             record["taste"] = scored["taste"]
             record["taste_rationales"] = scored["rationales"]
 
+    async def _answer(
+        self, senior: "_Senior", kind: str, session: dict[str, Any], final: str, rubric: dict[str, Any],
+    ) -> tuple[str, str, str, dict | None]:
+        """
+        The judge's status from one session, the error to record, what to tell
+        the model was wrong, and senior's scores when the answer is valid.
+        """
+        if session["status"] != "ok":
+            return session["status"], session.get("error", ""), "", None
+        answer, session["json"] = extract_json(final)
+        try:
+            json.loads(final.strip())
+            broken = ""
+        except ValueError as error:
+            broken = f"it is not valid JSON ({error})"
+        if answer is None:
+            why = broken or "it is not a JSON object"
+            return "failed:no_json", f"the reply holds no JSON object: {final[:500]!r}", why, None
+        scored = await senior.call(
+            "score", judge=kind, answer=answer,
+            **{key: rubric.get(key, []) for key in ("criteria", "fail_to_pass", "pass_to_pass")},
+        )
+        if not scored["valid"]:
+            why = f"it fails the schema: {scored['error']}"
+            # An object found inside broken JSON, as an unescaped quote leaves, is
+            # often a fragment of the answer, so the break is what to fix.
+            if broken and session["json"] == "embedded":
+                why = f"{broken}, and the object found inside it fails the schema: {scored['error']}"
+            return "failed:invalid_answer", scored["error"], why, None
+        return "ok", "", "", scored
+
+    def _home(self, session: dict[str, Any]) -> str:
+        return f"{self.paths.root}/homes/{session['session_id']}"
+
     async def _session(
         self, environment: BaseEnvironment, workspace: str, name: str, kind: str,
         prompt: str, model: str, effort: str | None,
+        resumes: dict[str, Any] | None = None, keep_home: bool = False,
     ) -> tuple[dict[str, Any], str]:
         """
-        Run one Copilot CLI session in the workspace, and return its record and
-        final reply.
+        Run one Copilot CLI session in the workspace, or resume the session
+        `resumes` records, and return its record and final reply.
 
         It starts only once the job's ledger holds its reservation. Afterwards
         the workspace is checked against what the patch left, and anything the
-        session changed is put back, which fails the session.
+        session changed is put back, which fails the session. Its Copilot home
+        is removed unless `keep_home`, which a later resume needs.
         """
         if self._unrestored:
             raise JudgeError("an earlier session changed the workspace, and it could not be put back")
-        session: dict[str, Any] = {"name": name, "model": model, "effort": effort}
+        session: dict[str, Any] = {
+            "name": name, "model": model, "effort": effort,
+            "session_id": resumes["session_id"] if resumes else str(uuid.uuid4()),
+        }
+        if resumes:
+            session["retries"] = resumes["name"]
         self._record["sessions"].append(session)
-        held = await self._ledger.reserve(f"{self.logs_dir.parent.name}/{name}", RESERVE[kind])
+        reserve = RETRY_RESERVE if resumes else RESERVE[kind]
+        held = await self._ledger.reserve(f"{self.logs_dir.parent.name}/{name}", reserve)
         if held is None:
             session["status"] = "skipped:budget"
             session["error"] = f"the job's credit budget of {self.credit_budget} cannot hold this session"
@@ -621,7 +687,9 @@ class JudgeAgent(ReplayAgent):
         logs = f"{paths.logs}/{name}"
         prompt_file = f"{paths.root}/prompts/{name}.md"
         out = f"{logs}/out.jsonl"
-        home = f"{paths.root}/homes/{name}"
+        home = self._home(session)
+        # Copilot CLI counts a resumed session's usage on from where it stopped.
+        spent_before = (resumes.get("credits") or 0) if resumes else 0
         session["prompt_sha256"] = hashlib.sha256(prompt.encode()).hexdigest()
         started = time.monotonic()
 
@@ -631,6 +699,11 @@ class JudgeAgent(ReplayAgent):
             session["seconds"] = round(time.monotonic() - started, 1)
             final = events.pop("final")
             session.update(events)
+            if resumes and session["credits"] is not None:
+                session["session_credits"] = session["credits"]
+                if session["credits"] >= spent_before:
+                    session["credits"] = round(session["credits"] - spent_before, 4)
+            session["reply"] = final
             return final
 
         try:
@@ -641,7 +714,8 @@ class JudgeAgent(ReplayAgent):
                 code = await harness._start(
                     environment, self._session_manifest, SESSION_SCRIPT,
                     [workspace, prompt_file, out, home, f"{logs}/logs", paths.copilot, model,
-                     effort or "", *TOOLS[kind]],
+                     effort or "", "--resume" if resumes else "--session-id", session["session_id"],
+                     *TOOLS[kind]],
                     workspace, {TOKEN_NAME: self._token},
                     SandboxPaths(adapter=paths.root, logs=logs), "session.log", self.session_seconds,
                 )
@@ -654,9 +728,10 @@ class JudgeAgent(ReplayAgent):
             final = await read()
         finally:
             # A session that reported no usage is charged all it held.
-            session["charged"] = session.get("credits") if session.get("credits") is not None else RESERVE[kind]
+            session["charged"] = session.get("credits") if session.get("credits") is not None else reserve
             self._ledger.settle(held, session["charged"])
-        await _run(environment, f"rm -rf {shlex.quote(home)}")
+        if not keep_home:
+            await _run(environment, f"rm -rf {shlex.quote(home)}")
         session["removed_for_token"] = await self._remove_token(environment)
         session["repo_unchanged"], session["restored"] = await self._guard(environment, workspace)
 
