@@ -6,7 +6,7 @@ versions: { senior-swe-bench: "v2026.06", copilot-cli: 1.0.105, judge: "gemini-4
 recheck-when: the judge's model, effort or prompts change, Copilot CLI is upgraded, or Snorkel changes run_judge.py
 ---
 
-# Argon judges the senior copilot-gpt run for about 40 AI credits a patch, and moves taste by one point on a repeat
+# Argon judges the senior copilot-gpt run for about 37 AI credits a patch, and moves taste by one point on a repeat
 
 ## Intent
 
@@ -17,8 +17,8 @@ recheck-when: the judge's model, effort or prompts change, Copilot CLI is upgrad
 ## Decisions
 
 - **A senior run is graded by running JudgeAgent as its regrade, with no API key in Harbor's environment.** The tests give the 25 investigate tasks their reward. The 25 design tasks write an empty reward and count as invalid, because their reward needs the validation agent. Every patch gets judge scores.
-- **Give a 50-patch judge job a budget of at least 2,100 AI credits.** Judging averaged 40 credits a patch, against 36 in the spike, and the largest cost 78. The first job's 1,750 left 5 taste judges `skipped:budget`.
-- **Run it at `-n 16`.** All 50 trials finished in 33 minutes with no judge timeout. A trial holds its whole reservation before its sessions start, and at 32 those reservations exceed the budget.
+- **Give a 50-patch judge job a budget of at least 2,000 AI credits.** Judging the 50 patches cost 1,835 credits over the main and fill jobs, 36.7 a patch against 36 in the spike, and the largest cost 78. The first job's 1,750 left 5 taste judges `skipped:budget`.
+- **Run it at `-n 16`.** All 50 trials finished in 33 minutes with no judge timeout. Each session holds its reservation while it runs, 30 credits for a rubric judge and 60 for taste, so at 32 trials the taste reservations alone can pass the budget and make sessions wait.
 - **Read a taste difference under about 0.5 between arms as noise.** On repeat, no rubric criterion moved, but 11 of 50 taste dimensions moved by one point.
 
 ## Needs your input
