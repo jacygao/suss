@@ -105,10 +105,23 @@ class ReplayAgent(BaseAgent):
             # patch's either, so it stays.
             held = await _present(environment, workspace, added)
             applied = await self._apply(environment, patch, workspace)
+            await self._after_apply(environment, workspace, patch, applied)
             added = [path for path in added if path not in held]
             tests_reset = await _reset_tests(environment, workspace, start, added)
             record = {"task": task, "patch": str(patch), **applied, "tests_reset": tests_reset}
         (self.logs_dir / RECORD_NAME).write_text(json.dumps(record, indent=2) + "\n")
+
+    async def _after_apply(
+        self,
+        environment: BaseEnvironment,
+        workspace: str,
+        patch: Path,
+        applied: dict[str, Any],
+    ) -> None:
+        """
+        Act on the workspace while it holds the whole patch, test files
+        included, before they are put back. A regrade does nothing here.
+        """
 
     def _source_trial(self, task: str) -> Path:
         """The one trial directory of the source job that ran `task`."""

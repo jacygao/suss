@@ -1,0 +1,7 @@
+version = "1.0"
+
+[task]
+name = "stand-in/fake-senior-task"
+
+[verifier.env]
+REPO_NAME = "gleam"
