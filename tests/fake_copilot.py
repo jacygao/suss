@@ -71,14 +71,14 @@ def main() -> int:
         (log_dir / "process.log").write_text(f"token={token}\n")
     if scenario.get("write"):
         Path(scenario["write"]).write_text("the judge wrote this\n")
-    time.sleep(scenario.get("sleep", 0))
+    if scenario.get("run"):
+        subprocess.run(scenario["run"], shell=True, check=True)
 
     model = scenario.get("model", flags["--model"][0])
     effort = scenario.get("effort", (flags.get("--reasoning-effort") or [None])[0])
-    lines = [
+    # Usage comes first, so a session stopped while it sleeps has reported some.
+    started = [
         {"type": "model.call_start", "data": {"turnId": "0", "model": model}},
-        {"type": "model.call_final_result", "data": {"model": model, "result": "success"}},
-        {"type": "assistant.message", "data": {"content": scenario.get("answer", ""), "model": model}},
         {
             "type": "session.usage_checkpoint",
             "data": {
@@ -88,9 +88,16 @@ def main() -> int:
                 ],
             },
         },
+    ]
+    for line in started:
+        print(json.dumps(line), flush=True)
+    time.sleep(scenario.get("sleep", 0))
+    finished = [
+        {"type": "model.call_final_result", "data": {"model": model, "result": "success"}},
+        {"type": "assistant.message", "data": {"content": scenario.get("answer", ""), "model": model}},
         {"type": "result", "exitCode": scenario.get("exit", 0)},
     ]
-    for line in lines:
+    for line in finished:
         print(json.dumps(line))
     return scenario.get("exit", 0)
 

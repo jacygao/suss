@@ -383,6 +383,8 @@ class JudgeAgent(ReplayAgent):
         self._setup_error: str | None = None
         self._record: dict[str, Any] = {}
         self._baseline: dict[str, Any] | None = None
+        self._unrestored = False
+        self._cancelled: asyncio.CancelledError | None = None
 
     @staticmethod
     def name() -> str:
@@ -431,7 +433,10 @@ class JudgeAgent(ReplayAgent):
         Regrade as ReplayAgent does, judging the patch once it is applied, and
         write judge.json beside replay.json.
 
-        Raises what ReplayAgent raises. Nothing the judge does raises.
+        Raises what ReplayAgent raises, and JudgeError when a session changed
+        the workspace and it could not be put back, so the trial fails rather
+        than being graded on a workspace no regrade would leave. A cancel that
+        reaches the judge is raised again once the test files are back.
         """
         self._record = {
             "judge": {
@@ -447,6 +452,10 @@ class JudgeAgent(ReplayAgent):
         await super().run(instruction, environment, context)
         self._unfinished("skipped:no_patch")
         self._write()
+        if self._unrestored:
+            raise JudgeError("a judge session changed the workspace, and it could not be put back")
+        if self._cancelled is not None:
+            raise self._cancelled
 
     async def _after_apply(
         self,
@@ -455,7 +464,13 @@ class JudgeAgent(ReplayAgent):
         patch: Path,
         applied: dict[str, Any],
     ) -> None:
-        """Judge the applied patch, then put back anything a session changed."""
+        """
+        Judge the applied patch, then put back anything a session changed.
+
+        A cancel is kept rather than raised, so that ReplayAgent still puts
+        the test files back for the verifier, which Harbor runs after its
+        agent timeout. `run` raises it after.
+        """
         self._record["patch"] = str(patch)
         try:
             async with asyncio.timeout(self.judge_seconds):
@@ -464,6 +479,11 @@ class JudgeAgent(ReplayAgent):
             self._unfinished("failed:timeout", f"the judge passed its {self.judge_seconds} seconds")
             for session in self._record["sessions"]:
                 session.setdefault("status", "failed:timeout")
+        except asyncio.CancelledError as cancelled:
+            self._cancelled = cancelled
+            self._unfinished("failed:cancelled", "the judge was cancelled, as at Harbor's agent timeout")
+            for session in self._record["sessions"]:
+                session.setdefault("status", "failed:cancelled")
         except Exception as error:
             self._unfinished("failed:error", f"{type(error).__name__}: {error}")
         finally:
@@ -581,6 +601,8 @@ class JudgeAgent(ReplayAgent):
         the workspace is checked against what the patch left, and anything the
         session changed is put back, which fails the session.
         """
+        if self._unrestored:
+            raise JudgeError("an earlier session changed the workspace, and it could not be put back")
         session: dict[str, Any] = {"name": name, "model": model, "effort": effort}
         self._record["sessions"].append(session)
         held = await self._ledger.reserve(f"{self.logs_dir.parent.name}/{name}", RESERVE[kind])
@@ -594,27 +616,39 @@ class JudgeAgent(ReplayAgent):
         out = f"{logs}/out.jsonl"
         home = f"{paths.root}/homes/{name}"
         session["prompt_sha256"] = hashlib.sha256(prompt.encode()).hexdigest()
-        spent = RESERVE[kind]
+        started = time.monotonic()
+
+        async def read() -> str:
+            """Record what the session's JSON lines report, and return its final reply."""
+            events = read_events(await _output(environment, f"grep -E {EVENT_LINES} {shlex.quote(out)}"))
+            session["seconds"] = round(time.monotonic() - started, 1)
+            final = events.pop("final")
+            session.update(events)
+            return final
+
         try:
             await _upload_bytes(environment, prompt.encode(), prompt_file)
             await _run(environment, f"mkdir -p {shlex.quote(logs)} && touch {shlex.quote(paths.mark)}")
             started = time.monotonic()
-            code = await harness._start(
-                environment, self._session_manifest, SESSION_SCRIPT,
-                [workspace, prompt_file, out, home, f"{logs}/logs", paths.copilot, model, effort or "",
-                 *TOOLS[kind]],
-                workspace, {TOKEN_NAME: self._token},
-                SandboxPaths(adapter=paths.root, logs=logs), "session.log", self.session_seconds,
-            )
-            session["seconds"] = round(time.monotonic() - started, 1)
+            try:
+                code = await harness._start(
+                    environment, self._session_manifest, SESSION_SCRIPT,
+                    [workspace, prompt_file, out, home, f"{logs}/logs", paths.copilot, model,
+                     effort or "", *TOOLS[kind]],
+                    workspace, {TOKEN_NAME: self._token},
+                    SandboxPaths(adapter=paths.root, logs=logs), "session.log", self.session_seconds,
+                )
+            except asyncio.CancelledError:
+                # Stopped by the judge's limit or Harbor's: what it reported is still what it spent.
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(read(), CLEANUP_SECONDS)
+                raise
             session["exit_code"] = code
-            events = read_events(await _output(environment, f"grep -E {EVENT_LINES} {shlex.quote(out)}"))
-            final = events.pop("final")
-            session.update(events)
-            if events["credits"] is not None:
-                spent = events["credits"]
+            final = await read()
         finally:
-            self._ledger.settle(held, spent)
+            # A session that reported no usage is charged all it held.
+            session["charged"] = session.get("credits") if session.get("credits") is not None else RESERVE[kind]
+            self._ledger.settle(held, session["charged"])
         await _run(environment, f"rm -rf {shlex.quote(home)}")
         session["removed_for_token"] = await self._remove_token(environment)
         session["repo_unchanged"], session["restored"] = await self._guard(environment, workspace)
@@ -648,41 +682,63 @@ class JudgeAgent(ReplayAgent):
         output = await _run(
             environment,
             f"cd {shlex.quote(workspace)} && git rev-parse HEAD"
+            " && { git symbolic-ref -q HEAD || echo detached; }"
+            " && git ls-files -s -z | git hash-object --stdin"
             " && git status --porcelain=v1 -uall -z | git hash-object --stdin"
             " && git status --porcelain=v1 --ignored -z | git hash-object --stdin" + newer,
         )
         lines = output.splitlines()
-        return {"tree": tree, "head": lines[0], "status": lines[1], "ignored": lines[2],
-                "newer": [line for line in lines[3:] if line]}
+        return {"tree": tree, "head": lines[0], "ref": lines[1], "index": lines[2], "status": lines[3],
+                "ignored": lines[4], "newer": [line for line in lines[5:] if line]}
 
     async def _guard(self, environment: BaseEnvironment, workspace: str) -> tuple[bool, bool | None]:
         """
         Whether the workspace is as the patch left it, and when it is not,
         whether putting it back succeeded.
 
-        It is put back to the tree the patch left, with the index as it was.
-        An ignored file a session changed cannot be put back.
+        An ignored file a session changed cannot be put back. When putting back
+        fails, `run` fails the trial.
         """
         baseline = self._baseline
         if baseline is None:
             return True, None
-        keys = ("tree", "head", "status", "ignored")
+        keys = ("tree", "head", "ref", "index", "status", "ignored")
         now = await self._fingerprint(environment, workspace, since=self.paths.mark)
         if all(now[key] == baseline[key] for key in keys) and not now["newer"]:
             return True, None
+        with contextlib.suppress(JudgeError):
+            await self._restore(environment, workspace)
+        after = await self._fingerprint(environment, workspace)
+        restored = all(after[key] == baseline[key] for key in keys)
+        self._unrestored = self._unrestored or not restored
+        return False, restored
+
+    async def _restore(self, environment: BaseEnvironment, workspace: str) -> None:
+        """
+        Put back the HEAD, the files and the index the patch left.
+
+        The reset undoes a commit and anything staged, and the checkout without
+        overlay removes each file the patch's tree lacks.
+        """
+        baseline = self._baseline
+        head = shlex.quote(baseline["head"])
+        ref = "git update-ref --no-deref HEAD " + head if baseline["ref"] == "detached" else (
+            "git symbolic-ref HEAD " + shlex.quote(baseline["ref"])
+        )
         index = shlex.quote(self.paths.index)
         await _run(
             environment,
-            f"cd {shlex.quote(workspace)} && git clean -fdq"
-            f" && git checkout -q {shlex.quote(baseline['tree'])} -- ."
-            f' && index=$(git rev-parse --git-path index)'
+            f"cd {shlex.quote(workspace)} && {ref} && git reset -q --hard {head} && git clean -fdq"
+            f" && git checkout -q --no-overlay {shlex.quote(baseline['tree'])} -- ."
+            ' && index=$(git rev-parse --git-path index)'
             f' && if [ -f {index} ]; then cp {index} "$index"; else rm -f "$index"; fi',
         )
-        after = await self._fingerprint(environment, workspace)
-        return False, all(after[key] == baseline[key] for key in keys)
 
     async def _remove_token(self, environment: BaseEnvironment) -> list[str]:
         """Delete every file under the judge's directories that holds the token, and return their paths."""
+        # An empty pattern would match every file.
+        if not self._token:
+            return []
         dirs = " ".join(shlex.quote(path) for path in (self.paths.logs, self.paths.root))
         output = await _output(
             environment,
@@ -732,8 +788,12 @@ class JudgeAgent(ReplayAgent):
                 scores[f"{kind}_judge_ok"] = 1 if record[f"{kind}_status"] == "ok" else 0
         record["scores"] = scores
         record["credits"] = round(sum(s.get("credits") or 0 for s in record["sessions"]), 4)
+        text = json.dumps(record, indent=2) + "\n"
+        # A reply, a rationale or an error can quote the token.
+        if self._token:
+            text = text.replace(self._token, "[redacted]")
         self.logs_dir.mkdir(parents=True, exist_ok=True)
-        (self.logs_dir / RECORD_NAME).write_text(json.dumps(record, indent=2) + "\n")
+        (self.logs_dir / RECORD_NAME).write_text(text)
 
     def _task_dir(self) -> Path:
         """The task's directory on the host, as the trial's config.json names it."""

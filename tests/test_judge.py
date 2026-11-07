@@ -687,3 +687,111 @@ def test_a_reservation_whose_process_died_counts_as_spent_and_is_not_waited_for(
     assert ledger.spent() == 91
     entries = [json.loads(line) for line in path.read_text().splitlines()]
     assert [e["pid"] for e in entries if e.get("reserve") == small] == [os.getpid()]
+
+
+# Found in review of #198
+
+
+def test_a_token_in_a_reply_or_an_error_never_reaches_the_record(box, workspace, local_environment):
+    leaky = json.loads(json.dumps(TASTE_ANSWER))
+    leaky["practice_alignment"]["style_consistency"]["rationale"] = f"saw {TOKEN}"
+    write_scenario(box, taste={"answer": json.dumps(leaky)}, rubric={"answer": f"no scores, {TOKEN}"})
+    job = source_job(box, workspace)
+    agent = judge_agent(box, job)
+
+    record = judge(agent, local_environment)
+
+    assert (record["rubric_status"], record["taste_status"]) == ("failed:no_json", "ok")
+    assert TOKEN not in (agent.logs_dir / "judge.json").read_text()
+    assert "[redacted]" in record["rubric_error"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo 'x = 1' > new.py && git add new.py",
+        "git add -A && git -c user.name=J -c user.email=j@example.com commit -qm judged",
+        "git rm -q --cached lines.txt",
+    ],
+    ids=["stages-a-new-file", "commits-the-patch", "untracks-a-file"],
+)
+def test_a_session_that_stages_or_commits_is_put_back_whole(
+    box, workspace, local_environment, command
+):
+    job = source_job(box, workspace)
+    expected = regraded_input(box, workspace, job, local_environment)
+    write_scenario(box, rubric={"run": command})
+
+    record = judge(judge_agent(box, job), local_environment)
+
+    assert record["rubric_status"] == "failed:repo_changed"
+    assert next(s for s in record["sessions"] if s["name"] == "rubric")["restored"] is True
+    assert verifier_input(workspace) == expected
+
+
+def test_a_workspace_that_cannot_be_put_back_fails_the_trial(
+    box, workspace, local_environment, monkeypatch
+):
+    job = source_job(box, workspace)
+    write_scenario(box, rubric={"write": "notes.txt"})
+    agent = judge_agent(box, job)
+
+    async def leaves_it(*args, **kwargs):
+        pass
+
+    monkeypatch.setattr(agent, "_restore", leaves_it)
+    go(agent.setup(local_environment))
+
+    with pytest.raises(suss.judge.JudgeError, match="put back"):
+        go(agent.run("an instruction", local_environment, AgentContext()))
+    record = json.loads((agent.logs_dir / "judge.json").read_text())
+    assert record["rubric_status"] == "failed:repo_changed"
+
+
+def test_a_cancelled_run_still_puts_the_test_files_back_and_stays_cancelled(
+    box, workspace, local_environment
+):
+    job = source_job(box, workspace)
+    expected = regraded_input(box, workspace, job, local_environment)
+    write_scenario(box, taste={"sleep": 60})
+    agent = judge_agent(box, job)
+    go(agent.setup(local_environment))
+
+    async def cancel_during_taste():
+        run = asyncio.create_task(agent.run("an instruction", local_environment, AgentContext()))
+        while "taste" not in [call["kind"] for call in calls(box)]:
+            await asyncio.sleep(0.1)
+        run.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await run
+
+    go(cancel_during_taste())
+
+    assert verifier_input(workspace) == expected
+    assert (agent.logs_dir / "replay.json").exists()
+    record = json.loads((agent.logs_dir / "judge.json").read_text())
+    assert (record["rubric_status"], record["taste_status"]) == ("ok", "failed:cancelled")
+
+
+def test_a_session_the_judge_stops_keeps_the_credits_it_reported(box, workspace, local_environment):
+    write_scenario(box, taste={"sleep": 60})
+    job = source_job(box, workspace)
+    agent = judge_agent(box, job, judge_seconds=10)
+
+    record = judge(agent, local_environment)
+
+    taste = next(s for s in record["sessions"] if s["name"] == "taste")
+    assert taste["credits"] == 20.0
+    assert record["credits"] == 30.0
+    assert CreditLedger(agent.logs_dir.parent.parent / "judge-credits.jsonl", 1000).spent() == 30.0
+
+
+def test_a_dotenv_with_no_token_leaves_the_judges_files_alone(box, workspace, local_environment):
+    (box / ".env").write_text("OTHER_KEY=x\n")
+    job = source_job(box, workspace)
+    agent = judge_agent(box, job)
+
+    judge(agent, local_environment)
+
+    assert (Path(agent.paths.logs) / "install.log").exists()
+    assert (Path(agent.paths.adapter) / "install.sh").exists()
