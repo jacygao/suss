@@ -232,6 +232,7 @@ It takes these as `--ak`:
 
 | Key | Default | |
 |---|---|---|
+| `source_job` | required | the agent job whose trials' patches it judges, as `ReplayAgent` takes it |
 | `credit_budget` | required | the AI credits every judge session of the job may spend together. A session the budget cannot hold is `skipped:budget`. |
 | `model` | `gemini-4-argon` | the judges' model, of neither family the arms use, GPT or Claude |
 | `effort` | `high` | its reasoning effort |
