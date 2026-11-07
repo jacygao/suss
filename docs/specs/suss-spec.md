@@ -223,20 +223,10 @@ The prompts, the rubric and the answer schemas are the task's own: the task's
 answer that is not valid JSON, or fails its schema, is retried once in the same
 session.
 
-`suss run` does not run `JudgeAgent`. A run is judged by running it by hand as
-an agent job's regrade, in place of the one `suss run` wrote, with no grading
-key in Harbor's environment, so the verifier grades by tests alone. The
-investigate tasks then get their test reward, and the design tasks an empty one:
-
-```bash
-harbor run -y -p lanes/senior -e modal -n 16 -k 1 \
-  -a suss.judge:JudgeAgent -m judge \
-  --ak source_job=/home/me/evals/results/senior/copilot-gpt/20261105T205511Z-1 \
-  --ak credit_budget=2000 \
-  --allow-agent-host api.github.com \
-  --allow-agent-host api.enterprise.githubcopilot.com \
-  --jobs-dir results/senior/copilot-gpt --job-name 20261105T205511Z-1-regrade
-```
+`suss run` does not run `JudgeAgent`. A run is judged by running
+`harbor run -a suss.judge:JudgeAgent` as its agent job's regrade, with no
+grading key in Harbor's environment, so the verifier grades by tests alone: the
+investigate tasks get their test reward, and the design tasks an empty one.
 
 It takes these as `--ak`:
 
