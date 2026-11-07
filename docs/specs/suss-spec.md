@@ -203,6 +203,87 @@ the models, and the validation agent's harness, are optional:
 | the validation agent's harness | `validation_harness` | `SSB_OVERRIDE_VA_HARNESS`, else `FORCE_VA_HARNESS` | `miniswe` |
 | the validation agent's model | `validation_model` | `SSB_OVERRIDE_VA_MODEL`, else `FORCE_VA_MODEL` | `anthropic/claude-sonnet-4-6` |
 
+### Judging
+
+A `senior` trial's patch can instead be judged by suss's own
+`suss.judge:JudgeAgent`, which runs senior's rubric and taste judges through
+Copilot CLI on a Copilot subscription, with no API key. It is a regrade: Harbor
+runs it in place of `ReplayAgent`, and it regrades as `ReplayAgent` does. In
+the task's container, after the whole patch is applied, test files included,
+and before the test files are put back, it runs the judges. The test reward is
+the regrade's, whatever the judges do.
+
+Copilot CLI runs there read-only. It is offered `view`, `glob`, `grep` and `rg`
+alone, and denied `shell` and `write`. A session that changes the workspace
+fails, and the change is undone. When it cannot be undone, the regrade's trial
+fails.
+
+The prompts, the rubric and the answer schemas are the task's own: the task's
+`tests/run_judge.py` builds them from its `tests/`. Suss keeps no copy. An
+answer that is not valid JSON, or fails its schema, is retried once in the same
+session.
+
+`suss run` does not run `JudgeAgent`. A run is judged by running it by hand as
+an agent job's regrade, in place of the one `suss run` wrote, with no grading
+key in Harbor's environment, so the verifier grades by tests alone. The
+investigate tasks then get their test reward, and the design tasks an empty one:
+
+```bash
+harbor run -y -p lanes/senior -e modal -n 16 -k 1 \
+  -a suss.judge:JudgeAgent -m judge \
+  --ak source_job=/home/me/evals/results/senior/copilot-gpt/20261105T205511Z-1 \
+  --ak credit_budget=2000 \
+  --allow-agent-host api.github.com \
+  --allow-agent-host api.enterprise.githubcopilot.com \
+  --jobs-dir results/senior/copilot-gpt --job-name 20261105T205511Z-1-regrade
+```
+
+It takes these as `--ak`:
+
+| Key | Default | |
+|---|---|---|
+| `credit_budget` | required | the AI credits every judge session of the job may spend together. A session the budget cannot hold is `skipped:budget`. |
+| `model` | `gemini-4-argon` | the judges' model, of neither family the arms use, GPT or Claude |
+| `effort` | `high` | its reasoning effort |
+| `classifier_model` | `claude-haiku-4.5` | the model of senior's patch classifier, which the taste judge needs |
+| `copilot_version` | `1.0.105` | the Copilot CLI release it installs |
+| `adapter` | suss's `adapters/copilot-cli/` | the adapter whose `install` installs it |
+| `dotenv` | `.env` | the file that sets `COPILOT_GITHUB_TOKEN` |
+
+It writes `agent/judge.json` in the regrade's trial. Beside each session's own
+record, it holds the judge, a status per judge, the scores in the shape senior's
+`reward.json` uses, and the AI credits the trial's sessions spent:
+
+```json
+{
+  "judge": {
+    "client": "copilot-cli",
+    "version": "1.0.105",
+    "requested_version": "1.0.105",
+    "model": "gemini-4-argon",
+    "effort": "high",
+    "classifier_model": "claude-haiku-4.5"
+  },
+  "rubric_status": "skipped:no_criteria",
+  "taste_status": "ok",
+  "scores": {
+    "taste_patch_bloat": 1.12,
+    "taste_practice_alignment": 4.0,
+    "taste_relative_taste": 3.0,
+    "rubric_judge_ok": 0,
+    "taste_judge_ok": 1
+  },
+  "credits": 28.4
+}
+```
+
+- `version` is what the installed Copilot CLI reports.
+- A status is `ok`, `skipped:<why>` or `failed:<why>`, as `skipped:no_criteria`
+  for a task with no rubric criteria, or `failed:timeout`.
+- A judge that is not `ok` records no score of its own, and its flag is 0. The
+  patch bloat comes from senior's code, not a judge, so it can be recorded
+  beside a taste judge that failed.
+
 ### The trial record
 
 Suss writes these files to `/logs/agent/` in the sandbox. Harbor keeps that
@@ -241,7 +322,8 @@ directory as `agent/` in the trial's directory under `results/`.
   `test.sh` installs, and the models and validation harness in the table
   above. Each is what the regrade's verifier will be given: the value `.env`
   sets, where the lane's tasks read that setting, or else the default. A
-  setting `.env` leaves empty takes the default.
+  setting `.env` leaves empty takes the default. A regrade by `JudgeAgent` is
+  judged by the judge its `judge.json` names, whatever `judge_model` says.
 
   ```json
   {
@@ -353,7 +435,11 @@ starts.
 Suss has two lanes, `rebench` and `senior`. Every task gives the agent a
 repository at the commit before a real change, and an instruction about that
 change. The task's verifier grades it, and a trial resolves when its reward is
-1. The share of trials that resolve is the measure suss compares arms on.
+1. Each lane reports its own measures, and nothing compares one lane with
+another. `rebench` reports the share of trials that resolve, and each arm's
+difference from its baseline. `senior` reports the same, over the investigate
+tasks unless a validation agent graded the design tasks, and the judges' rubric
+and taste scores.
 
 Each lane is a directory of copies of its tasks, built from the download that
 its key in `suss.toml` names. Each task's image is built from the `Dockerfile`
@@ -390,7 +476,9 @@ from 12 repositories:
 The verifier runs the task's tests, a validation agent on the 25 tasks whose
 `metadata.segment` is `design`, and LLM judges. The reward is 1 when the tests
 pass and, on a design task, the validation agent passes the change too. The
-judges' scores never change it. Six design tasks have no tests, so the
+judges' scores never change it. The validation agent needs an API key, so a
+verifier with none writes an empty reward for every design task, which
+`suss compare` counts as invalid. Six design tasks have no tests, so the
 validation agent alone sets their reward: `electric-feat-sync-service-start`,
 `harbor-add-windows-tasks-support`, `plausible-feat-shared-dashboard-deeplink`,
 `posthog-feat-prompt-versioning`, `posthog-feat-schema-ingestion-block` and
@@ -685,7 +773,8 @@ suss compare <lane> <arm> <arm>...
 
 It reads every trial under `results/<lane>/<arm>/` for the arms it is given,
 and each arm's `baseline` from `suss.toml` in the current directory. Trials
-under `checks/` never count.
+under `checks/` never count. It compares arms on one lane at a time, never one
+lane with another.
 
 A trial's result is the reward of its regrade. Suss pairs each trial in an agent
 job, `<stamp>-<i>`, with the trial for the same task in `<stamp>-<i>-regrade`.
@@ -736,13 +825,14 @@ These trials' regrades judged them invalid, so no table counts them:
   carries a sign.
 
 On the `senior` lane, a third table follows the second. It gives each arm's mean
-score from each of the regrade's judges, over the valid trials the shares count,
-and in parentheses how many trials each mean is over:
+score from each judge, over the valid trials the shares count, and in
+parentheses how many trials each mean is over. When a regrade wrote
+`agent/judge.json`, a last column names each arm's judge:
 
 ```
-mean (trials)     rubric  practice alignment  relative taste  patch bloat
-claude-code    0.71 (34)           3.62 (47)       3.04 (47)    1.48 (47)
-self-review    0.78 (33)           3.81 (46)       3.17 (46)    1.31 (46)
+mean (trials)     rubric  practice alignment  relative taste  patch bloat  judge
+claude-code    0.71 (34)           3.62 (47)       3.04 (47)    1.48 (47)  copilot-cli gemini-4-argon high
+self-review    0.78 (33)           3.81 (46)       3.17 (46)    1.31 (46)  copilot-cli gemini-4-argon high
 ```
 
 After the list of invalid trials, it names each counted trial whose judges
@@ -754,7 +844,9 @@ These trials' judges failed or were skipped, so the means leave out their scores
   self-review  20261103T204423Z-1  paperless-ngx-perf-workflow-queries  rubric, taste
 ```
 
-- Each column is a key of the regrade's `verifier_result.rewards`:
+- A trial's scores are its regrade's `agent/judge.json` when it has one, and
+  otherwise its regrade's `verifier_result.rewards`. Each column is a key of
+  them:
 
   | Column | Key | Scale |
   |---|---|---|
@@ -764,16 +856,34 @@ These trials' judges failed or were skipped, so the means leave out their scores
   | `patch bloat` | `taste_patch_bloat` | the patch's source lines over the reference patch's, so 1 is the same size |
 
 - A score counts only when its judge's flag is 1: `rubric_judge_ok` for the
-  rubric, and `taste_judge_ok` for the other three. A trial whose judge
-  failed, was skipped or never ran takes no part in that mean, whatever
-  scores its rewards hold. A task with no rubric criteria has no rubric score
-  in any arm.
-- A judge is named when its flag is not 1, except a rubric judge whose
-  `verifier/judge_output.json` gives `rubric_status` as `skipped:no_criteria`.
-  A trial whose regrade has no reward is not named.
+  rubric, and `taste_judge_ok` for the other three. In `judge.json`, a flag is 1
+  exactly when that judge's status is `ok`. A trial whose judge failed, was
+  skipped or never ran takes no part in that mean, whatever scores it holds. A
+  task with no rubric criteria has no rubric score in any arm.
+- A judge is named when its flag is not 1, except a rubric judge whose status is
+  `skipped:no_criteria`, in `judge.json` or in the verifier's
+  `verifier/judge_output.json` as `rubric_status`. A trial whose regrade has no
+  reward is not named.
+- A judge is named in the last column by the client, model and effort its
+  `judge.json` gives, and senior's verifier by the grader's `judge_model`, as
+  `senior verifier anthropic/claude-sonnet-4-6`.
+- An arm whose trials more than one judge scored has no mean. Its row is `-`
+  throughout, with `more than one` as its judge, and a line after the table
+  names each judge and its trials:
+
+  ```
+  beta was judged by copilot-cli gemini-4-argon high on 2 trials and copilot-cli gpt-6.1-sol high on 1 trial, so it has no mean.
+  ```
+- Arms judged by different judges each keep their means, and a line after the
+  table says they do not compare:
+
+  ```
+  The means do not compare across arms: base was judged by senior verifier anthropic/claude-sonnet-4-6, beta by copilot-cli gemini-4-argon high.
+  ```
 - Means print to two decimal places, a half rounded away from zero, and as `-`
   when no trial has the score.
-- On every other lane, neither the third table nor the list prints.
+- On every other lane, neither the third table nor the list prints, unless a
+  regrade wrote `judge.json`.
 
 It exits with an error, and prints nothing else, when:
 
@@ -817,6 +927,7 @@ src/suss/
   lanes.py        building a lane's directory from the downloaded tasks
   config.py       suss.toml
   replay.py       ReplayAgent, the regrading agent
+  judge.py        JudgeAgent, the regrading agent that also judges
   compare.py      suss compare
   cli.py          the suss command
 adapters/

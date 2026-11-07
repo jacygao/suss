@@ -206,3 +206,41 @@ the judges' scores beside each arm's resolved share.
 - [ ] `suss run <arm> senior --check` on Modal leaves a trial and its regrade,
       with a reward and the judges' scores
 - [ ] `uv run pytest` passes
+
+## M6 — The Copilot judge
+
+Suss judges each `senior` trial's patch with senior's own rubric and taste
+judges, run through Copilot CLI on a Copilot subscription, so a run gets its
+code-quality scores without an API key. `JudgeAgent` regrades as `ReplayAgent`
+does and judges in between, and `suss compare` reports its scores and names the
+judge.
+
+### Acceptance criteria
+
+- [x] A note in `docs/notes/` records the decisions behind the judge
+- [x] A note in `docs/notes/` says whether Copilot CLI can run both judges
+      read-only in a task's container, and what one judged patch costs
+- [x] `JudgeAgent` judges after the whole patch is applied, test files
+      included, then puts the test files back as `ReplayAgent` does, so the
+      test reward is a regrade's whatever the judges do
+- [x] The prompts, the rubric and the answer schemas come from the task's own
+      `tests/`, and suss keeps no copy
+- [x] A session that changes the workspace fails, and the change is undone
+- [x] `agent/judge.json` holds the judge's client, model, effort and CLI
+      version, a status per judge, `ok`, `skipped:<why>` or `failed:<why>`,
+      the scores in the shape senior's `reward.json` uses, and the credits
+- [x] A job starts no session that its credit budget, shared by every trial,
+      cannot hold
+- [x] An answer that is not valid JSON, or fails its schema, is retried once
+      in the same session
+- [x] The judge defaults to `gemini-4-argon` at effort `high`, with
+      `claude-haiku-4.5` as the classifier
+- [x] `suss compare` reads `judge.json` over the verifier's judges, names the
+      judge beside the scores, gives no mean to an arm more than one judge
+      scored, says when arms' judges differ, and names a trial whose judge
+      failed or was skipped
+- [x] The senior copilot-gpt run `20261105T205511Z-1` has test rewards for its
+      investigate tasks and judge scores for all 50 patches, on the leaderboard
+- [ ] `suss run` judges a `senior` run with `JudgeAgent`
+- [x] `docs/specs/` describes the judge
+- [x] `uv run pytest` passes
