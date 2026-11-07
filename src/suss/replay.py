@@ -1,12 +1,12 @@
 """
-Replaying a trial's model.patch in a fresh sandbox, so that the task's verifier
-grades the change and nothing else the harness did to its sandbox.
+Replaying a trial's model.patch in Harbor's separate verifier, so that the
+task's test.sh grades the change and nothing else the harness did to its
+sandbox.
 
 Every test file the patch changed is then put back as it was in the starting
 tree, so the change is graded against the tests and not against the harness's
-edits to them. ReplayVerifier does this in Harbor's separate verifier, inside
-the agent job. ReplayAgent does it as the agent of a second job, the regrade.
-Harbor constructs both on the host, where the agent job is.
+edits to them. Harbor constructs the verifier on the host, where the agent job
+is, and runs it against the verifier's own sandbox.
 """
 
 import hashlib
@@ -15,13 +15,10 @@ import re
 import shlex
 import tempfile
 from collections.abc import Awaitable, Callable
-from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
-from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
-from harbor.models.agent.context import AgentContext
 from harbor.models.verifier.result import VerifierResult
 from harbor.verifier.verifier import Verifier
 
@@ -39,11 +36,7 @@ GIT_ESCAPES = {
 
 
 class ReplayError(Exception):
-    """
-    A regrade that cannot find the one trial of its task in the source job, a
-    verifier with no patch it can trust, or a workspace git cannot read or put
-    a test file back in.
-    """
+    """A verifier with no patch it can trust, or a workspace git cannot read or put a test file back in."""
 
 
 class ReplayVerifier(Verifier):
@@ -66,20 +59,34 @@ class ReplayVerifier(Verifier):
         Apply the patch, put back every test file it changed, write
         verifier/replay.json, and grade as Harbor's own verifier does.
 
+        Raises what `_replay` raises, and then runs no test.
+        """
+        await self._replay()
+        return await Verifier.verify(self)
+
+    async def _replay(self) -> None:
+        """
+        Apply the patch, call `_after_apply`, put back every test file the
+        patch changed, and write verifier/replay.json.
+
         An empty patch applies nothing and records `"patch": null`, and the
         unchanged workspace is graded, since the agent changed nothing. A patch
-        git refuses is recorded and graded as ReplayAgent grades it. Raises
-        ReplayError, with `"patch": null` recorded and no test run, when the
-        sandbox holds no patch, or one that differs from the agent's
-        model.patch on the host: grading the workspace then would score a
-        change the agent may not have made.
+        git refuses is recorded, and the workspace is graded as it stands.
+        Raises ReplayError, with `"patch": null` recorded, when the sandbox
+        holds no patch, or one that differs from the agent's model.patch on the
+        host: grading the workspace then would score a change the agent may not
+        have made.
         """
         target = f"{self.artifacts.rstrip('/')}/{PATCH_NAME}"
         record: dict[str, Any] = {"patch": None}
         try:
             patch = await self._read(target)
             if patch:
-                replayed = await replay(self.environment, patch, target)
+
+                async def after_apply(workspace: str, applied: dict[str, Any]) -> None:
+                    await self._after_apply(workspace, target, patch, applied)
+
+                replayed = await replay(self.environment, patch, target, after_apply)
                 record = {
                     "patch": target,
                     "patch_bytes": len(patch),
@@ -91,7 +98,14 @@ class ReplayVerifier(Verifier):
             (self.trial_paths.verifier_dir / RECORD_NAME).write_text(
                 json.dumps(record, indent=2) + "\n"
             )
-        return await super().verify()
+
+    async def _after_apply(
+        self, workspace: str, target: str, patch: bytes, applied: dict[str, Any]
+    ) -> None:
+        """
+        Act on the workspace while it holds the whole patch, test files
+        included, before they are put back. Grading alone does nothing here.
+        """
 
     async def _read(self, target: str) -> bytes:
         """
@@ -117,103 +131,6 @@ class ReplayVerifier(Verifier):
                 f" {agents.stat().st_size} bytes, so its change cannot be graded"
             )
         return patch
-
-
-class ReplayAgent(BaseAgent):
-    def __init__(
-        self,
-        *,
-        source_job: Any,
-        patch_target: str = "/tmp/suss-replay.patch",
-        **kwargs: Any,
-    ):
-        """
-        Regrade from the agent job at `source_job`, a host path relative to the
-        directory `harbor run` started in.
-
-        `patch_target` is where the patch goes in the sandbox. Harbor never
-        passes it. Raises TypeError when Harbor parsed `source_job` as something
-        other than a string, and ReplayError when it is not a directory.
-        """
-        if not isinstance(source_job, str):
-            raise TypeError(
-                "--ak source_job must be a string, but Harbor parsed it as JSON into"
-                f" {source_job!r}, a {type(source_job).__name__}"
-            )
-        super().__init__(**kwargs)
-        self.source_job = Path(source_job).absolute()
-        if not self.source_job.is_dir():
-            raise ReplayError(f"source_job {self.source_job} is not a directory")
-        self.patch_target = patch_target
-
-    @staticmethod
-    def name() -> str:
-        return "suss-replay"
-
-    def version(self) -> str | None:
-        return version("suss")
-
-    async def setup(self, environment: BaseEnvironment) -> None:
-        pass
-
-    async def run(
-        self,
-        instruction: str,
-        environment: BaseEnvironment,
-        context: AgentContext,
-    ) -> None:
-        """
-        Apply the source trial's patch in the workspace, put every test file
-        it changed back as it was in the starting tree, and write replay.json.
-
-        A patch that fails to apply is recorded, not raised, so the verifier
-        still grades the workspace. Raises ReplayError when the source job holds
-        no trial of this task, or more than one, and when git cannot compare
-        the workspace with its starting tree or put a test file back. Raises
-        WorkspaceError when git cannot build the starting tree.
-        """
-        # Harbor writes the trial's config.json before it starts the agent.
-        task = _task(self.logs_dir.parent / "config.json")
-        patch = self._source_trial(task) / "agent" / PATCH_NAME
-        self.logs_dir.mkdir(parents=True, exist_ok=True)
-        record: dict[str, Any] = {"task": task, "patch": None}
-        if patch.is_file() and patch.stat().st_size > 0:
-            await environment.upload_file(patch, self.patch_target)
-
-            async def after_apply(workspace: str, applied: dict[str, Any]) -> None:
-                await self._after_apply(environment, workspace, patch, applied)
-
-            replayed = await replay(
-                environment, patch.read_bytes(), self.patch_target, after_apply
-            )
-            record = {"task": task, "patch": str(patch), **replayed}
-        (self.logs_dir / RECORD_NAME).write_text(json.dumps(record, indent=2) + "\n")
-
-    async def _after_apply(
-        self,
-        environment: BaseEnvironment,
-        workspace: str,
-        patch: Path,
-        applied: dict[str, Any],
-    ) -> None:
-        """
-        Act on the workspace while it holds the whole patch, test files
-        included, before they are put back. A regrade does nothing here.
-        """
-
-    def _source_trial(self, task: str) -> Path:
-        """The one trial directory of the source job that ran `task`."""
-        trials = sorted(
-            config.parent
-            for config in self.source_job.glob("*/config.json")
-            if _task(config) == task
-        )
-        if len(trials) != 1:
-            found = ", ".join(str(trial) for trial in trials) or f"no trial of {task}"
-            raise ReplayError(
-                f"source_job {self.source_job} must hold one trial of {task}, and holds {found}"
-            )
-        return trials[0]
 
 
 async def replay(
@@ -447,19 +364,3 @@ def _unquote(path: str) -> str:
             raw.append(int(body[i + 1 : i + 4], 8))
             i += 4
     return raw.decode(errors="surrogateescape")
-
-
-def _task(config: Path) -> str:
-    """
-    The task a trial ran: the name of the task directory its config.json names.
-
-    Raises ReplayError when the file names none.
-    """
-    try:
-        path = json.loads(config.read_text())["task"]["path"]
-    except (OSError, ValueError, KeyError, TypeError) as error:
-        raise ReplayError(f"cannot read the task from {config}: {error!r}") from error
-    if not isinstance(path, str):
-        raise ReplayError(f"cannot read the task from {config}: task.path is {path!r}")
-    return Path(path).name
-

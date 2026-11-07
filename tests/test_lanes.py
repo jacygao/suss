@@ -946,7 +946,7 @@ def test_the_senior_lane_holds_a_copy_of_each_task_and_nothing_else(tmp_path: Pa
 
 
 @pytest.mark.parametrize("name", [INVESTIGATE, DESIGN, NO_TESTS])
-def test_each_senior_copy_differs_from_its_task_in_the_litellm_line_of_test_sh_alone(
+def test_each_senior_copy_differs_from_its_task_in_its_verifier_and_the_litellm_line_alone(
     tmp_path: Path, name: str
 ):
     source = make_senior(tmp_path / "source")
@@ -954,8 +954,10 @@ def test_each_senior_copy_differs_from_its_task_in_the_litellm_line_of_test_sh_a
     built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / name
 
     original, copied = every_file(source / name), every_file(built)
-    assert copied.keys() == original.keys()
-    assert [path for path in original if copied[path] != original[path]] == ["tests/test.sh"]
+    assert copied.keys() == original.keys() | {"tests/Dockerfile"}
+    assert copied["tests/Dockerfile"] == original["environment/Dockerfile"]
+    changed = [path for path in original if copied[path] != original[path]]
+    assert changed == ["task.toml", "tests/test.sh"]
     before = original["tests/test.sh"].splitlines(keepends=True)
     after = copied["tests/test.sh"].splitlines(keepends=True)
     assert len(after) == len(before)
@@ -1251,17 +1253,93 @@ def test_a_rebench_tests_directory_that_is_a_link_is_refused_and_the_download_le
     assert files_of(source) == downloaded
 
 
-def test_harbor_reads_a_senior_copy_with_its_own_agent_allowlist(tmp_path: Path):
+def test_harbor_reads_a_senior_copy_with_its_own_agent_allowlist_and_a_separate_verifier(
+    tmp_path: Path,
+):
     source = make_senior(tmp_path / "source")
 
     built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes")
 
     for name in (INVESTIGATE, DESIGN, NO_TESTS):
-        toml = (built / name / "task.toml").read_text()
-        assert toml == (source / name / "task.toml").read_text()
-        task = TaskConfig.model_validate_toml(toml)
+        task = TaskConfig.model_validate_toml((built / name / "task.toml").read_text())
         assert task.agent.network_mode == NetworkMode.ALLOWLIST
         assert "pypi.org" in task.agent.allowed_hosts
+        assert resolve_task_verifier_mode(task) == VerifierEnvironmentMode.SEPARATE
+        assert task.verifier.network_mode == NetworkMode.PUBLIC
+
+
+def test_the_judges_margin_is_its_limit_and_its_cleanup():
+    assert lanes.JUDGE_MARGIN_SECONDS == lanes.JUDGE_SECONDS + lanes.JUDGE_CLEANUP_SECONDS == 2100
+
+
+@pytest.mark.parametrize(
+    "name, timeout", [(INVESTIGATE, 600.0), (DESIGN, 1800.0), (NO_TESTS, 1200.0)]
+)
+def test_each_senior_verifier_timeout_gains_the_judges_margin_and_nothing_else_changes(
+    tmp_path: Path, name: str, timeout: float
+):
+    source = make_senior(tmp_path / "source")
+
+    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / name
+
+    original = toml_of(source / name)
+    assert original["verifier"]["timeout_sec"] == timeout
+    expected = {
+        **original,
+        "verifier": {**original["verifier"], "environment_mode": "separate", "timeout_sec": timeout + 2100},
+    }
+    assert toml_of(built) == expected, "the verifier cannot hold both the judge and the task's tests"
+    before = (source / name / "task.toml").read_text().splitlines()
+    after = (built / "task.toml").read_text().splitlines()
+    assert [line for line in after if line not in before] == [SEPARATE, f"timeout_sec = {timeout + 2100}"]
+
+
+def test_the_shortest_senior_verifier_timeout_leaves_its_tests_their_own_time(tmp_path: Path):
+    source = make_senior(tmp_path / "source")
+    toml = source / INVESTIGATE / "task.toml"
+    toml.write_text(toml.read_text().replace("timeout_sec = 600.0", "timeout_sec = 300"))
+
+    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / INVESTIGATE
+
+    task = TaskConfig.model_validate_toml((built / "task.toml").read_text())
+    assert task.verifier.timeout_sec == 300 + lanes.JUDGE_SECONDS + lanes.JUDGE_CLEANUP_SECONDS
+
+
+def test_a_senior_verifier_with_no_timeout_gains_the_margin_on_harbors_default(tmp_path: Path):
+    source = make_senior(tmp_path / "source")
+    toml = source / INVESTIGATE / "task.toml"
+    toml.write_text(toml.read_text().replace("timeout_sec = 600.0\n", "", 1))
+    assert "timeout_sec" not in toml_of(source / INVESTIGATE)["verifier"]
+
+    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / INVESTIGATE
+
+    assert toml_of(built)["verifier"]["timeout_sec"] == 600.0 + 2100
+
+
+@pytest.mark.parametrize("value", ['"600"', "true", "0"])
+def test_a_senior_verifier_timeout_that_is_not_a_positive_number_is_refused_naming_it(
+    tmp_path: Path, value: str
+):
+    source = make_senior(tmp_path / "source")
+    toml = source / INVESTIGATE / "task.toml"
+    toml.write_text(toml.read_text().replace("timeout_sec = 600.0", f"timeout_sec = {value}"))
+
+    with pytest.raises(LaneError) as error:
+        lanes.check_buildable(lanes.SENIOR, source, tmp_path / "lanes")
+
+    assert str(error.value).startswith(f"{toml}: [verifier] timeout_sec is ")
+
+
+def test_a_senior_copy_builds_its_verifier_from_the_tasks_own_dockerfile_and_files(tmp_path: Path):
+    source = make_senior(tmp_path / "source")
+    environment = source / DESIGN / "environment"
+    # As teleport-add-traits-matching-logic's Dockerfile copies a patch from environment/.
+    (environment / "proto_plumbing.patch").write_text("diff --git a/x b/x\n")
+
+    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / DESIGN
+
+    assert (built / "tests" / "proto_plumbing.patch").read_text() == "diff --git a/x b/x\n"
+    assert (built / "tests" / "Dockerfile").read_bytes() == (environment / "Dockerfile").read_bytes()
 
 
 def test_the_lane_checks_read_a_senior_tasks_memory_as_harbor_does(tmp_path: Path):

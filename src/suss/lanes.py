@@ -36,8 +36,18 @@ SENIOR = "senior"
 LANES = (REBENCH, SENIOR)
 
 # The lanes whose trials Harbor grades in a sandbox of their own, in the agent job.
-SEPARATE_VERIFIER = (REBENCH,)
+SEPARATE_VERIFIER = (REBENCH, SENIOR)
 
+# How long suss's judge may take on a senior trial, its install included: about
+# three times the longest the judge has taken on one.
+JUDGE_SECONDS = 1800
+# How long putting the workspace back may take once the judge has stopped.
+JUDGE_CLEANUP_SECONDS = 300
+# What a senior task's verifier timeout gains, so the judge never shortens the
+# time its tests had.
+JUDGE_MARGIN_SECONDS = JUDGE_SECONDS + JUDGE_CLEANUP_SECONDS
+# Harbor's verifier timeout for a task.toml that sets none.
+VERIFIER_SECONDS = 600.0
 
 
 def check_lane(lane: str) -> None:
@@ -320,14 +330,16 @@ def build(lane: str, download: Path, lanes: Path, check: bool = False) -> Path:
     network is already closed. On a lane in SEPARATE_VERIFIER, the task.toml
     also sets `[verifier] environment_mode = "separate"`, as `_separate` gives
     it, and tests/ gains the files `_verifier_build` gives. On senior, each
-    copy's tests/test.sh pins litellm, as `_pinned` gives it.
+    copy's verifier timeout gains JUDGE_MARGIN_SECONDS, as `_judge_room` gives
+    it, and its tests/test.sh pins litellm, as `_pinned` gives it.
 
     With `check`, it makes `lanes/<lane>-check/` instead, holding only the
     first task by name. Every other file is copied as it is, mode included.
     Whatever an earlier build left is removed. Raises LaneError as
     `lane_tasks` does, naming a task.toml whose agent network `_without_network`
     refuses or that a key cannot be added to, naming what `_separate`,
-    `_verifier_build` and `_pinned` refuse, naming a tests/ that is a link, and
+    `_judge_room`, `_verifier_build` and `_pinned` refuse, naming a tests/ that
+    is a link, and
     when the lane's path is a link or anything else but a
     directory. Every file it rewrites is read before the lane is touched, so
     an error leaves an earlier build as it was.
@@ -402,6 +414,8 @@ def _plan_build(
         toml = _without_network(task / "task.toml")
         if lane in SEPARATE_VERIFIER:
             toml = _separate(task / "task.toml", toml)
+        if lane == SENIOR:
+            toml = _judge_room(task / "task.toml", toml)
         rewritten[task] = {"task.toml": (toml, task / "task.toml")}
         # The copy keeps the link, so a file written into tests/ would be written through it.
         tests = (task / TEST_SH).parent
@@ -558,22 +572,87 @@ def _separate(path: Path, text: bytes) -> bytes:
     return _add_key(path, text, original, "verifier", "environment_mode", "separate")
 
 
-def _add_key(
-    path: Path, text: bytes, original: dict, table: str, key: str, value: str
+def _judge_room(path: Path, text: bytes) -> bytes:
+    """
+    The task.toml `text`, read from `path`, with its `[verifier] timeout_sec`,
+    or Harbor's default where it sets none, raised by JUDGE_MARGIN_SECONDS.
+
+    Raises LaneError naming the file when the timeout is not a positive
+    number, and as `_add_key` and `_replace_key` do.
+    """
+    original = tomllib.loads(text.decode())
+    verifier = original.get("verifier", {})
+    if not isinstance(verifier, dict):
+        verifier = {}
+    timeout = verifier.get("timeout_sec", VERIFIER_SECONDS)
+    if isinstance(timeout, bool) or not isinstance(timeout, int | float) or timeout <= 0:
+        raise LaneError(
+            f"{path}: [verifier] timeout_sec is {timeout!r}, not a positive number of seconds,"
+            " so the lane cannot make room in it for the judge"
+        )
+    raised = float(timeout) + JUDGE_MARGIN_SECONDS
+    if "timeout_sec" in verifier:
+        return _replace_key(path, text, original, "verifier", "timeout_sec", raised)
+    return _add_key(path, text, original, "verifier", "timeout_sec", raised)
+
+
+def _header(table: str) -> re.Pattern:
+    """The table's header as TOML allows it to be spelled, bare-keyed."""
+    return re.compile(rf"[ \t]*\[[ \t]*{table}[ \t]*\][ \t]*(#.*)?\r?\n?\Z")
+
+
+def _replace_key(
+    path: Path, text: bytes, original: dict, table: str, key: str, value: float
 ) -> bytes:
     """
-    The task.toml `text`, read from `path` as `original`, with `key = "value"`
-    added to its `[table]`, its text otherwise unchanged.
+    The task.toml `text`, read from `path` as `original`, with the line that
+    sets `key` in its `[table]` made `key = value`, its text otherwise
+    unchanged.
+
+    Raises LaneError naming the file when no one line sets it, or when the
+    result does not parse to the original with that one value changed.
+    """
+    lines = text.decode().splitlines(keepends=True)
+    headers = [number for number, found in enumerate(lines) if _header(table).match(found)]
+    setting = re.compile(rf"[ \t]*{key}[ \t]*=")
+    found = []
+    if len(headers) == 1:
+        for number in range(headers[0] + 1, len(lines)):
+            if lines[number].lstrip().startswith("["):
+                break
+            if setting.match(lines[number]):
+                found.append(number)
+    expected = {**original, table: {**original[table], key: value}}
+    if len(found) == 1:
+        line = lines[found[0]]
+        lines[found[0]] = f"{key} = {value!r}" + line[len(line.rstrip("\r\n")) :]
+        changed = "".join(lines)
+        try:
+            if tomllib.loads(changed) == expected:
+                return changed.encode()
+        except tomllib.TOMLDecodeError:
+            pass
+    raise LaneError(
+        f"{path}: [{table}] {key} cannot be changed without changing anything else,"
+        " so it must be changed by hand"
+    )
+
+
+def _add_key(
+    path: Path, text: bytes, original: dict, table: str, key: str, value: str | float
+) -> bytes:
+    """
+    The task.toml `text`, read from `path` as `original`, with `key = value`
+    added to its `[table]`, its text otherwise unchanged. A string value is
+    quoted.
 
     The line goes directly under the table's header, or under a new one at
     the end where there is none. Raises LaneError naming the file when the
     result does not parse to the original plus that one key.
     """
-    line = f'{key} = "{value}"'
-    # The header as TOML allows it to be spelled, bare-keyed.
-    header_line = re.compile(rf"[ \t]*\[[ \t]*{table}[ \t]*\][ \t]*(#.*)?\r?\n?\Z")
+    line = f'{key} = "{value}"' if isinstance(value, str) else f"{key} = {value!r}"
     lines = text.decode().splitlines(keepends=True)
-    headers = [number for number, found in enumerate(lines) if header_line.match(found)]
+    headers = [number for number, found in enumerate(lines) if _header(table).match(found)]
     if len(headers) == 1:
         header = lines[headers[0]]
         # The added line ends as the header does, \r\n or \n, and a header

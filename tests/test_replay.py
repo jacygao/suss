@@ -1,10 +1,9 @@
 """
-Regrade trials through ReplayAgent, in the stand-in environment.
+Grade trials through ReplayVerifier, in the stand-in environment.
 
-Each test lays out, on the host, an agent job as Harbor leaves it: one directory
-per trial, holding the config.json Harbor wrote and the trial's agent/model.patch.
-The regrade's own trial directory holds only its config.json, as it does when
-Harbor starts the agent. The sandbox's workspace is a git repository beside them.
+Each test lays out, on the host, the agent trial as Harbor leaves it, with the
+trial's agent/model.patch, and the verifier's sandbox: its workspace, a git
+repository, and the patch in its artifacts directory.
 """
 
 import asyncio
@@ -15,18 +14,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from harbor.agents.factory import AgentFactory
-from harbor.cli.utils import parse_kwargs
-from harbor.models.agent.context import AgentContext
 from harbor.models.task.task import Task
-from harbor.models.trial.config import AgentConfig, VerifierConfig
+from harbor.models.trial.config import VerifierConfig
 from harbor.models.trial.paths import TrialPaths
 from harbor.models.verifier.result import VerifierResult
 from harbor.verifier.factory import VerifierFactory
 from harbor.verifier.verifier import Verifier
 
 import suss.replay
-from suss.replay import ReplayAgent, ReplayError, ReplayVerifier, is_test_file
+from suss.replay import ReplayError, ReplayVerifier, is_test_file
 
 TASK = "gleam-lang__gleam-5797"
 # Git sees no NUL as text, and writes these bytes into the patch raw, where
@@ -96,156 +92,31 @@ def edit_line(number: int, text: str):
     return change
 
 
-def trial(job: Path, directory: str, task: str, patch: bytes | None) -> Path:
-    """A trial of `task` in `job`, in a directory named `directory`."""
-    trial = job / directory
-    (trial / "agent").mkdir(parents=True)
-    config = {"task": {"path": f"lanes/rebench/{task}", "source": "rebench"}}
-    (trial / "config.json").write_text(json.dumps(config))
-    if patch is not None:
-        (trial / "agent" / "model.patch").write_bytes(patch)
-    return trial
-
-
-def replay_agent(tmp_path: Path, source_job, task: str = TASK) -> ReplayAgent:
-    """A ReplayAgent for the regrade trial of `task`, constructed as Harbor constructs it."""
-    regrade = tmp_path / "regrade-job" / "gleam-lang__gleam-57__XyZ1234"
-    regrade.mkdir(parents=True)
-    config = {"task": {"path": f"lanes/rebench/{task}", "source": "rebench"}}
-    (regrade / "config.json").write_text(json.dumps(config))
-    return ReplayAgent(
-        source_job=source_job,
-        patch_target=str(tmp_path / "sandbox" / "tmp" / "replay.patch"),
-        logs_dir=regrade / "agent",
-    )
-
-
-def replay(agent: ReplayAgent, environment) -> dict:
-    go(agent.setup(environment))
-    go(agent.run("an instruction", environment, AgentContext()))
-    return json.loads((agent.logs_dir / "replay.json").read_text())
-
-
-def test_finds_the_patch_by_the_task_the_trial_ran_not_its_directory_name(
-    tmp_path, local_environment, workspace, found
-):
-    job = tmp_path / "agent-job"
-    # Harbor shortens the task's name for the directory, and a directory may
-    # even carry another task's name.
-    ours = trial(job, "gleam-lang__gleam-57__AbCdEfG", TASK, patch_of(workspace, edit_line(3, "ours")))
-    trial(job, TASK, "other-org__other-1", patch_of(workspace, edit_line(3, "theirs")))
-
-    record = replay(replay_agent(tmp_path, str(job)), local_environment)
-
-    assert record["task"] == TASK
-    assert record["patch"] == str(ours / "agent" / "model.patch")
-    assert record["apply_rc"] == 0
-    assert (workspace / "lines.txt").read_text().splitlines()[2] == "ours"
-
-
-def test_harbor_loads_it_from_its_import_path_and_source_job(tmp_path):
-    job = tmp_path / "agent-job"
-    job.mkdir()
-    config = AgentConfig(
-        name="suss.replay:ReplayAgent",
-        model_name="replay",
-        kwargs=parse_kwargs([f"source_job={job}"]),
-    )
-
-    agent = AgentFactory.create_agent_from_config(config, logs_dir=tmp_path / "agent")
-
-    assert isinstance(agent, ReplayAgent)
-    assert agent.source_job == job
+def replayed(tmp_path: Path, environment, patch: bytes) -> dict:
+    """Apply `patch` and put the test files back as ReplayVerifier does, then return its replay.json."""
+    verifier = replay_verifier(tmp_path, environment)
+    target = tmp_path / "sandbox" / "logs" / "artifacts" / "model.patch"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(patch)
+    go(verifier._replay())
+    return recorded(tmp_path)
 
 
 def test_finds_the_workspace_with_the_environment_alone(
     tmp_path, local_environment, workspace, found
 ):
-    job = tmp_path / "agent-job"
-    trial(job, "t1", TASK, patch_of(workspace, edit_line(3, "ours")))
-
-    replay(replay_agent(tmp_path, str(job)), local_environment)
+    replayed(tmp_path, local_environment, patch_of(workspace, edit_line(3, "ours")))
 
     assert found == [((local_environment,), {})]
-
-
-@pytest.mark.parametrize("patch", [b"", None], ids=["empty", "missing"])
-def test_an_empty_or_missing_patch_applies_nothing_and_records_null(
-    tmp_path, local_environment, workspace, found, patch
-):
-    job = tmp_path / "agent-job"
-    trial(job, "t1", TASK, patch)
-
-    agent = replay_agent(tmp_path, str(job))
-    record = replay(agent, local_environment)
-
-    assert record == {"task": TASK, "patch": None}
-    assert git(workspace, "status", "--porcelain") == ""
-    assert not Path(agent.patch_target).exists()
-
-
-def test_a_source_job_that_is_not_a_directory_is_an_error(tmp_path):
-    missing = tmp_path / "no-such-job"
-
-    with pytest.raises(ReplayError, match=str(missing)):
-        replay_agent(tmp_path, str(missing))
-
-
-def test_a_source_job_harbor_parsed_as_json_is_an_error(tmp_path):
-    with pytest.raises(TypeError, match="source_job"):
-        replay_agent(tmp_path, 2026)
-
-
-def test_a_source_job_with_no_trial_of_the_task_is_an_error(
-    tmp_path, local_environment, workspace, found
-):
-    job = tmp_path / "agent-job"
-    trial(job, TASK, "other-org__other-1", patch_of(workspace, edit_line(3, "theirs")))
-    agent = replay_agent(tmp_path, str(job))
-    go(agent.setup(local_environment))
-
-    with pytest.raises(ReplayError, match=f"no trial of {TASK}"):
-        go(agent.run("an instruction", local_environment, AgentContext()))
-    assert git(workspace, "status", "--porcelain") == ""
-    assert not (agent.logs_dir / "replay.json").exists()
-
-
-def test_two_trials_of_the_task_are_an_error_naming_both(
-    tmp_path, local_environment, workspace, found
-):
-    job = tmp_path / "agent-job"
-    trial(job, "first__AAA", TASK, patch_of(workspace, edit_line(3, "one")))
-    trial(job, "second__BBB", TASK, patch_of(workspace, edit_line(3, "two")))
-    agent = replay_agent(tmp_path, str(job))
-    go(agent.setup(local_environment))
-
-    with pytest.raises(ReplayError, match="first__AAA.*second__BBB"):
-        go(agent.run("an instruction", local_environment, AgentContext()))
-    assert git(workspace, "status", "--porcelain") == ""
-
-
-def test_a_trial_whose_config_cannot_be_read_is_an_error(
-    tmp_path, local_environment, workspace, found
-):
-    job = tmp_path / "agent-job"
-    trial(job, "t1", TASK, patch_of(workspace, edit_line(3, "ours")))
-    broken = trial(job, "t2", "other-org__other-1", None)
-    (broken / "config.json").write_text("{ not json")
-    agent = replay_agent(tmp_path, str(job))
-    go(agent.setup(local_environment))
-
-    with pytest.raises(ReplayError, match=str(broken / "config.json")):
-        go(agent.run("an instruction", local_environment, AgentContext()))
 
 
 def test_applies_bytes_that_are_not_utf8_exactly(tmp_path, local_environment, workspace, found):
     def add_high_bytes(repo: Path) -> None:
         (repo / "latin1.txt").write_bytes(HIGH_BYTES)
 
-    job = tmp_path / "agent-job"
-    trial(job, "t1", TASK, patch_of(workspace, add_high_bytes))
+    patch = patch_of(workspace, add_high_bytes)
 
-    record = replay(replay_agent(tmp_path, str(job)), local_environment)
+    record = replayed(tmp_path, local_environment, patch)
 
     assert record["apply_rc"] == 0
     assert (workspace / "latin1.txt").read_bytes() == HIGH_BYTES
@@ -258,10 +129,9 @@ def methods_run(record: dict) -> list[str]:
 def test_a_patch_that_applies_cleanly_runs_only_git_apply(
     tmp_path, local_environment, workspace, found
 ):
-    job = tmp_path / "agent-job"
-    trial(job, "t1", TASK, patch_of(workspace, edit_line(13, "ours")))
+    patch = patch_of(workspace, edit_line(13, "ours"))
 
-    record = replay(replay_agent(tmp_path, str(job)), local_environment)
+    record = replayed(tmp_path, local_environment, patch)
 
     assert methods_run(record) == ["git apply --verbose"]
     assert record["apply_rc"] == 0
@@ -271,13 +141,12 @@ def test_a_patch_that_applies_cleanly_runs_only_git_apply(
 def test_a_patch_whose_context_moved_is_refused_not_merged(
     tmp_path, local_environment, workspace, found
 ):
-    job = tmp_path / "agent-job"
-    trial(job, "t1", TASK, patch_of(workspace, edit_line(12, "ours")))
+    patch = patch_of(workspace, edit_line(12, "ours"))
     # A context line of the hunk differs from the patch's, though git could merge it.
     edit_line(10, "moved")(workspace)
     git(workspace, "commit", "-qam", "moved")
 
-    record = replay(replay_agent(tmp_path, str(job)), local_environment)
+    record = replayed(tmp_path, local_environment, patch)
 
     assert methods_run(record) == ["git apply --verbose"]
     assert record["apply_rc"] != 0
@@ -288,10 +157,9 @@ def test_a_patch_nothing_applies_records_the_failure_and_returns(
     tmp_path, local_environment, workspace, found
 ):
     hand_written = b"--- a/absent.txt\n+++ b/absent.txt\n@@ -1,1 +1,1 @@\n-gone\n+ours\n"
-    job = tmp_path / "agent-job"
-    trial(job, "t1", TASK, hand_written)
+    patch = hand_written
 
-    record = replay(replay_agent(tmp_path, str(job)), local_environment)
+    record = replayed(tmp_path, local_environment, patch)
 
     assert methods_run(record) == ["git apply --verbose"]
     assert record["apply_rc"] != 0
@@ -302,10 +170,9 @@ def test_each_methods_output_follows_its_own_line_where_stderr_is_kept_apart(
     tmp_path, modal_environment, workspace, found
 ):
     hand_written = b"--- a/absent.txt\n+++ b/absent.txt\n@@ -1,1 +1,1 @@\n-gone\n+ours\n"
-    job = tmp_path / "agent-job"
-    trial(job, "t1", TASK, hand_written)
+    patch = hand_written
 
-    record = replay(replay_agent(tmp_path, str(job)), modal_environment)
+    record = replayed(tmp_path, modal_environment, patch)
 
     assert record["apply_out"].startswith("$ git apply --verbose\n"), record["apply_out"]
     assert "error: absent.txt" in record["apply_out"], record["apply_out"]
@@ -379,9 +246,7 @@ def write(files: dict[str, bytes | None]):
 
 
 def regrade(tmp_path, environment, workspace, change) -> dict:
-    job = tmp_path / "agent-job"
-    trial(job, "t1", TASK, patch_of(workspace, change))
-    return replay(replay_agent(tmp_path, str(job)), environment)
+    return replayed(tmp_path, environment, patch_of(workspace, change))
 
 
 def test_a_test_file_the_patch_edited_is_graded_as_it_was_at_the_base(
@@ -455,11 +320,10 @@ def test_an_ignored_test_file_the_image_had_stays_when_the_patch_drops_its_ignor
     tmp_path, local_environment, workspace, found
 ):
     commit(workspace, {".gitignore": b"/tests/generated_test.py\n"})
-    job = tmp_path / "agent-job"
-    trial(job, "t1", TASK, patch_of(workspace, write({".gitignore": b""})))
+    patch = patch_of(workspace, write({".gitignore": b""}))
     write({"tests/generated_test.py": b"built by the image\n"})(workspace)
 
-    record = replay(replay_agent(tmp_path, str(job)), local_environment)
+    record = replayed(tmp_path, local_environment, patch)
 
     assert (workspace / "tests/generated_test.py").read_bytes() == b"built by the image\n"
     assert record["tests_reset"] == {"restored": [], "removed": []}
@@ -474,11 +338,10 @@ def test_an_ignored_test_file_the_image_had_stays_when_the_patch_tries_to_add_it
         write({"tests/generated_test.py": b"the harness's\n"})(repo)
         git(repo, "add", "-f", "tests/generated_test.py")
 
-    job = tmp_path / "agent-job"
-    trial(job, "t1", TASK, patch_of(workspace, add_ignored))
+    patch = patch_of(workspace, add_ignored)
     write({"tests/generated_test.py": b"built by the image\n"})(workspace)
 
-    record = replay(replay_agent(tmp_path, str(job)), local_environment)
+    record = replayed(tmp_path, local_environment, patch)
 
     assert (workspace / "tests/generated_test.py").exists()
     assert record["tests_reset"] == {"restored": [], "removed": []}
@@ -551,12 +414,11 @@ def test_a_test_file_the_image_had_changed_and_the_patch_did_not_touch_is_left_a
     tmp_path, local_environment, workspace, found
 ):
     commit(workspace, {"tests/test_lines.py": b"base\n", "tests/test_other.py": b"other\n"})
-    job = tmp_path / "agent-job"
-    trial(job, "t1", TASK, patch_of(workspace, write({"lines.txt": b"fix\n"})))
+    patch = patch_of(workspace, write({"lines.txt": b"fix\n"}))
     # The image starts with these, before any patch.
     write({"tests/test_lines.py": b"image\n", "tests/test_image.py": b"image\n"})(workspace)
 
-    record = replay(replay_agent(tmp_path, str(job)), local_environment)
+    record = replayed(tmp_path, local_environment, patch)
 
     assert (workspace / "tests/test_lines.py").read_bytes() == b"image\n"
     assert (workspace / "tests/test_image.py").read_bytes() == b"image\n"
@@ -577,11 +439,10 @@ def test_a_test_file_the_image_had_changed_and_the_patch_edited_is_graded_as_the
     git(workspace, "commit", "-q", "-m", "image")
     change = write({"tests/test_lines.py": b"harness\n", "tests/test_new.py": None,
                     "tests/test_image.py": b"harness\n"})
-    job = tmp_path / "agent-job"
-    trial(job, "t1", TASK, patch_of(workspace, change))
+    patch = patch_of(workspace, change)
     git(workspace, "reset", "-q", "HEAD~1")
 
-    record = replay(replay_agent(tmp_path, str(job)), local_environment)
+    record = replayed(tmp_path, local_environment, patch)
 
     assert (workspace / "tests/test_lines.py").read_bytes() == b"image\n"
     assert (workspace / "tests/test_new.py").read_bytes() == b"image\n"
@@ -600,7 +461,7 @@ def test_a_patch_that_touches_no_test_file_records_two_empty_lists(
 ):
     record = regrade(tmp_path, local_environment, workspace, edit_line(3, "ours"))
 
-    assert list(record) == ["task", "patch", "apply_rc", "apply_out", "tests_reset"]
+    assert list(record) == ["patch", "patch_bytes", "sha256", "apply_rc", "apply_out", "tests_reset"]
     assert record["apply_rc"] == 0
     assert record["tests_reset"] == {"restored": [], "removed": []}
     assert (workspace / "lines.txt").read_text().splitlines()[2] == "ours"
@@ -610,9 +471,7 @@ def test_a_reset_git_refuses_is_an_error_naming_what_git_printed(
     tmp_path, modal_environment, workspace, found, monkeypatch
 ):
     commit(workspace, {"tests/test_lines.py": b"base\n"})
-    job = tmp_path / "agent-job"
-    trial(job, "t1", TASK, patch_of(workspace, write({"tests/test_lines.py": b"edited\n"})))
-    agent = replay_agent(tmp_path, str(job))
+    patch = patch_of(workspace, write({"tests/test_lines.py": b"edited\n"}))
     exec_ = modal_environment.exec
 
     async def lock_the_index_after_applying(command, **kwargs):
@@ -624,11 +483,11 @@ def test_a_reset_git_refuses_is_an_error_naming_what_git_printed(
     monkeypatch.setattr(modal_environment, "exec", lock_the_index_after_applying)
 
     with pytest.raises(ReplayError, match="index.lock"):
-        replay(agent, modal_environment)
-    assert not (agent.logs_dir / "replay.json").exists()
+        replayed(tmp_path, modal_environment, patch)
+    assert recorded(tmp_path) == {"patch": None}
 
 
-# ReplayVerifier: the same apply and reset, in Harbor's separate verifier.
+# ReplayVerifier as Harbor runs it, with test.sh after the apply and the reset.
 #
 # The verifier's sandbox holds the workspace at its base and the agent trial's
 # patch in its artifacts directory. The host holds the trial's directory, with

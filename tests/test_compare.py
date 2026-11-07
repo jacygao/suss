@@ -7,9 +7,12 @@ import time
 from pathlib import Path
 
 import pytest
-from harbor.models.agent.context import AgentContext
+from harbor.models.task.task import Task
+from harbor.models.trial.config import VerifierConfig
+from harbor.models.trial.paths import TrialPaths
 from harbor.models.trial.result import ExceptionInfo
 from harbor.trial.errors import VerifierTimeoutError
+from harbor.verifier.factory import VerifierFactory
 from harbor.verifier.verifier import RewardFileEmptyError
 
 from suss import agent, cli, compare, config, replay
@@ -24,7 +27,10 @@ FLIPT = "instance_flipt-io__flipt-02e21636c58e86c51119b63e0fb5ca7b813b07b1"
 # FLIPT's do.
 FLIPT_TOO = "instance_flipt-io__flipt-02e21639a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5"
 NAVIDROME = "instance_navidrome__navidrome-0130c6dc13438b48cf0fdfab08a89e357b5517c9"
-# Harbor's own reward when a regrade resolves its task.
+# How these tests name the grading of agent job `S-1`: `S-1-regrade`, which
+# grading_trial maps to the agent trial itself, where its verifier writes.
+REGRADE = "-regrade"
+# Harbor's own reward when a verifier resolves its task.
 RESOLVED = {"rewards": {"reward": 1.0}}
 UNRESOLVED = {"rewards": {"reward": 0.0}}
 
@@ -101,6 +107,23 @@ def write_agent_trial(
     return trial
 
 
+def grading_trial(job: Path, task: str, suffix: str) -> Path:
+    """
+    The agent trial of `task` that `job`, an agent job's name with REGRADE
+    after it, grades: the trial itself, since its verifier writes there. One
+    with no such trial yet is made, named for `suffix`.
+    """
+    agent_job = job.with_name(job.name.removesuffix(REGRADE))
+    for trial in sorted(agent_job.glob("*__*")) if agent_job.is_dir() else []:
+        named = json.loads((trial / "result.json").read_text()).get("task_name", "")
+        if named.rsplit("/", 1)[-1] == task:
+            return trial
+    trial = trial_directory(write_job(agent_job), task, suffix)
+    write_json(trial / "config.json", {"task": {"path": f"lanes/{LANE}/{task}"}})
+    write_json(trial / "result.json", {"task_name": f"swebench-pro/{task}", "trial_name": trial.name})
+    return trial
+
+
 def write_regrade_trial(
     job: Path,
     task: str,
@@ -111,39 +134,39 @@ def write_regrade_trial(
     report=TESTED,
 ) -> Path:
     """
-    The regrade's trial of the task, with the replay.json ReplayAgent writes
-    when it applied the trial's patch, or when it found none, and the
-    verifier's report. A report of None leaves the verifier no report.json.
+    What the verifier of the task's trial in the agent job `job` names wrote:
+    its reward, the replay.json ReplayVerifier writes when it applied the
+    trial's patch, or when it found none, and the verifier's report. A report
+    of None leaves the verifier no report.json.
     """
-    trial = trial_directory(write_job(job), task, suffix)
-    write_json(trial / "config.json", {"task": {"path": f"lanes/{LANE}/{task}"}})
-    write_json(
-        trial / "result.json",
-        {
-            "task_name": f"swebench-pro/{task}",
-            "trial_name": trial.name,
-            "agent_info": {"name": "suss-replay"},
-            "verifier_result": verifier_result,
-        },
-    )
-    replay = {"task": task, "patch": None}
+    trial = grading_trial(job, task, suffix)
+    result = json.loads((trial / "result.json").read_text())
+    write_json(trial / "result.json", result | {"verifier_result": verifier_result})
+    replay = {"patch": None}
     if applied:
-        source = job.parent / job.name.removesuffix(compare.REGRADE) / task / "agent"
         replay = {
-            "task": task,
-            "patch": str(source / "model.patch"),
+            "patch": "/logs/artifacts/model.patch",
+            "patch_bytes": 4182,
+            "sha256": "0" * 64,
             "apply_rc": 0,
             "apply_out": "$ git apply --verbose\nApplied patch cleanly.\n",
         }
-    write_json(trial / "agent" / "replay.json", replay)
+    write_json(trial / "verifier" / "replay.json", replay)
     if report is not None:
         write_json(trial / "verifier" / "report.json", report)
     return trial
 
 
+def ungrade(trial: Path) -> None:
+    """Make the trial one whose verifier never ran: no verifier/ and no reward."""
+    shutil.rmtree(trial / "verifier", ignore_errors=True)
+    result = json.loads((trial / "result.json").read_text())
+    write_json(trial / "result.json", result | {"verifier_result": None})
+
+
 def record_exception(trial: Path, error: Exception) -> None:
     """
-    Give the regrade's result.json the exception, as Harbor's Trial.run records
+    Give the trial's result.json the exception, as Harbor's Trial.run records
     one: `exception_info` set and no reward.
     """
     try:
@@ -154,15 +177,13 @@ def record_exception(trial: Path, error: Exception) -> None:
     write_json(trial / "result.json", dict(result, verifier_result=None, exception_info=info))
 
 
-def regrade_raised(trial: Path) -> None:
+def verifier_raised(trial: Path) -> None:
     """
-    Make the regrade's trial one whose ReplayAgent raised before writing
-    replay.json, as a real `harbor run` left it: no `agent/` at all, and the
-    exception in result.json, and no verifier run.
+    Make the trial one whose verifier raised before writing replay.json: no
+    verifier/ at all, and the exception in result.json.
     """
-    shutil.rmtree(trial / "agent")
     shutil.rmtree(trial / "verifier", ignore_errors=True)
-    record_exception(trial, replay.ReplayError("source_job must hold one trial of the task"))
+    record_exception(trial, replay.ReplayError("the trial left no patch at /logs/artifacts/model.patch"))
 
 
 @pytest.fixture
@@ -186,84 +207,52 @@ def test_a_trial_carries_its_record_and_its_regrades_result(tmp_path, arm):
     assert trial.grader == GRADER
     assert trial.patch_bytes == 6490
     assert trial.resolved is True
-    assert trial.regrade_applied is True
+    assert trial.verifier_applied is True
 
 
 @pytest.mark.parametrize("patch", [True, False], ids=["found", "missing"])
-def test_reads_whether_the_regrade_applied_the_patch_from_what_replay_agent_wrote(
+def test_reads_whether_the_verifier_applied_the_patch_from_what_replay_verifier_wrote(
     tmp_path, arm, local_environment, monkeypatch, patch
 ):
     trial = write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
-    if not patch:
-        (trial / "agent" / "model.patch").unlink()
-    regrade = write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK", UNRESOLVED)
-    (regrade / "agent" / "replay.json").unlink()
+    (trial / "agent" / "model.patch").unlink()
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    # A repository, as every workspace is, since the regrade asks git what the patch changed.
-    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    # A repository, as every workspace is, since the verifier asks git what the patch changed.
+    for command in (["init", "-q"], ["config", "user.email", "t@example.com"], ["config", "user.name", "T"]):
+        subprocess.run(["git", *command], cwd=workspace, check=True)
+    (workspace / "a.txt").write_text("one\n")
+    subprocess.run(["git", "add", "-A"], cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=workspace, check=True)
+    artifacts = tmp_path / "artifacts"
+    if patch:
+        artifacts.mkdir()
+        (artifacts / "model.patch").write_text(
+            "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-one\n+two\n"
+        )
 
     async def find_workspace(environment):
         return str(workspace)
 
     monkeypatch.setattr(replay, "find_workspace", find_workspace)
-    agent = replay.ReplayAgent(
-        source_job=str(arm / "S-1"),
-        patch_target=str(tmp_path / "replay.patch"),
-        logs_dir=regrade / "agent",
+    task = tmp_path / "task"
+    (task / "tests").mkdir(parents=True)
+    (task / "environment").mkdir()
+    (task / "instruction.md").write_text("Fix it.\n")
+    (task / "task.toml").write_text('[verifier]\nenvironment_mode = "separate"\n')
+    verifier = VerifierFactory.create_verifier_from_config(
+        VerifierConfig(import_path="suss.replay:ReplayVerifier"),
+        task=Task(task), trial_paths=TrialPaths(trial), environment=local_environment,
+        skip_tests_upload=True, artifacts=str(artifacts),
     )
-    asyncio.run(agent.run("an instruction", local_environment, AgentContext()))
+    try:
+        asyncio.run(verifier._replay())
+    except replay.ReplayError as error:
+        record_exception(trial, error)
 
     [read] = read_trials(tmp_path, LANE, ARM)
 
-    assert read.regrade_applied is patch
-
-
-def test_trials_pair_with_their_regrade_by_task_name_and_not_by_directory(tmp_path, arm):
-    # Both tasks' directories share a prefix, and the regrade's suffixes sort
-    # the other way round from the agent job's.
-    write_agent_trial(arm / "S-1", FLIPT, "aaaaaaa")
-    write_agent_trial(arm / "S-1", FLIPT_TOO, "bbbbbbb")
-    write_regrade_trial(arm / "S-1-regrade", FLIPT, "zzzzzzz", RESOLVED)
-    write_regrade_trial(arm / "S-1-regrade", FLIPT_TOO, "yyyyyyy", UNRESOLVED)
-
-    trials = by_job(read_trials(tmp_path, LANE, ARM))
-
-    assert {task: trial.resolved for (_, task), trial in trials.items()} == {
-        FLIPT: True,
-        FLIPT_TOO: False,
-    }
-
-
-def test_a_trial_pairs_only_with_its_own_jobs_regrade(tmp_path, arm):
-    # The same task in three jobs from two runs, each regraded differently.
-    rewards = {"A-1": RESOLVED, "A-2": UNRESOLVED, "B-1": RESOLVED, "B-2": UNRESOLVED}
-    for job, reward in rewards.items():
-        write_agent_trial(arm / job, FLIPT, f"agent{job}")
-        write_regrade_trial(arm / f"{job}-regrade", FLIPT, f"regrd{job}", reward)
-
-    trials = read_trials(tmp_path, LANE, ARM)
-
-    assert {trial.job: trial.resolved for trial in trials} == {
-        "A-1": True,
-        "A-2": False,
-        "B-1": True,
-        "B-2": False,
-    }
-
-
-def test_a_regrade_job_is_not_read_as_an_agent_job(tmp_path, arm):
-    write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
-    write_agent_trial(arm / "S-1", NAVIDROME, "Qp3rT9a")
-    write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK")
-    write_regrade_trial(arm / "S-1-regrade", NAVIDROME, "Lm8vB2c")
-
-    trials = read_trials(tmp_path, LANE, ARM)
-
-    assert sorted((trial.job, trial.task) for trial in trials) == [
-        ("S-1", FLIPT),
-        ("S-1", NAVIDROME),
-    ]
+    assert read.verifier_applied is patch
 
 
 def test_a_job_directorys_own_files_are_not_trials(tmp_path, arm):
@@ -318,11 +307,11 @@ def test_a_regrade_trial_with_no_verifier_result_key_is_unresolved(tmp_path, arm
     assert (trial.task, trial.resolved) == (FLIPT, False)
 
 
-def test_a_trial_with_no_regrade_trial_is_unresolved(tmp_path, arm):
+def test_a_trial_whose_verifier_never_ran_is_unresolved(tmp_path, arm):
     write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
     write_agent_trial(arm / "S-1", NAVIDROME, "Qp3rT9a")
     write_regrade_trial(arm / "S-1-regrade", NAVIDROME, "Lm8vB2c")
-    # A run stopped before the second job's regrade began.
+    # A run stopped before the second job's verifier began.
     write_agent_trial(arm / "S-2", FLIPT, "Zx4cV6b")
 
     trials = by_job(read_trials(tmp_path, LANE, ARM))
@@ -332,17 +321,17 @@ def test_a_trial_with_no_regrade_trial_is_unresolved(tmp_path, arm):
         ("S-1", NAVIDROME): True,
         ("S-2", FLIPT): False,
     }
-    assert trials["S-1", FLIPT].regrade_applied is None
+    assert trials["S-1", FLIPT].verifier_applied is None
 
 
 def test_a_regrade_trial_with_no_replay_json_says_nothing_of_its_patch(tmp_path, arm):
     write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
     regrade = write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK", UNRESOLVED)
-    (regrade / "agent" / "replay.json").unlink()
+    (regrade / "verifier" / "replay.json").unlink()
 
     [trial] = read_trials(tmp_path, LANE, ARM)
 
-    assert (trial.resolved, trial.regrade_applied) == (False, None)
+    assert (trial.resolved, trial.verifier_applied) == (False, None)
 
 
 @pytest.mark.parametrize("reward", [1, 1.0])
@@ -372,18 +361,18 @@ def test_a_regrade_that_applied_no_patch_says_so(tmp_path, arm):
 
     trials = by_job(read_trials(tmp_path, LANE, ARM))
 
-    assert trials["S-1", FLIPT].regrade_applied is False
+    assert trials["S-1", FLIPT].verifier_applied is False
     assert trials["S-1", FLIPT].patch_bytes == 6490
-    assert trials["S-1", NAVIDROME].regrade_applied is True
+    assert trials["S-1", NAVIDROME].verifier_applied is True
 
 
 def test_a_regrade_that_raised_before_writing_replay_json_applied_no_patch(tmp_path, arm):
     write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
-    regrade_raised(write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK"))
+    verifier_raised(write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK"))
 
     [trial] = read_trials(tmp_path, LANE, ARM)
 
-    assert (trial.resolved, trial.regrade_applied) == (False, False)
+    assert (trial.resolved, trial.verifier_applied) == (False, False)
 
 
 def test_a_regrade_whose_verifier_timed_out_after_replay_json_applied_its_patch(tmp_path, arm):
@@ -393,7 +382,7 @@ def test_a_regrade_whose_verifier_timed_out_after_replay_json_applied_its_patch(
 
     [trial] = read_trials(tmp_path, LANE, ARM)
 
-    assert (trial.resolved, trial.regrade_applied) == (False, True)
+    assert (trial.resolved, trial.verifier_applied) == (False, True)
 
 
 def regrade_wrote_an_empty_reward(trial: Path) -> None:
@@ -467,10 +456,8 @@ SKIPPED_A_HUNK = {
     ),
 }
 def applied_part(trial: Path, applying: dict) -> None:
-    """Make the regrade trial's replay.json record its patch applied as `applying` says."""
-    replay = trial / "agent" / "replay.json"
-    task = json.loads(replay.read_text())["task"]
-    write_json(replay, {"task": task, "patch": "model.patch", **applying})
+    """Make the trial's replay.json record its patch applied as `applying` says."""
+    write_json(trial / "verifier" / "replay.json", {"patch": "model.patch", **applying})
 
 
 @pytest.mark.parametrize(
@@ -490,10 +477,10 @@ def test_a_regrade_that_does_not_show_it_applied_all_of_its_patch_applied_part(
 
     trials = by_job(read_trials(tmp_path, LANE, ARM))
 
-    assert trials["S-1", FLIPT].regrade_refused is True
+    assert trials["S-1", FLIPT].verifier_refused is True
     # A clean apply, and a regrade that applied no patch, applied no part.
-    assert trials["S-1", NAVIDROME].regrade_refused is False
-    assert trials["S-1", FLIPT_TOO].regrade_refused is False
+    assert trials["S-1", NAVIDROME].verifier_refused is False
+    assert trials["S-1", FLIPT_TOO].verifier_refused is False
 
 
 def counts(**given) -> dict:
@@ -551,7 +538,7 @@ def test_a_regrade_records_a_test_result_only_when_parsed_counts_counts_a_test(
 
     [trial] = read_trials(tmp_path, LANE, ARM)
 
-    assert trial.regrade_tested is tested
+    assert trial.verifier_tested is tested
 
 
 def test_a_trial_with_no_regrade_trial_records_no_test_result(tmp_path, arm):
@@ -559,7 +546,7 @@ def test_a_trial_with_no_regrade_trial_records_no_test_result(tmp_path, arm):
 
     [trial] = read_trials(tmp_path, LANE, ARM)
 
-    assert trial.regrade_tested is False
+    assert trial.verifier_tested is False
 
 
 def test_a_report_that_is_not_json_records_no_test_result(tmp_path, arm):
@@ -569,7 +556,7 @@ def test_a_report_that_is_not_json_records_no_test_result(tmp_path, arm):
 
     [trial] = read_trials(tmp_path, LANE, ARM)
 
-    assert trial.regrade_tested is False
+    assert trial.verifier_tested is False
 
 
 def verifier_results(passed: int, total: int, **given) -> dict:
@@ -632,7 +619,7 @@ def test_a_senior_regrade_records_a_test_result_from_verifier_results_json(
 
     [trial] = read_trials(tmp_path, "senior", ARM)
 
-    assert trial.regrade_tested is tested
+    assert trial.verifier_tested is tested
 
 
 def test_a_senior_regrade_whose_verifier_results_json_is_not_json_records_no_test_result(tmp_path):
@@ -643,7 +630,7 @@ def test_a_senior_regrade_whose_verifier_results_json_is_not_json_records_no_tes
 
     [trial] = read_trials(tmp_path, "senior", ARM)
 
-    assert trial.regrade_tested is False
+    assert trial.verifier_tested is False
 
 
 @pytest.mark.parametrize("report, tested", [(None, False), (TESTED, True)], ids=["no-report", "report"])
@@ -656,7 +643,7 @@ def test_a_rebench_regrade_takes_no_test_result_from_verifier_results_json(
 
     [trial] = read_trials(tmp_path, LANE, ARM)
 
-    assert trial.regrade_tested is tested
+    assert trial.verifier_tested is tested
 
 
 def test_nothing_under_checks_is_read(tmp_path, arm):
@@ -832,7 +819,7 @@ def write_arm(root: Path, arm: str, tasks: dict[str, list]) -> None:
             job = root / "results" / LANE / arm / f"S-{i}"
             write_agent_trial(job, task, f"agent{i}", status=status, record=status != UNRECORDED)
             write_regrade_trial(
-                job.with_name(f"{job.name}{compare.REGRADE}"),
+                job.with_name(f"{job.name}{REGRADE}"),
                 task,
                 f"regrd{i}",
                 RESOLVED if resolved else UNRESOLVED,
@@ -945,14 +932,12 @@ def leave_no_trials(root: Path, how: str) -> None:
     checks = root / "checks" / LANE / "omega"
     if how == "empty":
         arm.mkdir(parents=True)
-    elif how == "regrade-only":
-        write_regrade_trial(arm / f"S-1{compare.REGRADE}", "t1", "regrd1")
     elif how == "only-under-checks":
         write_agent_trial(checks / "S-1", "t1", "agent1")
-        write_regrade_trial(checks / f"S-1{compare.REGRADE}", "t1", "regrd1")
+        write_regrade_trial(checks / f"S-1{REGRADE}", "t1", "regrd1")
 
 
-@pytest.mark.parametrize("how", ["missing", "empty", "regrade-only", "only-under-checks"])
+@pytest.mark.parametrize("how", ["missing", "empty", "only-under-checks"])
 def test_an_arm_with_no_trials_is_an_error_and_prints_nothing_else(results, capsys, how):
     leave_no_trials(results, how)
 
@@ -1014,15 +999,14 @@ def test_arguments_after_the_separator_are_refused(results, capsys):
 
 def regrade_applies_nothing(root: Path, arm: str, task: str, i: int) -> Path:
     """
-    Make write_arm's i-th regrade of the task one that found no patch, as
-    ReplayAgent leaves it: replay.json naming none, and reward 0.
+    Make write_arm's i-th trial of the task one whose verifier found no
+    patch, as ReplayVerifier leaves it: replay.json naming none, and reward 0.
     """
-    job = root / "results" / LANE / arm / f"S-{i}{compare.REGRADE}"
-    regrade = trial_directory(job, task, f"regrd{i}")
+    regrade = regrade_of(root, arm, task, i)
     result = json.loads((regrade / "result.json").read_text())
     write_json(regrade / "result.json", dict(result, verifier_result=UNRESOLVED))
-    write_json(regrade / "agent" / "replay.json", {"task": task, "patch": None})
-    return regrade / "agent" / "replay.json"
+    write_json(regrade / "verifier" / "replay.json", {"patch": None})
+    return regrade / "verifier" / "replay.json"
 
 
 @pytest.mark.parametrize("task", ["t2", "t5"], ids=["shared", "alphas-own"])
@@ -1038,11 +1022,11 @@ def test_a_regrade_that_applied_none_of_a_trials_patch_is_an_error_naming_both(
     assert (out, err) == (
         "",
         f"error: the trial of {task} in results/{LANE}/alpha/S-1 made a 4182-byte patch, "
-        "but its regrade in S-1-regrade applied none\n",
+        "but its verifier in S-1 applied none\n",
     )
 
 
-def test_a_trial_with_no_record_whose_regrade_applied_nothing_is_compared(results, capsys):
+def test_a_trial_with_no_record_whose_verifier_applied_nothing_is_compared(results, capsys):
     # alpha's first trial of t1 has no suss.json, so no patch_bytes.
     regrade_applies_nothing(results, "alpha", "t1", 1)
 
@@ -1052,7 +1036,7 @@ def test_a_trial_with_no_record_whose_regrade_applied_nothing_is_compared(result
     assert "alpha      12       33%     17%        17%\n" in out
 
 
-def test_an_empty_patch_whose_regrade_applied_nothing_counts_as_unresolved(results, capsys):
+def test_an_empty_patch_whose_verifier_applied_nothing_counts_as_unresolved(results, capsys):
     trial = trial_directory(results / "results" / LANE / "beta" / "S-1", "t1", "agent1")
     write_json(trial / "agent" / "suss.json", {"grader": GRADER, "status": "ok", "patch_bytes": 0})
     regrade_applies_nothing(results, "beta", "t1", 1)
@@ -1064,15 +1048,15 @@ def test_an_empty_patch_whose_regrade_applied_nothing_counts_as_unresolved(resul
     assert "beta      13       54%      0%         0%\n" in out
 
 
-@pytest.mark.parametrize("how", ["no-replay-json", "no-patch-in-it", "no-regrade-trial"])
+@pytest.mark.parametrize("how", ["no-replay-json", "no-patch-in-it", "no-verifier"])
 def test_a_patch_whose_regrade_says_nothing_of_it_counts_as_unresolved(results, capsys, how):
     replay = regrade_applies_nothing(results, "beta", "t1", 1)
     if how == "no-replay-json":
         replay.unlink()
     elif how == "no-patch-in-it":
-        write_json(replay, {"task": "t1"})
+        write_json(replay, {"apply_rc": 0})
     else:
-        shutil.rmtree(replay.parent.parent)
+        ungrade(replay.parent.parent)
 
     code, out, err = run_compare(results, capsys, LANE, "beta", "base")
 
@@ -1081,15 +1065,15 @@ def test_a_patch_whose_regrade_says_nothing_of_it_counts_as_unresolved(results, 
 
 
 def regrade_of(root: Path, arm: str, task: str, i: int) -> Path:
-    """write_arm's i-th regrade trial of the task."""
-    return trial_directory(root / "results" / LANE / arm / f"S-{i}{compare.REGRADE}", task, f"regrd{i}")
+    """write_arm's i-th trial of the task, which its own verifier graded."""
+    return grading_trial(root / "results" / LANE / arm / f"S-{i}{REGRADE}", task, f"regrd{i}")
 
 
 @pytest.mark.parametrize("task", ["t2", "t5"], ids=["shared", "alphas-own"])
 def test_a_regrade_that_raised_before_applying_a_trials_patch_is_an_error_naming_both(
     results, capsys, task
 ):
-    regrade_raised(regrade_of(results, "alpha", task, 1))
+    verifier_raised(regrade_of(results, "alpha", task, 1))
 
     code, out, err = run_compare(results, capsys, LANE, "base", "alpha")
 
@@ -1097,7 +1081,7 @@ def test_a_regrade_that_raised_before_applying_a_trials_patch_is_an_error_naming
     assert (out, err) == (
         "",
         f"error: the trial of {task} in results/{LANE}/alpha/S-1 made a 4182-byte patch, "
-        "but its regrade in S-1-regrade raised ReplayError and applied none\n",
+        "but its verifier in S-1 raised ReplayError and applied none\n",
     )
 
 
@@ -1118,7 +1102,7 @@ def test_a_regrade_that_applied_part_of_a_trials_patch_is_an_error_naming_both(
     assert (out, err) == (
         "",
         f"error: the trial of {task} in results/{LANE}/{arm}/S-1 made a patch, "
-        "but its regrade in S-1-regrade could not apply it\n",
+        "but its verifier in S-1 could not apply it\n",
     )
 
 
@@ -1134,7 +1118,7 @@ def test_the_first_regrade_that_applied_part_of_a_patch_is_the_one_named(results
     assert (out, err) == (
         "",
         f"error: the trial of t4 in results/{LANE}/alpha/S-1 made a patch, "
-        "but its regrade in S-1-regrade could not apply it\n",
+        "but its verifier in S-1 could not apply it\n",
     )
 
 
@@ -1148,10 +1132,10 @@ def test_a_regrade_whose_verifier_timed_out_counts_as_unresolved(results, capsys
     assert "beta      13       54%      0%         0%\n" in out
 
 
-def test_an_empty_patch_whose_regrade_raised_counts_as_unresolved(results, capsys):
+def test_an_empty_patch_whose_verifier_raised_counts_as_unresolved(results, capsys):
     trial = trial_directory(results / "results" / LANE / "beta" / "S-1", "t1", "agent1")
     write_json(trial / "agent" / "suss.json", {"grader": GRADER, "status": "ok", "patch_bytes": 0})
-    regrade_raised(regrade_of(results, "beta", "t1", 1))
+    verifier_raised(regrade_of(results, "beta", "t1", 1))
 
     code, out, err = run_compare(results, capsys, LANE, "beta", "base")
 
@@ -1159,9 +1143,9 @@ def test_an_empty_patch_whose_regrade_raised_counts_as_unresolved(results, capsy
     assert "beta      13       54%      0%         0%\n" in out
 
 
-def test_a_trial_with_no_record_whose_regrade_raised_is_compared(results, capsys):
+def test_a_trial_with_no_record_whose_verifier_raised_is_compared(results, capsys):
     # alpha's first trial of t1 has no suss.json, so no patch_bytes.
-    regrade_raised(regrade_of(results, "alpha", "t1", 1))
+    verifier_raised(regrade_of(results, "alpha", "t1", 1))
 
     code, out, err = run_compare(results, capsys, LANE, "alpha", "base")
 
@@ -1173,7 +1157,7 @@ def add_trial(root: Path, arm: str, job: str, task: str, grader) -> None:
     """One more trial of the arm, in an agent job of its own, resolved by its regrade."""
     jobs = root / "results" / LANE / arm
     write_agent_trial(jobs / job, task, "agentX", grader=grader)
-    write_regrade_trial(jobs / f"{job}{compare.REGRADE}", task, "regrdX")
+    write_regrade_trial(jobs / f"{job}{REGRADE}", task, "regrdX")
 
 
 # GRADER, as the error names it.
@@ -1293,7 +1277,7 @@ def test_graders_whose_keys_come_in_another_order_are_the_same_grader(results, c
     assert out.startswith("arm ")
 
 
-NAMED = "These trials' regrades recorded no test result, so their grading may have broken:\n"
+NAMED = "These trials' verifiers recorded no test result, so their grading may have broken:\n"
 
 
 def report_records_no_test_result(root: Path, arm: str, task: str, i: int) -> None:
@@ -1318,8 +1302,8 @@ def test_compare_names_each_trial_whose_regrade_recorded_no_test_result(results,
     ), "a trial with no test result must count in both tables as its regrade graded it"
 
 
-def test_a_trial_with_no_regrade_trial_is_named(results, capsys):
-    shutil.rmtree(regrade_of(results, "beta", "t3", 2))
+def test_a_trial_whose_verifier_never_ran_is_named(results, capsys):
+    ungrade(regrade_of(results, "beta", "t3", 2))
 
     code, out, err = run_compare(results, capsys, LANE, "beta", "base")
 
@@ -1337,19 +1321,18 @@ def test_a_trial_on_a_task_not_every_arm_has_is_not_named(results, capsys):
     assert NAMED not in out
 
 
-INVALID = "These trials' regrades judged them invalid, so no table counts them:\n"
+INVALID = "These trials' verifiers judged them invalid, so no table counts them:\n"
 
 
 def without(root: Path, elsewhere: Path, trials: list[tuple[str, str, int]]) -> Path:
     """
     A copy of the results in `elsewhere`, with write_arm's i-th trial of each
-    (arm, task) and its regrade gone.
+    (arm, task) gone.
     """
     copy = elsewhere / "copy"
     shutil.copytree(root, copy)
     for arm, task, i in trials:
         shutil.rmtree(trial_directory(copy / "results" / LANE / arm / f"S-{i}", task, f"agent{i}"))
-        shutil.rmtree(regrade_of(copy, arm, task, i))
     return copy
 
 
@@ -1402,7 +1385,7 @@ def test_an_arm_whose_every_trial_is_invalid_is_an_error(results, capsys):
     assert (out, err) == (
         "",
         f"error: every trial of arm beta under results/{LANE}/ is invalid: "
-        "its regrade wrote an empty reward\n",
+        "its verifier wrote an empty reward\n",
     )
 
 
@@ -1494,7 +1477,7 @@ def write_senior_arm(
             job = root / "results" / SENIOR / arm / f"S-{i}"
             write_agent_trial(job, task, f"agent{i}", grader=grader)
             regrade = write_regrade_trial(
-                job.with_name(f"{job.name}{compare.REGRADE}"),
+                job.with_name(f"{job.name}{REGRADE}"),
                 task,
                 f"regrd{i}",
                 {"rewards": rewards},
@@ -1506,8 +1489,8 @@ def write_senior_arm(
 
 
 def regrade_of_senior(root: Path, arm: str, task: str, i: int) -> Path:
-    """write_senior_arm's i-th regrade trial of the task."""
-    return trial_directory(root / "results" / SENIOR / arm / f"S-{i}{compare.REGRADE}", task, f"regrd{i}")
+    """write_senior_arm's i-th trial of the task, which its own verifier graded."""
+    return grading_trial(root / "results" / SENIOR / arm / f"S-{i}{REGRADE}", task, f"regrd{i}")
 
 
 @pytest.fixture
@@ -1639,7 +1622,7 @@ def test_a_regrade_with_no_reward_has_no_scores_and_is_not_named_for_its_judges(
 
 def test_another_lane_prints_no_means_whatever_its_rewards_hold(senior, capsys):
     (senior / "results" / SENIOR).rename(senior / "results" / LANE)
-    for results in (senior / "results" / LANE).glob(f"*/*{compare.REGRADE}/*/verifier"):
+    for results in (senior / "results" / LANE).glob("*/*/*/verifier"):
         write_json(results / "report.json", TESTED)
 
     code, out, err = run_compare(senior, capsys, LANE, "base", "beta")
@@ -1745,7 +1728,7 @@ def test_a_rebench_trial_recorded_before_senior_graders_compares_with_one_record
     shutil.copy(OLD_REBENCH_RECORD, old / "agent" / "suss.json")
     write_agent_trial(jobs / "beta" / "S-1", "t1", "agent1", grader=agent.grader(settings, "rebench"))
     for arm in ("base", "beta"):
-        write_regrade_trial(jobs / arm / f"S-1{compare.REGRADE}", "t1", "regrd1")
+        write_regrade_trial(jobs / arm / f"S-1{REGRADE}", "t1", "regrd1")
 
     code, out, err = run_compare(tmp_path, capsys, "rebench", "base", "beta")
 
@@ -1768,9 +1751,9 @@ def judge_json(
     sessions=None,
 ) -> dict:
     """
-    The agent/judge.json JudgeAgent writes, trimmed to what compare reads.
+    The verifier/judge.json JudgeVerifier writes, trimmed to what compare reads.
 
-    A judge that did not finish ok has no scores, as JudgeAgent writes them,
+    A judge that did not finish ok has no scores, as JudgeVerifier writes them,
     except the patch bloat, which it measures without the taste judge.
     """
     scores = {}
@@ -1816,7 +1799,7 @@ def write_judged_arm(root: Path, arm: str, tasks: dict[str, list[dict]], lane: s
             job = root / "results" / lane / arm / f"S-{i}"
             write_agent_trial(job, task, f"agent{i}", grader=SENIOR_GRADER if lane == SENIOR else GRADER)
             regrade = write_regrade_trial(
-                job.with_name(f"{job.name}{compare.REGRADE}"),
+                job.with_name(f"{job.name}{REGRADE}"),
                 task,
                 f"regrd{i}",
                 {"rewards": JUDGES_FAILED if lane == SENIOR else {"reward": 1.0}},
@@ -1824,7 +1807,7 @@ def write_judged_arm(root: Path, arm: str, tasks: dict[str, list[dict]], lane: s
             )
             if lane == SENIOR:
                 write_json(regrade / "verifier" / "verifier_results.json", SENIOR_TESTED)
-            write_json(regrade / "agent" / "judge.json", record)
+            write_json(regrade / "verifier" / "judge.json", record)
 
 
 BASE_JUDGED = {"s1": [judge_json(1.0, 4.0, 3.0, 1.0)], "s2": [judge_json(0.5, 2.0, 2.0, 2.0)]}
@@ -1932,7 +1915,7 @@ def test_judge_json_wins_over_the_verifiers_judges(senior, capsys):
     for task in ("s1", "s2", "s3"):
         for i in (1, 2):
             write_json(
-                regrade_of_senior(senior, "base", task, i) / "agent" / "judge.json",
+                regrade_of_senior(senior, "base", task, i) / "verifier" / "judge.json",
                 judge_json(0.0, 1.0, 1.0, 5.0),
             )
 
@@ -2007,18 +1990,9 @@ def test_a_rebench_trial_is_graded_by_its_own_verifier(tmp_path):
 
     trials = {trial.task: trial for trial in read_trials(tmp_path, "rebench", ARM)}
 
-    assert (trials[FLIPT].resolved, trials[FLIPT].regrade_applied) == (True, True)
-    assert trials[FLIPT].regrade_tested is True
-    assert (trials[NAVIDROME].resolved, trials[NAVIDROME].regrade_tested) == (False, False)
-
-
-def test_a_rebench_regrade_job_beside_the_agent_job_is_not_read(tmp_path):
-    write_graded_trial(rebench_arm(tmp_path) / "S-1", FLIPT, "kY8wt23", UNRESOLVED)
-    write_regrade_trial(rebench_arm(tmp_path) / "S-1-regrade", FLIPT, "NfDX2zK", RESOLVED)
-
-    [trial] = read_trials(tmp_path, "rebench", ARM)
-
-    assert (trial.job, trial.resolved) == ("S-1", False)
+    assert (trials[FLIPT].resolved, trials[FLIPT].verifier_applied) == (True, True)
+    assert trials[FLIPT].verifier_tested is True
+    assert (trials[NAVIDROME].resolved, trials[NAVIDROME].verifier_tested) == (False, False)
 
 
 def rebench_results(root: Path) -> Path:
@@ -2059,3 +2033,27 @@ def test_a_rebench_verifier_that_could_not_apply_a_trials_patch_is_an_error_nami
         f"error: the trial of {FLIPT} in results/rebench/beta/S-1 made a patch, "
         "but its verifier in S-1 could not apply it\n"
     )
+
+
+def test_a_senior_trial_is_read_from_its_own_verifier_for_its_test_result_and_judge_json(tmp_path):
+    arm = tmp_path / "results" / "senior" / ARM
+    trial = write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
+    write_regrade_trial(arm / f"S-1{REGRADE}", FLIPT, "NfDX2zK", RESOLVED, report=None)
+    write_json(trial / "verifier" / "verifier_results.json", SENIOR_TESTED)
+    write_json(trial / "verifier" / "judge.json", judge_json(0.5, 4.0, 3.0, 1.25))
+    # Where a JudgeAgent regrade wrote it, in the trial and in a regrade job of its own.
+    write_json(trial / "agent" / "judge.json", judge_json(1.0, 1.0, 1.0, 9.0))
+    old = trial_directory(write_job(arm / "S-0-regrade"), FLIPT, "OldOld1")
+    write_json(old / "agent" / "judge.json", judge_json(1.0, 1.0, 1.0, 9.0))
+
+    trials = by_job(read_trials(tmp_path, "senior", ARM))
+
+    read = trials["S-1", FLIPT]
+    assert (read.resolved, read.verifier_tested, read.verifier_applied) == (True, True, True)
+    assert read.judge == "copilot-cli gemini-4-argon high"
+    scored = ("rubric_score", "taste_practice_alignment", "taste_patch_bloat")
+    assert {key: read.rewards.get(key) for key in scored} == {
+        "rubric_score": 0.5,
+        "taste_practice_alignment": 4.0,
+        "taste_patch_bloat": 1.25,
+    }, "the scores were not read from the agent trial's verifier/judge.json"

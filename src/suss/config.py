@@ -27,6 +27,16 @@ class Arm:
 
 
 @dataclass(frozen=True)
+class Judge:
+    """What JudgeVerifier judges a senior run with, from `[lanes.senior.judge]`."""
+
+    credit_budget: float
+    # None takes JudgeVerifier's own default.
+    model: str | None = None
+    effort: str | None = None
+
+
+@dataclass(frozen=True)
 class Config:
     path: Path
     # rebench's download, as senior_swe_bench is senior's; each None where suss.toml names none.
@@ -37,6 +47,8 @@ class Config:
     arm: Arm
     env: dict[str, str]
     senior_swe_bench: Path | None = None
+    # The lane's judge, which only senior has; None where suss.toml sets none.
+    judge: Judge | None = None
 
     def download(self, lane: str) -> Path:
         """The download `lane` is built from, which `load` requires for its lane."""
@@ -52,7 +64,8 @@ REQUIRED = ("environment", "k", "concurrency")
 # Ignored, they would leave a run going on what its author believes they still set.
 RETIRED = ("swe_bench_pro", "dataset")
 REQUIRED_IN_ARM = ("harness",)
-LANE_KEYS = ("max_seconds",)
+LANE_KEYS = ("max_seconds", "judge")
+JUDGE_KEYS = ("credit_budget", "model", "effort")
 
 
 def load(path: Path, arm: str, lane: str) -> Config:
@@ -66,8 +79,9 @@ def load(path: Path, arm: str, lane: str) -> Config:
     required key is missing, when `k` is
     not a whole number of at least 1, when the file does not define `arm`, when
     the top or `arm` sets `max_cost_usd`, when a `[lanes.<lane>]` table names a
-    lane suss does not have or sets a key other than `max_seconds`, or when a
-    .env line is not NAME=VALUE.
+    lane suss does not have or sets a key other than `max_seconds`, and on
+    senior `judge`, when `[lanes.senior.judge]` is not as `_judge` takes it,
+    or when a .env line is not NAME=VALUE.
     """
     path, data = _read(path)
     directory = path.parent
@@ -118,6 +132,7 @@ def load(path: Path, arm: str, lane: str) -> Config:
             max_seconds=_cap("max_seconds", table, lane_tables.get(lane, {}), data),
         ),
         env=_read_env(directory / ".env"),
+        judge=_judge(path, judge) if (judge := lane_tables.get(lane, {}).get("judge")) is not None else None,
     )
 
 
@@ -161,7 +176,8 @@ def _lanes(path: Path, data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     The file's `[lanes.<lane>]` tables, keyed by lane.
 
     Raises ConfigError, naming the file, for a lane suss does not have, a key
-    other than `max_seconds` in a lane's table, or lanes that are not tables.
+    other than `max_seconds` in a lane's table, and on senior `judge`, a judge
+    `_judge` refuses, or lanes that are not tables.
     """
     found = data.get("lanes", {})
     if not isinstance(found, dict):
@@ -174,13 +190,43 @@ def _lanes(path: Path, data: dict[str, Any]) -> dict[str, dict[str, Any]]:
             )
         if not isinstance(table, dict):
             raise ConfigError(f"{path}: lanes.{name} must be a table, as [lanes.{name}]")
+        # Only senior is judged.
+        allowed = LANE_KEYS if name == lanes.SENIOR else LANE_KEYS[:1]
         for key in table:
-            if key not in LANE_KEYS:
+            if key not in allowed:
                 raise ConfigError(
                     f"{path}: [lanes.{name}] sets {key}, but suss reads only "
-                    f"{' and '.join(LANE_KEYS)} there"
+                    f"{' and '.join(allowed)} there"
                 )
+        if "judge" in table:
+            _judge(path, table["judge"])
     return found
+
+
+def _judge(path: Path, table: Any) -> Judge:
+    """
+    The judge `[lanes.senior.judge]` sets.
+
+    Raises ConfigError, naming the file, when it is not a table, sets another
+    key, has no positive `credit_budget`, or sets `model` or `effort` to
+    something other than a string.
+    """
+    where = f"{path}: [lanes.{lanes.SENIOR}.judge]"
+    if not isinstance(table, dict):
+        raise ConfigError(f"{path}: lanes.{lanes.SENIOR}.judge must be a table, as [lanes.{lanes.SENIOR}.judge]")
+    for key in table:
+        if key not in JUDGE_KEYS:
+            raise ConfigError(f"{where} sets {key}, but suss reads only {_and(list(JUDGE_KEYS))} there")
+    budget = table.get("credit_budget")
+    if isinstance(budget, bool) or not isinstance(budget, int | float) or budget <= 0:
+        raise ConfigError(
+            f"{where} must set credit_budget, the AI credits every judge session of a job may"
+            f" spend together, to a positive number, not {budget!r}"
+        )
+    for key in ("model", "effort"):
+        if key in table and not isinstance(table[key], str):
+            raise ConfigError(f"{where} sets {key} to {table[key]!r}, which must be a string")
+    return Judge(budget, table.get("model"), table.get("effort"))
 
 
 def _cap(key: str, *tables: dict[str, Any]) -> Any:
@@ -258,44 +304,30 @@ def grading_choices(env: Mapping[str, str]) -> dict[str, str]:
     return {name: _chosen(env, *choices[name])[1] for name in order}
 
 
-# The verifier sends every call through Portkey when this is set, whatever the model.
-ROUTER_KEY = "PORTKEY_API_KEY"
-PROVIDER_KEYS = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+# The keys senior's own judges and validation agent call their models with.
+# Suss judges senior itself, on a Copilot subscription, so no job is given them.
+GRADING_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PORTKEY_API_KEY")
+TOKEN_NAME = "COPILOT_GITHUB_TOKEN"
 
 
-def check_grading_keys(settings: Config, lane: str) -> None:
+def check_judge(settings: Config, lane: str) -> None:
     """
-    Refuse a .env that lacks a key the senior lane's verifier needs to call
-    its models. Every other lane passes.
+    Refuse a senior run with no judge: no `[lanes.senior.judge]` in suss.toml,
+    or no COPILOT_GITHUB_TOKEN in .env. Every other lane passes.
 
-    The verifier needs `ROUTER_KEY`, or else the key of the provider each of
-    its models names, as anthropic/ or openai/. Without it the judges cannot run, and the
-    verifier still writes a reward. An empty value counts as unset. Raises
-    ConfigError naming the missing keys, or a model setting whose provider has
-    no key in `PROVIDER_KEYS`.
+    An empty token counts as unset. Raises ConfigError naming what is missing.
     """
-    if lane != lanes.SENIOR or settings.env.get(ROUTER_KEY):
+    if lane != lanes.SENIOR:
         return
-    dotenv = settings.path.parent / ".env"
-    needed: dict[str, list[str]] = {}
-    for names, default in GRADING_MODELS.values():
-        setting, model = _chosen(settings.env, names, default)
-        key = PROVIDER_KEYS.get(model.partition("/")[0]) if "/" in model else None
-        if key is None:
-            raise ConfigError(
-                f"{dotenv} sets {setting} to {model}, but the verifier of the tasks in {lane} "
-                f"is given a key only for {' and '.join(f'{p}/' for p in PROVIDER_KEYS)} "
-                f"models; name one of those, or set {ROUTER_KEY}"
-            )
-        if not settings.env.get(key) and model not in needed.setdefault(key, []):
-            needed[key].append(model)
-    if needed:
-        models = [model for found in needed.values() for model in found]
-        them = "it" if len(needed) == 1 else "them"
+    if settings.judge is None:
         raise ConfigError(
-            f"{dotenv} sets no {' or '.join(sorted(needed))}, which the verifier of the "
-            f"tasks in {lane} needs for {_and(models)}, or its judges cannot run; set {them}, "
-            f"or set {ROUTER_KEY} to reach every model through Portkey"
+            f"{settings.path}: no [lanes.{lane}.judge], which suss judges {lane} with; set its"
+            " credit_budget, the AI credits every judge session of a job may spend together"
+        )
+    if not settings.env.get(TOKEN_NAME):
+        raise ConfigError(
+            f"{settings.path.parent / '.env'} sets no {TOKEN_NAME}, which suss judges the trials"
+            f" of {lane} with"
         )
 
 

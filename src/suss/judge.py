@@ -1,17 +1,18 @@
 """
-JudgeAgent, the Harbor custom agent that scores a trial's patch with Senior
-SWE-Bench's rubric and taste judges, run through Copilot CLI in the task's
-container.
+JudgeVerifier, the Harbor verifier that scores a trial's patch with Senior
+SWE-Bench's rubric and taste judges, run through Copilot CLI in the verifier's
+sandbox, then grades it as ReplayVerifier does.
 
-It regrades as ReplayAgent does, and judges in between: after the whole patch
-is applied, test files included, and before those test files are put back for
-the verifier. A judge that fails, times out or changes the repository leaves
-the workspace as a regrade leaves it, so the test reward is a regrade's.
+It judges between the apply and the test-file reset, so the judges see the
+whole patch, test files included. A judge that fails, times out or changes the
+repository leaves the workspace as ReplayVerifier leaves it, so the test reward
+is the same whatever the judges do.
 
 The prompts, the rubric and the answer schemas are the task's own, built by
 the task's tests/run_judge.py in a Python process of their own on the host,
 since each task carries its own copy of senior's modules under one name.
-Harbor constructs the agent on the host, where the agent job and the tasks are.
+Harbor constructs the verifier on the host, where the agent job and the tasks
+are, so the job's credit ledger is one host file every trial shares.
 """
 
 import asyncio
@@ -34,14 +35,15 @@ from pathlib import Path
 from typing import Any
 
 from harbor.environments.base import BaseEnvironment
-from harbor.models.agent.context import AgentContext
+from harbor.models.verifier.result import VerifierResult
+from harbor.verifier.verifier import Verifier
 
-from suss import harness
+from suss import harness, lanes
 from suss.agent import _as_root, _upload, _upload_bytes
-from suss.config import _read_env
+from suss.config import TOKEN_NAME, _read_env
 from suss.harness import SandboxPaths
-from suss.replay import ReplayAgent
-from suss.workspace import find_workspace, read_start_tree
+from suss.replay import ReplayVerifier
+from suss.workspace import read_start_tree
 
 RECORD_NAME = "judge.json"
 LEDGER_NAME = "judge-credits.jsonl"
@@ -51,7 +53,6 @@ MODEL = "gemini-4-argon"
 EFFORT = "high"
 CLASSIFIER_MODEL = "claude-haiku-4.5"
 COPILOT_VERSION = "1.0.105"
-TOKEN_NAME = "COPILOT_GITHUB_TOKEN"
 JUDGES = ("rubric", "taste")
 # The tools each kind of session is offered, all of them read-only.
 TOOLS = {"classify": ("view",), "rubric": ("view",), "taste": ("view", "glob", "grep", "rg")}
@@ -68,8 +69,7 @@ EVENTS = ("model.call_start", "model.call_final_result", "assistant.message",
           "session.usage_checkpoint", "tool.execution_start", "result")
 EVENT_LINES = shlex.quote('"type": ?"(' + "|".join(re.escape(e) for e in EVENTS) + ')"')
 SENIOR_SECONDS = 300
-# How long putting the workspace back may take once the judge has stopped.
-CLEANUP_SECONDS = 300
+CLEANUP_SECONDS = lanes.JUDGE_CLEANUP_SECONDS
 SESSION_SCRIPT = "session.sh"
 
 # How each prompt ends, in place of the forced tool call senior's judges make.
@@ -149,7 +149,8 @@ class JudgePaths:
     """Where the judge keeps things in the sandbox, and the `copilot` it runs."""
 
     root: str = "/opt/suss-judge"
-    logs: str = "/logs/agent/judge"
+    # Under the verifier's logs, which Harbor keeps as the trial's verifier/.
+    logs: str = "/logs/verifier/judge"
     # Found on PATH, where the session puts install.sh's $HOME/.local/bin first.
     copilot: str = "copilot"
 
@@ -329,11 +330,10 @@ def read_events(text: str) -> dict[str, Any]:
     }
 
 
-class JudgeAgent(ReplayAgent):
+class JudgeVerifier(ReplayVerifier):
     def __init__(
         self,
         *,
-        source_job: Any,
         credit_budget: Any,
         model: Any = MODEL,
         effort: Any = EFFORT,
@@ -342,40 +342,40 @@ class JudgeAgent(ReplayAgent):
         dotenv: Any = ".env",
         adapter: Any = str(ADAPTER),
         session_seconds: Any = 1200,
-        judge_seconds: Any = 3600,
+        judge_seconds: Any = lanes.JUDGE_SECONDS,
         paths: JudgePaths = JudgePaths(),
         **kwargs: Any,
     ):
         """
-        Judge each trial of the agent job at `source_job`, spending at most
-        `credit_budget` AI credits over the whole job, as ReplayAgent regrades it.
+        Judge the trial's patch, spending at most `credit_budget` AI credits
+        over every trial of the job, then grade it as ReplayVerifier does.
 
         `effort` is empty for a model that takes none. `dotenv` holds
         COPILOT_GITHUB_TOKEN, and `adapter` is the copilot-cli adapter, whose
         install.sh installs `copilot_version`. Host paths are relative to the
         directory `harbor run` started in. A session is stopped after
-        `session_seconds`, and the judge after `judge_seconds`, which must
-        stay under the task's agent timeout. `paths` is where the sandbox keeps
-        things; Harbor never passes it.
+        `session_seconds`, and the judge, its install included, after
+        `judge_seconds`. `paths` is where the sandbox keeps things; Harbor
+        never passes it.
 
         Raises TypeError for a setting Harbor parsed into the wrong type,
-        ConfigError when the .env cannot be read, and what ReplayAgent raises.
+        ConfigError when the .env cannot be read, and what ReplayVerifier raises.
         """
         for key, value in (("credit_budget", credit_budget), ("session_seconds", session_seconds),
                            ("judge_seconds", judge_seconds)):
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise TypeError(
-                    f"--ak {key} must be a number, but Harbor parsed it into {value!r},"
+                    f"--verifier-kwarg {key} must be a number, but Harbor parsed it into {value!r},"
                     f" a {type(value).__name__}"
                 )
         for key, value in (("model", model), ("effort", effort), ("classifier_model", classifier_model),
                            ("copilot_version", copilot_version), ("dotenv", dotenv), ("adapter", adapter)):
             if not isinstance(value, str):
                 raise TypeError(
-                    f"--ak {key} must be a string, but Harbor parsed it as JSON into {value!r},"
-                    f" a {type(value).__name__}. Quote it as a JSON string."
+                    f"--verifier-kwarg {key} must be a string, but Harbor parsed it as JSON into"
+                    f" {value!r}, a {type(value).__name__}. Quote it as a JSON string."
                 )
-        super().__init__(source_job=source_job, **kwargs)
+        super().__init__(**kwargs)
         self.credit_budget = credit_budget
         self.model = model
         self.effort = effort or None
@@ -386,13 +386,13 @@ class JudgeAgent(ReplayAgent):
         self.judge_seconds = judge_seconds
         self.paths = paths
         self._token = _read_env(Path(dotenv).absolute()).get(TOKEN_NAME, "")
-        self._install = harness.load_manifest(self.adapter)
+        self._install_manifest = harness.load_manifest(self.adapter)
         self._session_manifest = harness.Manifest(
             name="suss-judge", version=version("suss"), install=None, run=SESSION_SCRIPT,
             allowed_hosts=(), env=(TOKEN_NAME,),
         )
         # The job's directory, which holds every trial of it.
-        self._ledger = CreditLedger(self.logs_dir.parent.parent / LEDGER_NAME, credit_budget)
+        self._ledger = CreditLedger(self.trial_paths.trial_dir.parent / LEDGER_NAME, credit_budget)
         self._installed: str | None = None
         self._setup_error: str | None = None
         self._record: dict[str, Any] = {}
@@ -400,26 +400,64 @@ class JudgeAgent(ReplayAgent):
         self._unrestored = False
         self._cancelled: asyncio.CancelledError | None = None
 
-    @staticmethod
-    def name() -> str:
-        return "suss-judge"
+    async def verify(self) -> VerifierResult:
+        """
+        Judge the patch once it is applied, write verifier/judge.json beside
+        replay.json, and grade as ReplayVerifier does.
 
-    async def setup(self, environment: BaseEnvironment) -> None:
+        Raises JudgeError, before anything runs, when the task's verifier
+        timeout cannot hold the judge's limit and its cleanup, since Harbor
+        would stop the judge midway and no test would run. Raises what
+        ReplayVerifier raises, and JudgeError when a session changed the
+        workspace and it could not be put back, so the trial fails rather than
+        being graded on a workspace ReplayVerifier would not leave. A cancel
+        that reaches the judge is raised again once the test files are back.
+        """
+        needed = self.judge_seconds + CLEANUP_SECONDS
+        if self.task.config.verifier.timeout_sec <= needed:
+            raise JudgeError(
+                f"the task's verifier timeout is {self.task.config.verifier.timeout_sec:g}"
+                f" seconds, which leaves no time for its tests after the judge's {needed:g};"
+                " judge it in a lane suss built"
+            )
+        self._record = {
+            "judge": {
+                "client": CLIENT,
+                "version": None,
+                "requested_version": self.copilot_version,
+                "model": self.model,
+                "effort": self.effort,
+                "classifier_model": self.classifier_model,
+            },
+            "sessions": [],
+        }
+        try:
+            await self._replay()
+        finally:
+            self._unfinished("skipped:no_patch")
+            self._write()
+        if self._unrestored:
+            raise JudgeError("a judge session changed the workspace, and it could not be put back")
+        if self._cancelled is not None:
+            raise self._cancelled
+        return await Verifier.verify(self)
+
+    async def _install(self, workspace: str) -> None:
         """
         Install Copilot CLI, and read the version it reports.
 
         Never raises an Exception: a failure is kept, so the trial is still
-        regraded, and both judges record `failed:install`.
+        graded, and both judges record `failed:install`.
         """
         paths = self.paths
+        environment = self.environment
         try:
-            workspace = await find_workspace(environment)
             await _upload(environment, self.adapter, paths.adapter)
             await _upload_bytes(environment, json.dumps({"version": self.copilot_version}).encode(), paths.params)
             await _upload_bytes(environment, SESSION.encode(), paths.session)
             await _as_root(environment, f"chmod 755 {shlex.quote(paths.session)}")
             code = await harness.install(
-                environment, self._install, workspace, {},
+                environment, self._install_manifest, workspace, {},
                 SandboxPaths(adapter=paths.adapter, params=paths.params, logs=paths.logs),
             )
             if code not in (0, None):
@@ -434,58 +472,21 @@ class JudgeAgent(ReplayAgent):
                 self._setup_error = f"`copilot --version` exited {result.return_code}: {output[:500]}"
                 return
             self._installed = found.group()
+            self._record["judge"]["version"] = self._installed
         except Exception as error:
             self._setup_error = f"{type(error).__name__}: {error}"
 
-    async def run(
-        self,
-        instruction: str,
-        environment: BaseEnvironment,
-        context: AgentContext,
-    ) -> None:
-        """
-        Regrade as ReplayAgent does, judging the patch once it is applied, and
-        write judge.json beside replay.json.
-
-        Raises what ReplayAgent raises, and JudgeError when a session changed
-        the workspace and it could not be put back, so the trial fails rather
-        than being graded on a workspace no regrade would leave. A cancel that
-        reaches the judge is raised again once the test files are back.
-        """
-        self._record = {
-            "judge": {
-                "client": CLIENT,
-                "version": self._installed,
-                "requested_version": self.copilot_version,
-                "model": self.model,
-                "effort": self.effort,
-                "classifier_model": self.classifier_model,
-            },
-            "sessions": [],
-        }
-        await super().run(instruction, environment, context)
-        self._unfinished("skipped:no_patch")
-        self._write()
-        if self._unrestored:
-            raise JudgeError("a judge session changed the workspace, and it could not be put back")
-        if self._cancelled is not None:
-            raise self._cancelled
-
     async def _after_apply(
-        self,
-        environment: BaseEnvironment,
-        workspace: str,
-        patch: Path,
-        applied: dict[str, Any],
+        self, workspace: str, target: str, patch: bytes, applied: dict[str, Any]
     ) -> None:
         """
         Judge the applied patch, then put back anything a session changed.
 
-        A cancel is kept rather than raised, so that ReplayAgent still puts
-        the test files back for the verifier, which Harbor runs after its
-        agent timeout. `run` raises it after.
+        A cancel is kept rather than raised, so that ReplayVerifier still puts
+        the test files back before `verify` raises it.
         """
-        self._record["patch"] = str(patch)
+        environment = self.environment
+        self._record["patch"] = target
         try:
             async with asyncio.timeout(self.judge_seconds):
                 await self._judge(environment, workspace, patch, applied)
@@ -495,7 +496,7 @@ class JudgeAgent(ReplayAgent):
                 session.setdefault("status", "failed:timeout")
         except asyncio.CancelledError as cancelled:
             self._cancelled = cancelled
-            self._unfinished("failed:cancelled", "the judge was cancelled, as at Harbor's agent timeout")
+            self._unfinished("failed:cancelled", "the judge was cancelled, as at Harbor's verifier timeout")
             for session in self._record["sessions"]:
                 session.setdefault("status", "failed:cancelled")
         except Exception as error:
@@ -516,25 +517,26 @@ class JudgeAgent(ReplayAgent):
             self._write()
 
     async def _judge(
-        self, environment: BaseEnvironment, workspace: str, patch: Path, applied: dict[str, Any]
+        self, environment: BaseEnvironment, workspace: str, patch: bytes, applied: dict[str, Any]
     ) -> None:
         record = self._record
         if applied["apply_rc"] != 0:
             self._unfinished("failed:patch_not_applied", applied["apply_out"][-500:])
             return
+        await self._install(workspace)
         if self._setup_error is not None:
             self._unfinished("failed:install", self._setup_error)
             return
         if not self._token:
             self._unfinished("skipped:no_token", f"the .env sets no {TOKEN_NAME}")
             return
-        task = self._task_dir()
+        task = self.task.paths.task_dir
         repo_name = _repo_name(task)
         if repo_name is None:
             self._unfinished("skipped:no_repo_name", f"{task / 'task.toml'} sets no [verifier.env] REPO_NAME")
             return
         senior = _Senior(task / "tests", repo_name)
-        patches = {"agent_patch": patch.read_bytes().decode(errors="replace"), "oracle_patch": _oracle(task)}
+        patches = {"agent_patch": patch.decode(errors="replace"), "oracle_patch": _oracle(task)}
         prepared = await senior.call("prepare", **patches)
         record["judged_files"] = prepared["changed_files"]
         self._baseline = await self._fingerprint(environment, workspace)
@@ -678,7 +680,7 @@ class JudgeAgent(ReplayAgent):
             session["retries"] = resumes["name"]
         self._record["sessions"].append(session)
         reserve = RETRY_RESERVE if resumes else RESERVE[kind]
-        held = await self._ledger.reserve(f"{self.logs_dir.parent.name}/{name}", reserve)
+        held = await self._ledger.reserve(f"{self.trial_paths.trial_dir.name}/{name}", reserve)
         if held is None:
             session["status"] = "skipped:budget"
             session["error"] = f"the job's credit budget of {self.credit_budget} cannot hold this session"
@@ -779,7 +781,7 @@ class JudgeAgent(ReplayAgent):
         whether putting it back succeeded.
 
         An ignored file a session changed cannot be put back. When putting back
-        fails, `run` fails the trial.
+        fails, `verify` fails the trial.
         """
         baseline = self._baseline
         if baseline is None:
@@ -877,13 +879,8 @@ class JudgeAgent(ReplayAgent):
         # A reply, a rationale or an error can quote the token.
         if self._token:
             text = text.replace(self._token, "[redacted]")
-        self.logs_dir.mkdir(parents=True, exist_ok=True)
-        (self.logs_dir / RECORD_NAME).write_text(text)
-
-    def _task_dir(self) -> Path:
-        """The task's directory on the host, as the trial's config.json names it."""
-        config = json.loads((self.logs_dir.parent / "config.json").read_text())
-        return Path(config["task"]["path"]).absolute()
+        self.trial_paths.verifier_dir.mkdir(parents=True, exist_ok=True)
+        (self.trial_paths.verifier_dir / RECORD_NAME).write_text(text)
 
 
 def _repo_name(task: Path) -> str | None:
