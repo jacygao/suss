@@ -6,7 +6,7 @@ versions: { harbor: 0.22.0, copilot-cli: 1.0.105, environment: modal, lane: "reb
 recheck-when: Harbor upgrades past 0.22.0, Harbor's copilot_cli agent gains a credit cap or a way to turn off built-in MCP servers, or a rebench task sets [verifier] environment_mode
 ---
 
-# Suss adds a closed Copilot CLI, a fresh-sandbox grade and a paired interval to Harbor, and duplicates much of the rest
+# Suss adds a capped Copilot CLI, a fresh-sandbox grade and a paired interval to Harbor, and duplicates much of the rest
 
 ## Intent
 
@@ -20,18 +20,22 @@ recheck-when: Harbor upgrades past 0.22.0, Harbor's copilot_cli agent gains a cr
 
 ## Decisions
 
-- **Suss is for three things Harbor does not do: run Copilot CLI closed off
-  from GitHub and under a credit cap, grade the patch alone in a fresh
-  sandbox, and compare two arms task by task.** Everything else it does is
-  either in Harbor already or would be in Harbor with a small change. The map
-  below says which, part by part.
+- **Suss is for three things Harbor does not do: run Copilot CLI under a
+  credit cap with its built-in GitHub and web tools off, grade the patch alone
+  in a fresh sandbox, and compare two arms task by task.** Everything else it
+  does is either in Harbor already or would be in Harbor with a small change.
+  The map below says which, part by part. Neither suss nor Harbor closes
+  GitHub to a Copilot CLI trial: the agent's shell can still reach GitHub's
+  MCP server on the allowed model host with the arm's token, which only a gate
+  outside the sandbox stops, and that gate is #204.
 - **Keep `adapters/copilot-cli/`. Harbor's agent cannot stand in for it.**
   Harbor's agent takes the model, the effort and the version, and the job takes
   the hosts. It has no credit cap, and it leaves Copilot CLI's built-in GitHub
   MCP server on. In the check, GPT-6.1 Sol used that server to download a file
   from GitHub, through the allowed model host, while the agent phase was
   limited to the arm's two hosts. Copilot CLI had 39 tools under Harbor's
-  agent and 19 under the adapter.
+  agent and 19 under the adapter. The adapter shuts the tools the model is
+  offered, not the host, so it narrows the leak rather than closing it.
 - **Harbor records no AI credits, and for a GPT model no tokens either.** Its
   `copilot_cli` agent skips every `session.*` event, and
   `session.usage_checkpoint` is the only event that holds the credits and the
@@ -40,10 +44,11 @@ recheck-when: Harbor upgrades past 0.22.0, Harbor's copilot_cli agent gains a cr
   440,002 input tokens. Suss does not do better in the record: `suss.json` holds
   no credits, and SussAgent leaves Harbor's `agent_result` empty. The
   leaderboard's credits are read from `run.log` by hand.
-- **`suss compare`'s paired interval changed no conclusion on these runs.** Read
-  alone, each run's 95% interval overlaps the others' almost entirely, so a
-  person concludes that no arm differs, and `suss compare` concludes the same.
-  The paired interval is narrower: 18 points for `copilot-gpt − copilot-sonnet`,
+- **`suss compare`'s paired interval changed no conclusion on these runs.**
+  For both pairs, the unpaired difference interval and the paired one both
+  include zero, so either way the difference cannot be told from none. Neither
+  shows the arms are equal: the paired intervals still allow about ten points
+  either way. The paired interval is narrower: 18 points for `copilot-gpt − copilot-sonnet`,
   where the unpaired one is 25, and 11 for `hve-sol − copilot-gpt`, where the
   unpaired one is 26. That precision would decide a difference of about 6 to
   12 points, which the unpaired interval cannot tell from zero. No such
@@ -79,7 +84,7 @@ recheck-when: Harbor upgrades past 0.22.0, Harbor's copilot_cli agent gains a cr
 
 | Part | Suss | Harbor 0.22.0's nearest | Adds |
 |---|---|---|---|
-| `adapters/copilot-cli/` | `install.sh` downloads the release's standalone binary and checks it against `SHA256SUMS.txt`. `run.sh` passes `--model`, `--reasoning-effort` and `--max-ai-credits`, turns off built-in MCP servers, auto-update and telemetry, excludes `web_fetch` and `web_search`, and gives Copilot CLI an empty `COPILOT_HOME` and `GH_CONFIG_DIR` with only `COPILOT_GITHUB_TOKEN`. | `agents/installed/copilot_cli.py`, `CopilotCli`. `install` pipes `https://gh.io/copilot-install` into `bash` with `VERSION`. `run` passes `--model`, `--effort` from `--ak reasoning_effort`, and `--yolo`. The token is the first of `COPILOT_GITHUB_TOKEN`, `GH_TOKEN` and `GITHUB_TOKEN` in Harbor's own environment. | Yes: the credit cap, the closed GitHub channel, the checked binary with no `curl` or `bash` needed, and a token no fallback can replace. |
+| `adapters/copilot-cli/` | `install.sh` downloads the release's standalone binary and checks it against `SHA256SUMS.txt`. `run.sh` passes `--model`, `--reasoning-effort` and `--max-ai-credits`, turns off built-in MCP servers, auto-update and telemetry, excludes `web_fetch` and `web_search`, and gives Copilot CLI an empty `COPILOT_HOME` and `GH_CONFIG_DIR` with only `COPILOT_GITHUB_TOKEN`. | `agents/installed/copilot_cli.py`, `CopilotCli`. `install` pipes `https://gh.io/copilot-install` into `bash` with `VERSION`. `run` passes `--model`, `--effort` from `--ak reasoning_effort`, and `--yolo`. The token is the first of `COPILOT_GITHUB_TOKEN`, `GH_TOKEN` and `GITHUB_TOKEN` in Harbor's own environment. | Yes: the credit cap, the built-in GitHub MCP server and web tools turned off, the checked binary with no `curl` or `bash` needed, and a token no fallback can replace. |
 | `adapters/claude-code/` | Installs Claude Code at `version`; runs it with `model`, `effort` and `max_budget_usd`, and `WebSearch` and `WebFetch` denied. | `agents/installed/claude_code.py`, `ClaudeCode`, whose `CLI_FLAGS` include `reasoning_effort`, `max_budget_usd` and `disallowed_tools`, and which takes `version`. | Little. It exists because an arm can only name an adapter. |
 | `adapters/copilot-cli-hve/` | Copilot CLI with hve-core's RPI Agent, from `--plugin-dir` and `--agent`. | `CopilotCli._build_register_skills_command`, which copies a skills directory into `~/.copilot/`. No plugin or agent option. | Yes. |
 | `SussAgent` and the manifest | `agent.py` runs any harness from a directory and two shell commands, records the starting tree, captures the whole change as `model.patch`, and on a timeout kills every process `run` started, then still captures. | `agents/installed/base.py`, `BaseInstalledAgent`: a Python class per agent, with `install` and `run`. No patch capture. | Yes: a harness needs no Python and no Harbor code, and every trial leaves a patch. |
