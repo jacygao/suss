@@ -351,6 +351,22 @@ def test_records_the_client_the_model_and_effort_asked_for_and_reported_and_the_
     assert "--reasoning-effort" not in next(c for c in calls(box) if c["kind"] == "classify")["argv"]
 
 
+@pytest.mark.parametrize("effort", ["high", ""], ids=["with-effort", "without-effort"])
+def test_judges_with_a_model_of_another_family_as_with_the_default(
+    box, workspace, local_environment, effort
+):
+    job = source_job(box, workspace)
+
+    record = judge(judge_agent(box, job, model="gemini-4-argon", effort=effort), local_environment)
+
+    assert (record["rubric_status"], record["taste_status"]) == ("ok", "ok")
+    assert (record["judge"]["model"], record["judge"]["effort"]) == ("gemini-4-argon", effort or None)
+    judged = [call for call in calls(box) if call["kind"] in ("rubric", "taste")]
+    for call in judged:
+        assert call["flags"]["--model"] == ["gemini-4-argon"]
+        assert call["flags"].get("--reasoning-effort") == ([effort] if effort else None)
+
+
 def test_records_each_sessions_credits_and_their_total(box, workspace, local_environment):
     write_scenario(box, classify={"nano": 1_250_000_000})
     job = source_job(box, workspace)
@@ -746,6 +762,51 @@ def test_a_workspace_that_cannot_be_put_back_fails_the_trial(
         go(agent.run("an instruction", local_environment, AgentContext()))
     record = json.loads((agent.logs_dir / "judge.json").read_text())
     assert record["rubric_status"] == "failed:repo_changed"
+
+
+def test_a_restore_that_raises_fails_the_trial(box, workspace, local_environment, monkeypatch):
+    job = source_job(box, workspace)
+    write_scenario(box, rubric={"write": "notes.txt"})
+    agent = judge_agent(box, job)
+
+    async def stuck(*args, **kwargs):
+        raise RuntimeError("the reset stopped midway")
+
+    monkeypatch.setattr(agent, "_restore", stuck)
+    go(agent.setup(local_environment))
+
+    with pytest.raises(suss.judge.JudgeError, match="put back"):
+        go(agent.run("an instruction", local_environment, AgentContext()))
+
+
+def test_a_cancel_during_cleanup_still_puts_the_test_files_back_and_fails_the_trial(
+    box, workspace, local_environment
+):
+    job = source_job(box, workspace)
+    expected = regraded_input(box, workspace, job, local_environment)
+    agent = judge_agent(box, job)
+    real_cleanup = agent._cleanup
+    entered = asyncio.Event()
+
+    async def slow_cleanup(*args):
+        entered.set()
+        await asyncio.sleep(30)
+        await real_cleanup(*args)
+
+    agent._cleanup = slow_cleanup
+    go(agent.setup(local_environment))
+
+    async def cancel_during_cleanup():
+        run = asyncio.create_task(agent.run("an instruction", local_environment, AgentContext()))
+        await entered.wait()
+        run.cancel()
+        with pytest.raises(suss.judge.JudgeError, match="put back"):
+            await run
+
+    go(cancel_during_cleanup())
+
+    assert verifier_input(workspace) == expected
+    assert (agent.logs_dir / "replay.json").exists()
 
 
 def test_a_cancelled_run_still_puts_the_test_files_back_and_stays_cancelled(

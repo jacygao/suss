@@ -487,11 +487,18 @@ class JudgeAgent(ReplayAgent):
         except Exception as error:
             self._unfinished("failed:error", f"{type(error).__name__}: {error}")
         finally:
+            # A cleanup that did not finish leaves the workspace unchecked, which
+            # fails the trial once the test files are back.
             try:
                 async with asyncio.timeout(CLEANUP_SECONDS):
                     await self._cleanup(environment, workspace)
+            except asyncio.CancelledError as cancelled:
+                self._cancelled = cancelled
+                self._record["cleanup_error"] = "cancelled before the workspace was checked"
+                self._unrestored = self._unrestored or self._baseline is not None
             except Exception as error:
                 self._record["cleanup_error"] = f"{type(error).__name__}: {error}"
+                self._unrestored = self._unrestored or self._baseline is not None
             self._write()
 
     async def _judge(
@@ -706,11 +713,14 @@ class JudgeAgent(ReplayAgent):
         now = await self._fingerprint(environment, workspace, since=self.paths.mark)
         if all(now[key] == baseline[key] for key in keys) and not now["newer"]:
             return True, None
+        # Unconfirmed until a finished comparison proves it, so a restore that
+        # raises or is stopped midway fails the trial.
+        self._unrestored = True
         with contextlib.suppress(JudgeError):
             await self._restore(environment, workspace)
         after = await self._fingerprint(environment, workspace)
         restored = all(after[key] == baseline[key] for key in keys)
-        self._unrestored = self._unrestored or not restored
+        self._unrestored = not restored
         return False, restored
 
     async def _restore(self, environment: BaseEnvironment, workspace: str) -> None:
