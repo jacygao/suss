@@ -584,12 +584,23 @@ def _docker_info(docker: str, root: Path, format: str) -> str:
 
 
 def _harbor(command: Command, cwd: Path) -> int:
-    """Run the command on suss's own stdout and stderr, and return its exit code."""
+    """
+    Run the command on suss's own stdout and stderr, and return its exit code.
+
+    On Ctrl-C, it waits for the command to exit before raising, since the
+    terminal sends the command the same interrupt and Harbor records a
+    cancelled trial as it stops.
+    """
     sys.stdout.flush()
     try:
-        return subprocess.run(command.argv, cwd=cwd, env=_environment(command)).returncode
+        process = subprocess.Popen(command.argv, cwd=cwd, env=_environment(command))
     except FileNotFoundError:
         raise _Stop(f"{command.argv[0]}: no such program") from None
+    try:
+        return process.wait()
+    except KeyboardInterrupt:
+        process.wait()
+        raise
 
 
 def _environment(command: Command) -> dict[str, str]:

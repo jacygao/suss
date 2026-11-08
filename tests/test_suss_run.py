@@ -2,8 +2,10 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import types
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -417,6 +419,22 @@ def test_harbors_output_is_shown_as_it_runs(project, capfd):
     assert f"stand-in harbor ran {STAMP}-1\n" in out
     assert f"stand-in harbor ran {STAMP}-2\n" in out
     assert f"stand-in harbor complained about {STAMP}-1\n" in out + err
+
+
+def test_ctrl_c_waits_for_harbor_to_finish_cancelling_before_suss_stops(tmp_path):
+    # Harbor gets the same Ctrl-C from the terminal and records a cancelled
+    # trial as it stops, which takes longer than subprocess.run's 0.25 s grace.
+    done = tmp_path / "done"
+    script = f"import time, pathlib; time.sleep(1.5); pathlib.Path({str(done)!r}).write_text('ok')"
+    # Sent to the main thread, so it interrupts the wait at once, as a terminal's Ctrl-C does.
+    main = threading.main_thread().ident
+    interrupt = threading.Timer(0.3, lambda: signal.pthread_kill(main, signal.SIGINT))
+    interrupt.start()
+
+    with pytest.raises(KeyboardInterrupt):
+        cli._harbor(cli.Command([sys.executable, "-c", script]), tmp_path)
+
+    assert done.read_text() == "ok", "suss stopped before Harbor finished, so Harbor was killed mid-cleanup"
 
 
 # When a job fails
