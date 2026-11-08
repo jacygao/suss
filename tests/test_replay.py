@@ -69,7 +69,7 @@ def found(monkeypatch, workspace) -> list[tuple]:
 
 
 def patch_of(workspace: Path, change) -> bytes:
-    """The patch SussAgent would capture for `change`, leaving the workspace at its base."""
+    """The patch SussMixin would capture for `change`, leaving the workspace at its base."""
     change(workspace)
     git(workspace, "add", "-A")
     patch = subprocess.run(
