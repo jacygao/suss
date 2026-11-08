@@ -26,8 +26,6 @@ class Arm:
     model: str | None
     # Each is passed to the agent class as an --ak.
     kwargs: dict[str, Any]
-    # The arm's own, else its lane's, else the top's; None where none sets one.
-    max_seconds: float | None
 
 
 @dataclass(frozen=True)
@@ -72,7 +70,6 @@ REQUIRED_IN_ARM = ("agent",)
 RETIRED_IN_ARM = ("harness", "params")
 # Set by suss on every agent, so an arm's own kwargs cannot take them.
 RESERVED_KWARGS = ("arm", "lane", "suss_config")
-LANE_KEYS = ("max_seconds", "judge")
 JUDGE_KEYS = ("credit_budget", "model", "effort")
 
 
@@ -81,15 +78,14 @@ def load(path: Path, arm: str, lane: str) -> Config:
     Read the settings `arm` runs with on `lane` from the suss.toml at `path`.
 
     Paths in the file resolve from the directory holding it, whatever the
-    current directory is. `max_seconds` is optional, and so is the download
-    of each lane but `lane`. Raises ConfigError, naming the file, when it is
-    missing or is not TOML, when it sets `swe_bench_pro` or `dataset`, when a
-    required key is missing, when `k` is
-    not a whole number of at least 1, when the file does not define `arm`, when
-    the arm sets `harness` or `params`, has no `agent`, or has a `model` or
-    `kwargs` it cannot pass to Harbor, when the top or `arm` sets
-    `max_cost_usd`, when a `[lanes.<lane>]` table names a lane suss does not
-    have or sets a key other than `max_seconds`, and on senior `judge`, when
+    current directory is. The download of each lane but `lane` is optional.
+    Raises ConfigError, naming the file, when it is missing or is not TOML,
+    when it sets `swe_bench_pro` or `dataset`, when a required key is missing,
+    when `k` is not a whole number of at least 1, when the file does not
+    define `arm`, when the arm sets `harness` or `params`, has no `agent`, or
+    has a `model` or `kwargs` it cannot pass to Harbor, when the top or `arm`
+    sets `max_cost_usd`, when a `[lanes.<lane>]` table names a lane suss does
+    not have or sets a key other than `judge` on senior, when
     `[lanes.senior.judge]` is not as `_judge` takes it, or when a .env line is
     not NAME=VALUE.
     """
@@ -129,10 +125,7 @@ def load(path: Path, arm: str, lane: str) -> Config:
         (f"[arms.{arm}] sets max_cost_usd", table),
     ):
         if "max_cost_usd" in keys:
-            raise ConfigError(
-                f"{path}: {where}, but suss does not read it, and caps an arm's trials by "
-                "max_seconds alone"
-            )
+            raise ConfigError(f"{path}: {where}, but suss does not read it")
     lane_tables = _lanes(path, data)
     return Config(
         path=path,
@@ -147,7 +140,6 @@ def load(path: Path, arm: str, lane: str) -> Config:
             baseline=table.get("baseline"),
             model=table.get("model"),
             kwargs=table.get("kwargs", {}),
-            max_seconds=_cap("max_seconds", table, lane_tables.get(lane, {}), data),
         ),
         env=_read_env(directory / ".env"),
         judge=_judge(path, judge) if (judge := lane_tables.get(lane, {}).get("judge")) is not None else None,
@@ -221,8 +213,8 @@ def _lanes(path: Path, data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     The file's `[lanes.<lane>]` tables, keyed by lane.
 
     Raises ConfigError, naming the file, for a lane suss does not have, a key
-    other than `max_seconds` in a lane's table, and on senior `judge`, a judge
-    `_judge` refuses, or lanes that are not tables.
+    other than `judge` on senior in a lane's table, a judge `_judge` refuses,
+    or lanes that are not tables.
     """
     found = data.get("lanes", {})
     if not isinstance(found, dict):
@@ -235,13 +227,10 @@ def _lanes(path: Path, data: dict[str, Any]) -> dict[str, dict[str, Any]]:
             )
         if not isinstance(table, dict):
             raise ConfigError(f"{path}: lanes.{name} must be a table, as [lanes.{name}]")
-        # Only senior is judged.
-        allowed = LANE_KEYS if name == lanes.SENIOR else LANE_KEYS[:1]
         for key in table:
-            if key not in allowed:
+            if key != "judge" or name != lanes.SENIOR:
                 raise ConfigError(
-                    f"{path}: [lanes.{name}] sets {key}, but suss reads only "
-                    f"{' and '.join(allowed)} there"
+                    f"{path}: [lanes.{name}] sets {key}, but suss reads only [lanes.{lanes.SENIOR}.judge]"
                 )
         if "judge" in table:
             _judge(path, table["judge"])
@@ -273,15 +262,6 @@ def _judge(path: Path, table: Any) -> Judge:
         if key in table and not isinstance(table[key], str):
             raise ConfigError(f"{where} sets {key} to {table[key]!r}, which must be a string")
     return Judge(budget, table.get("model"), table.get("effort"))
-
-
-def _cap(key: str, *tables: dict[str, Any]) -> Any:
-    """`key` from the first of `tables` that sets it, or None where none does."""
-    for table in tables:
-        # Membership, not truthiness, so that a 0 still overrides what comes after.
-        if key in table:
-            return table[key]
-    return None
 
 
 # The task.toml tables whose `${NAME}` values Harbor fills from its own environment

@@ -115,7 +115,7 @@ def box(tmp_path, local_environment, monkeypatch):
     (download / "task.toml").write_text("[agent]\ntimeout_sec = 100\n")
     (host / "suss.toml").write_text(
         'swe_rebench = "tasks/swe-rebench-07-2026"\nenvironment = "docker"\nk = 1\nconcurrency = 1\n'
-        "max_seconds = 60\n\n"
+        "\n"
         '[arms.copilot-gpt]\nagent = "suss.agents:SussCopilotCli"\nmodel = "gpt-6.1-sol"\n'
         'kwargs = { version = "1.0.105", reasoning_effort = "high" }\n'
     )

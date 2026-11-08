@@ -132,15 +132,10 @@ def trial(tmp_path, local_environment) -> Trial:
         'environment = "docker"\n'
         "k = 1\n"
         "concurrency = 1\n"
-        "max_seconds = 60\n"
         "\n"
         "[arms.fake]\n"
         'agent = "test_agents:SussScripted"\n'
         "kwargs = { rounds = 3 }\n"
-        "\n"
-        "[arms.quick]\n"
-        'agent = "test_agents:SussScripted"\n'
-        "max_seconds = 1\n"
     )
     (host / ".env").write_text("COPILOT_GITHUB_TOKEN=from-the-env-file\n")
     sandbox = tmp_path / "the sandbox"
@@ -230,14 +225,6 @@ def test_a_run_that_exits_non_zero_is_harness_failed_its_change_captured_and_its
     assert "a known change" in trial.patch()
 
 
-def test_a_run_past_max_seconds_is_timed_out_and_returns(local_environment, trial):
-    record = trial.run(local_environment, trial.agent(arm="quick"), f"{KNOWN_CHANGE}\nsleep 30")
-
-    assert record["status"] == "timed-out"
-    assert record["run_seconds"] < 10
-    assert "a known change" in trial.patch()
-
-
 def test_every_command_of_the_run_carries_a_token_the_setup_phase_does_not(
     local_environment, trial, monkeypatch
 ):
@@ -295,14 +282,8 @@ def test_a_cancelled_run_writes_a_timed_out_record_and_raises_the_cancel(local_e
     assert record["patch_bytes"] == len((trial.logs / "model.patch").read_bytes())
 
 
-@pytest.mark.parametrize("end", ["max_seconds", "cancel"])
-def test_a_stopped_run_leaves_nothing_writing_to_the_workspace(
-    local_environment, trial, tmp_path, end
-):
-    if end == "cancel":
-        cancel_mid_run(trial, local_environment, trial.agent())
-    else:
-        trial.run(local_environment, trial.agent(arm="quick"), STILL_WORKING)
+def test_a_cancelled_run_leaves_nothing_writing_to_the_workspace(local_environment, trial, tmp_path):
+    cancel_mid_run(trial, local_environment, trial.agent())
 
     # Past the moment the child would have written.
     time.sleep(3)
@@ -330,10 +311,6 @@ def test_harbors_agent_timeout_still_sees_the_cancel(local_environment, trial):
 
 def end_normally(trial: Trial, env) -> None:
     trial.run(env)
-
-
-def end_at_max_seconds(trial: Trial, env) -> None:
-    trial.run(env, trial.agent(arm="quick"), f"{KNOWN_CHANGE}\nsleep 30")
 
 
 def end_at_harbors_timeout(trial: Trial, env) -> None:
@@ -371,7 +348,7 @@ def end_by_raising(trial: Trial, env) -> None:
 
 
 @pytest.mark.parametrize(
-    "end", [end_normally, end_at_max_seconds, end_at_harbors_timeout, end_by_raising]
+    "end", [end_normally, end_at_harbors_timeout, end_by_raising]
 )
 def test_the_patch_in_artifacts_is_the_agents_patch_however_the_run_ends(
     local_environment, trial, end

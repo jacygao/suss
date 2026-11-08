@@ -96,11 +96,9 @@ class Project:
         arm_extra: str = "",
         environment: str = "docker",
         k: str = "2",
-        max_seconds: str | None = "2700",
         lane_tables: str = "",
         downloads: tuple[str, ...] = ("swe_rebench", "senior_swe_bench"),
     ) -> None:
-        cap = f"max_seconds = {max_seconds}\n" if max_seconds else ""
         named = {
             "swe_rebench": "../tasks/swe-rebench-07-2026",
             "senior_swe_bench": "../tasks/senior/senior-swe-bench-v2026.06",
@@ -109,8 +107,7 @@ class Project:
             "".join(f'{key} = "{named[key]}"\n' for key in downloads)
             + f'environment = "{environment}"\n'
             f"k = {k}\n"
-            "concurrency = 4\n"
-            f"{cap}\n"
+            "concurrency = 4\n\n"
             f"{lane_tables}\n"
             f"{JUDGE}\n"
             "[arms.peer-review]\n"
@@ -487,21 +484,10 @@ def assert_nothing_ran(project: Project) -> None:
     assert not (project.directory / "results").exists()
 
 
-def test_a_max_seconds_over_any_tasks_timeout_is_refused_before_anything_runs(project, capfd):
-    write_task(project.tasks, "zzz__short-1", timeout=2000)
-
-    code = project.run("peer-review", "rebench")
-
-    assert code != 0
-    assert_nothing_ran(project)
-    assert "2000-second agent timeout of the tasks in rebench" in capfd.readouterr().err
-
-
 @pytest.mark.parametrize("check", [False, True], ids=["full", "check"])
 def test_the_lane_checks_pass_over_a_task_the_lane_leaves_out(project, monkeypatch, check):
-    # Too short a timeout for max_seconds, too large for Docker, and first by
-    # name, so that a check would take it.
-    write_task(project.tasks, "AAA__never-1", timeout=2000, cpus=64)
+    # Too large for Docker, and first by name, so that a check would take it.
+    write_task(project.tasks, "AAA__never-1", cpus=64)
     monkeypatch.setattr(lanes, "UNGRADEABLE", ("AAA__never-1",))
 
     assert project.run("peer-review", "rebench", *(["--check"] if check else [])) == 0
@@ -587,24 +573,18 @@ def test_a_task_that_sets_the_agents_network_is_refused_before_anything_runs(
     assert_nothing_ran(project)
 
 
-# With no max_seconds nothing reads the timeout, so a task.toml with no agent
-# table reaches the check of its CPUs and memory.
 @pytest.mark.parametrize(
-    "contents, max_seconds, message",
+    "contents, message",
     [
-        ("[agent\n", "2700", "task.toml: not valid TOML"),
-        ('environment = "docker"\n', None, "task.toml: no [environment] cpus"),
-        ("agent = 3000\n[environment]\ncpus = 1\n", "2700", "task.toml: no [agent] timeout_sec"),
+        ("[agent\n", "task.toml: not valid TOML"),
+        ('environment = "docker"\n', "task.toml: no [environment] cpus"),
     ],
-    ids=["not-toml", "environment-not-a-table", "agent-not-a-table"],
+    ids=["not-toml", "environment-not-a-table"],
 )
-def test_a_task_toml_suss_cannot_read_is_an_error_naming_it(
-    project, capfd, contents, max_seconds, message
-):
+def test_a_task_toml_suss_cannot_read_is_an_error_naming_it(project, capfd, contents, message):
     task = project.tasks / "owner__repo-ggg"
     task.mkdir()
     (task / "task.toml").write_text(contents)
-    project.write_toml(max_seconds=max_seconds)
 
     code = project.run("peer-review", "rebench")
 
@@ -615,14 +595,14 @@ def test_a_task_toml_suss_cannot_read_is_an_error_naming_it(
 
 
 @pytest.mark.parametrize("check", [False, True], ids=["run", "check"])
-def test_a_broken_task_toml_after_the_first_is_refused_on_modal_with_no_max_seconds(
+def test_a_broken_task_toml_after_the_first_is_refused_on_modal(
     project, capfd, check
 ):
     # Sorts after the lane's first task, which is all a check runs.
     task = project.tasks / "zzz__repo-1"
     task.mkdir()
     (task / "task.toml").write_text("[agent\n")
-    project.write_toml(environment="modal", max_seconds=None)
+    project.write_toml(environment="modal")
 
     code = project.run("peer-review", "rebench", *(["--check"] if check else []))
 
@@ -632,57 +612,8 @@ def test_a_broken_task_toml_after_the_first_is_refused_on_modal_with_no_max_seco
     assert err.startswith("error: ") and "zzz__repo-1/task.toml" in err, err
 
 
-def test_the_max_seconds_error_is_printed_as_the_spec_shows(project, capfd):
-    project.write_toml(arm_extra="max_seconds = 3000")
-
-    code = project.run("peer-review", "rebench")
-
-    assert code != 0
-    assert capfd.readouterr().err == (
-        "error: arm peer-review sets max_seconds = 3000, which must be under the "
-        "3000-second agent timeout of the tasks in rebench\n"
-    )
-    assert_nothing_ran(project)
-
-
 # A .env that gives the senior lane's judge its token.
 JUDGES_KEY = "COPILOT_GITHUB_TOKEN=gh-1\n"
-
-
-# Either lane alone over the timeout, so that a value read once for the run,
-# from the first lane or the last, passes one of them. A senior check's one
-# task allows 14400 seconds, and is checked against the lane's shortest.
-@pytest.mark.parametrize("over, timeout", [("rebench", 3000), ("senior", 7200)])
-@pytest.mark.parametrize("check", [False, True], ids=["run", "check"])
-def test_each_lane_in_a_run_is_checked_against_its_own_max_seconds(
-    project, capfd, over, timeout, check
-):
-    write_dotenv(project, JUDGES_KEY)
-    project.write_toml(lane_tables=f"[lanes.{over}]\nmax_seconds = {timeout}\n")
-
-    code = project.run("peer-review", "rebench", "senior", *(["--check"] if check else []))
-
-    assert code != 0
-    assert capfd.readouterr().err == (
-        f"error: arm peer-review sets max_seconds = {timeout}, which must be under the "
-        f"{timeout}-second agent timeout of the tasks in {over}\n"
-    )
-    assert_nothing_ran(project)
-
-
-def test_a_senior_max_seconds_under_its_shortest_timeout_runs(project, capfd):
-    write_dotenv(project, JUDGES_KEY)
-    project.write_toml(lane_tables="[lanes.senior]\nmax_seconds = 7199\n")
-
-    assert project.run("peer-review", "senior") == 0, capfd.readouterr().err
-
-
-def test_an_arms_own_max_seconds_is_checked_in_place_of_its_lanes(project, capfd):
-    project.write_toml(
-        arm_extra="max_seconds = 1800", lane_tables="[lanes.rebench]\nmax_seconds = 3000\n"
-    )
-
-    assert project.run("peer-review", "rebench") == 0, capfd.readouterr().err
 
 
 @pytest.mark.parametrize("check", [False, True], ids=["run", "check"])
@@ -721,7 +652,7 @@ def test_an_old_max_cost_usd_is_refused_as_the_spec_shows(project, capfd, monkey
     assert code != 0
     assert err == (
         f"error: {project.directory / 'suss.toml'}: [arms.peer-review] sets max_cost_usd, but suss "
-        "does not read it, and caps an arm's trials by max_seconds alone\n"
+        "does not read it\n"
     )
     assert out == ""
     assert_nothing_ran(project)
@@ -735,7 +666,7 @@ def test_a_lane_suss_does_not_have_in_suss_toml_is_refused_as_the_spec_shows(
 ):
     if dry_run:
         monkeypatch.setenv("DRY_RUN", "1")
-    project.write_toml(lane_tables="[lanes.rebnech]\nmax_seconds = 2400\n")
+    project.write_toml(lane_tables="[lanes.rebnech]\n")
 
     code = project.run("peer-review", "rebench", *(["--check"] if check else []))
 

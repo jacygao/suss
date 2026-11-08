@@ -57,7 +57,6 @@ def trial(env, user: str | None, arm: str):
     (download / "task.toml").write_text("")
     (host / "suss.toml").write_text(
         'swe_rebench = "tasks/swe-rebench-07-2026"\nenvironment = "docker"\nk = 1\nconcurrency = 1\n\n'
-        '[arms.quick]\nagent = "test_agents:SussScripted"\nmax_seconds = 3\n\n'
         '[arms.unlimited]\nagent = "test_agents:SussScripted"\n'
     )
     workspace = root / "workspace"
@@ -108,20 +107,6 @@ def assert_nothing_left(env, workspace: Path) -> None:
     assert late.stat().st_size == size, "something went on writing to the workspace after the patch"
     assert left_running(env, ["sleep 399"]), "the stop killed a process suss did not start"
     assert left_running(env, ["sleep infinity"]), "the stop killed the container's PID 1"
-
-
-@pytest.mark.parametrize("user", [None, "node"])
-def test_a_run_stopped_at_max_seconds_leaves_no_process_it_started(container_environment, user):
-    env = container_environment
-    agent, workspace = trial(env, user, "quick")
-    bystander(env, user)
-
-    go(agent.setup(env))
-    go(agent.run("an instruction", env, AgentContext()))
-
-    assert_nothing_left(env, workspace)
-    patch = (Path(env.environment_dir) / "logs" / "agent" / "model.patch").read_text()
-    assert "a known change" in patch
 
 
 @pytest.mark.parametrize("user", [None, "node"])

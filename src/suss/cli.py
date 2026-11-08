@@ -420,7 +420,6 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
         return _compare(args.lane, args.arms, harbor_args, directory)
     dry_run = _dry_run()
     run_stamp = stamp(clock())
-    # Per lane, since a lane may set its own max_seconds. Nothing else differs between them.
     on_lane = {lane: config.load(directory / "suss.toml", args.arm, lane) for lane in args.lanes}
     settings = on_lane[args.lanes[0]]
     if settings.environment == "modal":
@@ -520,7 +519,6 @@ def _plan(
     download = settings.download(lane)
     # The whole lane even for a check, which tests that the arm can run it.
     found = lanes.read_tasks(lanes.lane_tasks(lane, download))
-    lanes.check_max_seconds(settings.arm, lane, found)
     lanes.check_buildable(lane, download, settings.path.parent / "lanes", check)
     used = dict(list(found.items())[:1]) if check else found
     reads = config.host_variables(used)

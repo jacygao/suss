@@ -36,7 +36,6 @@ def make_config(
             baseline=None,
             model=None,
             kwargs={},
-            max_seconds=None,
         ),
         env={},
         judge=Judge(credit_budget=2000),

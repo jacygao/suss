@@ -46,7 +46,6 @@ def test_reads_the_top_level_keys_of_the_spec_example(spec_config: Path):
     assert settings.environment == "docker"
     assert settings.k == 1
     assert settings.concurrency == 16
-    assert settings.arm.max_seconds == 2700
 
 
 def test_reads_each_arm_of_the_spec_example(spec_config: Path):
@@ -68,70 +67,10 @@ def test_reads_each_arm_of_the_spec_example(spec_config: Path):
     }
 
 
-def test_an_arm_that_sets_no_max_seconds_takes_the_tops(tmp_path: Path):
-    path = write_config(tmp_path, TOP + 'max_seconds = 2700\n[arms.a]\nagent = "m:A"\n')
-
-    assert config.load(path, "a", "rebench").arm.max_seconds == 2700
-
-
-# 0 is a cap the arm set, so it overrides the top's rather than falling through to it.
-@pytest.mark.parametrize("seconds", [600, 0])
-def test_an_arms_own_max_seconds_overrides_the_tops(tmp_path: Path, seconds: int):
-    path = write_config(
-        tmp_path,
-        TOP + f'max_seconds = 2700\n[arms.a]\nagent = "m:A"\nmax_seconds = {seconds}\n',
-    )
-
-    assert config.load(path, "a", "rebench").arm.max_seconds == seconds
-
-
-def test_an_arms_max_seconds_applies_where_the_top_sets_none(tmp_path: Path):
-    path = write_config(tmp_path, TOP + '[arms.a]\nagent = "m:A"\nmax_seconds = 600\n')
-
-    assert config.load(path, "a", "rebench").arm.max_seconds == 600
-
-
-def test_a_max_seconds_set_nowhere_is_none(tmp_path: Path):
-    path = write_config(tmp_path, TOP + '[arms.a]\nagent = "m:A"\n')
-
-    assert config.load(path, "a", "rebench").arm.max_seconds is None
-
-
-def test_a_lanes_max_seconds_overrides_the_tops_on_that_lane_alone(tmp_path: Path):
-    path = write_config(
-        tmp_path,
-        TOP + 'max_seconds = 2700\n[lanes.senior]\nmax_seconds = 5400\n[arms.a]\nagent = "m:A"\n',
-    )
-
-    assert config.load(path, "a", "senior").arm.max_seconds == 5400
-    assert config.load(path, "a", "rebench").arm.max_seconds == 2700
-
-
-# Each value differs from the others, so the one loaded says which won.
-@pytest.mark.parametrize("seconds", [1800, 0])
-def test_an_arms_own_max_seconds_overrides_its_lanes(tmp_path: Path, seconds: int):
-    path = write_config(
-        tmp_path,
-        TOP + "max_seconds = 2700\n[lanes.senior]\nmax_seconds = 5400\n"
-        f'[arms.a]\nagent = "m:A"\nmax_seconds = {seconds}\n',
-    )
-
-    assert config.load(path, "a", "senior").arm.max_seconds == seconds
-
-
-def test_a_lanes_max_seconds_applies_where_the_top_sets_none(tmp_path: Path):
-    path = write_config(
-        tmp_path, TOP + '[lanes.rebench]\nmax_seconds = 0\n[arms.a]\nagent = "m:A"\n'
-    )
-
-    assert config.load(path, "a", "rebench").arm.max_seconds == 0
-
-
 def test_a_lane_suss_does_not_have_is_an_error_naming_it(tmp_path: Path):
     path = write_config(
         tmp_path,
-        TOP + "[lanes.rebench]\nmax_seconds = 2400\n[lanes.senoir]\nmax_seconds = 5400\n"
-        '[arms.a]\nagent = "m:A"\n',
+        TOP + '[lanes.senoir]\n[arms.a]\nagent = "m:A"\n',
     )
 
     with pytest.raises(config.ConfigError) as error:
@@ -151,7 +90,7 @@ def test_a_key_suss_does_not_read_on_a_lane_is_an_error_naming_it(tmp_path: Path
         config.load(path, "a", "rebench")
 
     assert str(error.value) == (
-        f"{path}: [lanes.rebench] sets max_cost_usd, but suss reads only max_seconds there"
+        f"{path}: [lanes.rebench] sets max_cost_usd, but suss reads only [lanes.senior.judge]"
     )
 
 
@@ -381,7 +320,7 @@ def test_an_arm_without_an_agent_is_an_error_naming_the_key_the_arm_and_the_file
     ],
     ids=["top", "arm", "both"],
 )
-def test_max_cost_usd_is_refused_naming_max_seconds_as_the_only_cap(
+def test_max_cost_usd_is_refused(
     tmp_path: Path, top: str, arm_table: str, where: str
 ):
     path = write_config(tmp_path, TOP + top + '[arms.a]\nagent = "m:A"\n' + arm_table)
@@ -389,10 +328,7 @@ def test_max_cost_usd_is_refused_naming_max_seconds_as_the_only_cap(
     with pytest.raises(config.ConfigError) as error:
         config.load(path, "a", "rebench")
 
-    assert str(error.value) == (
-        f"{path}: {where}, but suss does not read it, and caps an arm's trials by "
-        "max_seconds alone"
-    )
+    assert str(error.value) == f"{path}: {where}, but suss does not read it"
 
 
 def test_baselines_reads_each_arms_baseline_and_none_where_it_names_none(spec_config: Path):
@@ -609,7 +545,7 @@ def test_a_judge_on_another_lane_is_an_error(tmp_path: Path):
         config.load(path, "a", "rebench")
 
     assert str(error.value) == (
-        f"{path}: [lanes.rebench] sets judge, but suss reads only max_seconds there"
+        f"{path}: [lanes.rebench] sets judge, but suss reads only [lanes.senior.judge]"
     )
 
 
