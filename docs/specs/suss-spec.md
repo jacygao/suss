@@ -450,14 +450,11 @@ closed, and an `Interface` section naming any interface it adds.
 The verifier runs the task's hidden tests. A trial resolves when the tests the
 real change made pass now pass, and the tests that passed before still pass.
 
-Each copy's `task.toml` adds `[verifier] environment_mode = "separate"`, and its
-`tests/` gains a copy of every file in `environment/`, its `Dockerfile` among
-them, since Harbor builds the separate verifier's image from `tests/`. A task
+Each copy's `task.toml` adds `[verifier] environment_mode = "separate"`. A task
 whose `[verifier]` sets another `environment_mode` or an `environment` of its
-own, or whose `tests/` already holds a file of that name or is a link, makes
-`suss run` exit with an error naming it before it builds any lane or runs any
-job. Harbor's `oracle` agent leaves no patch for the separate verifier to
-apply, so an oracle check of the lane runs on the download, whose verifier
+own makes `suss run` exit with an error naming it before it builds any lane or
+runs any job. Harbor's `oracle` agent leaves no patch for the separate verifier
+to apply, so an oracle check of the lane runs on the download, whose verifier
 shares the agent's sandbox:
 
 ```bash
@@ -494,12 +491,10 @@ The agent timeout is 7200 seconds in 46 tasks and 14400 in the other four. The
 download amd64 Go or Rust toolchains by name, whatever the host's architecture.
 
 Each copy's `task.toml` adds `[verifier] environment_mode = "separate"` and the
-judge's 2100 seconds to its `[verifier] timeout_sec`, and its `tests/` gains a
-copy of every file in `environment/`, as on `rebench`. One task's `Dockerfile`
-copies `proto_plumbing.patch` from there. A task whose `[verifier]` sets another
-`environment_mode`, an `environment` of its own, or a `timeout_sec` that is not
-a positive number makes `suss run` exit with an error naming it before it
-builds any lane or runs any job.
+judge's 2100 seconds to its `[verifier] timeout_sec`. A task whose `[verifier]`
+sets another `environment_mode`, an `environment` of its own, or a `timeout_sec`
+that is not a positive number makes `suss run` exit with an error naming it
+before it builds any lane or runs any job.
 
 Each copy's `tests/test.sh` installs `litellm>=1.0,<1.106` where the task's
 installs `litellm>=1.0,<2.0`.

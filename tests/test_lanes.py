@@ -102,11 +102,6 @@ def files_of(task: Path) -> dict[str, bytes]:
     }
 
 
-def copied_files(task: Path) -> dict[str, bytes]:
-    """The files a rebench copy of `task` holds: the task's, and its Dockerfile in tests/ too."""
-    return {**files_of(task), "tests/Dockerfile": (task / "environment" / "Dockerfile").read_bytes()}
-
-
 SEPARATE = 'environment_mode = "separate"'
 # What a rebench task.toml with no [verifier] table gains at its end.
 SEPARATE_TABLE = f"\n[verifier]\n{SEPARATE}\n"
@@ -290,7 +285,7 @@ def test_every_other_file_is_copied_byte_for_byte(tmp_path: Path):
 
     built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
-    assert files_of(built / "owner__repo-1") == copied_files(source / "owner__repo-1")
+    assert files_of(built / "owner__repo-1") == files_of(source / "owner__repo-1")
 
 
 def test_file_modes_are_kept_so_executable_scripts_stay_executable(tmp_path: Path):
@@ -339,7 +334,7 @@ def test_a_rebuild_leaves_only_the_tasks_of_the_latest_download(tmp_path: Path):
     lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
     assert [entry.name for entry in built.iterdir()] == ["owner__repo-1"]
-    assert files_of(built / "owner__repo-1") == copied_files(source / "owner__repo-1")
+    assert files_of(built / "owner__repo-1") == files_of(source / "owner__repo-1")
 
 
 def test_the_rebench_check_lane_holds_only_the_first_task_by_name(tmp_path: Path):
@@ -591,8 +586,7 @@ def test_each_senior_copy_differs_from_its_task_in_its_verifier_and_the_litellm_
     built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / name
 
     original, copied = every_file(source / name), every_file(built)
-    assert copied.keys() == original.keys() | {"tests/Dockerfile"}
-    assert copied["tests/Dockerfile"] == original["environment/Dockerfile"]
+    assert copied.keys() == original.keys()
     changed = [path for path in original if copied[path] != original[path]]
     assert changed == ["task.toml", "tests/test.sh"]
     before = original["tests/test.sh"].splitlines(keepends=True)
@@ -798,98 +792,6 @@ def test_a_rebench_task_whose_verifier_sets_its_own_sandbox_is_refused_naming_it
     assert str(error.value).startswith(f"{source / 'owner__repo-1' / 'task.toml'}: ")
 
 
-def test_a_rebench_copy_builds_its_verifier_from_the_tasks_own_dockerfile_and_files(
-    tmp_path: Path,
-):
-    source = make_rebench(tmp_path / "source", ["owner__repo-1"])
-    environment = source / "owner__repo-1" / "environment"
-    (environment / "Dockerfile").write_text("FROM scratch\nCOPY fix.patch /fix.patch\n")
-    (environment / "fix.patch").write_bytes(b"\xff not text\n")
-    (environment / "fix.patch").chmod(0o640)
-    (environment / "conf").mkdir()
-    (environment / "conf" / "a.ini").write_text("a = 1\n")
-
-    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes") / "owner__repo-1"
-
-    assert files_of(built) == {
-        **files_of(source / "owner__repo-1"),
-        "tests/Dockerfile": b"FROM scratch\nCOPY fix.patch /fix.patch\n",
-        "tests/fix.patch": b"\xff not text\n",
-        "tests/conf/a.ini": b"a = 1\n",
-    }
-    assert oct((built / "tests" / "fix.patch").stat().st_mode) == oct(
-        (environment / "fix.patch").stat().st_mode
-    )
-
-
-@pytest.mark.parametrize("name", ["Dockerfile", "config.json"])
-def test_a_rebench_tests_file_the_verifiers_build_would_replace_is_refused_naming_it(
-    tmp_path: Path, name: str
-):
-    source = make_rebench(tmp_path / "source", ["owner__repo-1"])
-    task = source / "owner__repo-1"
-    if name == "Dockerfile":
-        (task / "tests" / "Dockerfile").write_text("FROM other\n")
-    else:
-        (task / "environment" / "config.json").write_text("{}\n")
-
-    with pytest.raises(LaneError) as error:
-        lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
-
-    assert str(error.value).startswith(f"{task / 'tests' / name}: ")
-
-
-def test_a_link_inside_rebench_tests_is_refused_and_what_it_names_left_alone(tmp_path: Path):
-    source = make_rebench(tmp_path / "source", ["owner__repo-1"])
-    task = source / "owner__repo-1"
-    (task / "environment" / "conf").mkdir()
-    (task / "environment" / "conf" / "a.ini").write_text("a = 1\n")
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (task / "tests" / "conf").symlink_to(outside)
-
-    with pytest.raises(LaneError) as error:
-        lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
-
-    assert str(error.value).startswith(f"{task / 'tests' / 'conf'}: ")
-    assert list(outside.iterdir()) == []
-
-
-def test_a_nested_verifier_file_is_written_into_a_read_only_tests_directory(tmp_path: Path):
-    source = make_rebench(tmp_path / "source", ["owner__repo-1"])
-    task = source / "owner__repo-1"
-    (task / "environment" / "conf").mkdir()
-    (task / "environment" / "conf" / "a.ini").write_text("a = 1\n")
-    (task / "tests").chmod(0o555)
-    try:
-        lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
-        built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes") / "owner__repo-1"
-
-        assert (built / "tests" / "conf" / "a.ini").read_text() == "a = 1\n"
-        assert oct((built / "tests").stat().st_mode) == oct((task / "tests").stat().st_mode)
-    finally:
-        # Left read-only, they would stop pytest removing tmp_path.
-        for directory in tmp_path.rglob("*"):
-            if directory.is_dir() and not directory.is_symlink():
-                directory.chmod(0o755)
-
-
-def test_a_rebench_tests_directory_that_is_a_link_is_refused_and_the_download_left_alone(
-    tmp_path: Path,
-):
-    source = make_rebench(tmp_path / "source", ["owner__repo-1"])
-    tests = source / "owner__repo-1" / "tests"
-    shutil.move(tests, source / "owner__repo-1" / "real-tests")
-    tests.symlink_to("real-tests")
-    downloaded = files_of(source)
-
-    with pytest.raises(LaneError) as error:
-        lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
-
-    assert str(error.value).startswith(f"{tests}: ")
-    assert files_of(source) == downloaded
-
-
 def test_harbor_reads_a_senior_copy_with_its_own_agent_allowlist_and_a_separate_verifier(
     tmp_path: Path,
 ):
@@ -965,18 +867,6 @@ def test_a_senior_verifier_timeout_that_is_not_a_positive_number_is_refused_nami
         lanes.check_buildable(lanes.SENIOR, source, tmp_path / "lanes")
 
     assert str(error.value).startswith(f"{toml}: [verifier] timeout_sec is ")
-
-
-def test_a_senior_copy_builds_its_verifier_from_the_tasks_own_dockerfile_and_files(tmp_path: Path):
-    source = make_senior(tmp_path / "source")
-    environment = source / DESIGN / "environment"
-    # As teleport-add-traits-matching-logic's Dockerfile copies a patch from environment/.
-    (environment / "proto_plumbing.patch").write_text("diff --git a/x b/x\n")
-
-    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / DESIGN
-
-    assert (built / "tests" / "proto_plumbing.patch").read_text() == "diff --git a/x b/x\n"
-    assert (built / "tests" / "Dockerfile").read_bytes() == (environment / "Dockerfile").read_bytes()
 
 
 def test_the_lane_checks_read_a_senior_tasks_memory_as_harbor_does(tmp_path: Path):
