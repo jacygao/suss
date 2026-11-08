@@ -386,10 +386,10 @@ The agent's own files go there too, such as Copilot CLI's stream,
   not graded, whatever the agent did.
 - `usage` is what the agent reports it spent, or `null` for an agent whose
   reports suss does not read.
-- `egress` gives the lane's `task_hosts`. `requests` counts the lines of
-  `egress.jsonl`, and `refused` the lines whose decision is `refused`. It is
-  `null` when the mixin could not fetch the log, and the trial is graded all the
-  same.
+- `egress` gives the lane's `task_hosts`, which it always holds. `requests`
+  counts the lines of `egress.jsonl`, and `refused` the lines whose decision is
+  `refused`. Both are `null` when the mixin could not fetch the log, and the
+  trial is graded all the same.
 
 ## 4. Agents
 
@@ -631,13 +631,15 @@ harness needs.
 
 | `environment` | The proxy runs as | A sandbox reaches it at | Harbor's allowlist |
 |---|---|---|---|
-| `docker` | a process suss starts on this machine, listening on `127.0.0.1` | `https://host.docker.internal:<port>` | `host.docker.internal` |
+| `docker`, on Docker Desktop | a process suss starts on this machine, listening on `127.0.0.1` | `https://host.docker.internal:<port>` | `host.docker.internal` |
+| `docker`, on a Linux engine | a process suss starts on this machine, listening on the gateway address of Docker's `bridge` network, as `docker network inspect bridge` gives it | `https://<gateway>:<port>` | `<gateway>` |
 | `modal` | a Modal Sandbox suss starts, its port behind an encrypted Modal tunnel | `https://<tunnel host>`, the `*.modal.host` name Modal gives the tunnel | `<tunnel host>` |
 
 A sandbox reaches the proxy over TLS, so Harbor's fence sees the proxy's host
-in the handshake. Under `docker`, the run's CA signs the listener's certificate
-for `host.docker.internal` and `127.0.0.1`. Under `modal`, the tunnel's TLS is
-Modal's.
+in the handshake, or its address where the client names it by one. Under
+`docker`, the run's CA signs the listener's certificate for
+`host.docker.internal`, `127.0.0.1` and the gateway's address. Under `modal`,
+the tunnel's TLS is Modal's.
 
 Every command of the agent phase gets these variables, which make the proxy its
 forward proxy:
@@ -753,7 +755,8 @@ is the Python environment suss is installed in, an absolute path suss forms
 itself. Its `harbor` is the one that can import `suss.agents` and suss's
 verifiers, which a `harbor` elsewhere on `PATH` may not be. The
 `--allow-agent-host` is the proxy's host: `host.docker.internal` under
-`docker`, and the tunnel's host under `modal`. Suss stops the proxy after the
+Docker Desktop, the bridge's gateway under a Linux engine, and the tunnel's
+host under `modal`. Suss stops the proxy after the
 last agent job.
 
 When a task in the lane has Harbor fill a variable from Harbor's environment,
@@ -1144,7 +1147,7 @@ It exits with an error, and prints nothing else, when:
   in results/senior/claude-code/20261031T142500Z-1, judge_model "openai/gpt-5.5"
   in results/senior/self-review/20261103T090000Z-1
   ```
-- The arms' trials whose `egress` is not `null` do not all give the same
+- The arms' trials that have an `egress` do not all give the same
   `task_hosts`, since a trial that reached its task's hosts and one that did
   not had different work to do.
 - A trial whose `suss.json` has `patch_bytes` above 0 has a verifier that
