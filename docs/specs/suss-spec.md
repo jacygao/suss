@@ -331,7 +331,7 @@ The agent's own files go there too, such as Copilot CLI's stream,
   "agent": { "class": "suss.agents:SussCopilotCli", "name": "copilot-cli", "version": "1.0.105" },
   "model": "gpt-6.1-sol",
   "kwargs": { "version": "1.0.105", "reasoning_effort": "high" },
-  "grader": { "dataset": "swe-rebench-07-2026", "digest": "9c2f04b1…" },
+  "grader": { "dataset": "swe-rebench-07-2026" },
   "base": "5568b2e0a686cc4d838bddc095b831379143e61b",
   "status": "ok",
   "run_seconds": 1290.4,
@@ -343,14 +343,8 @@ The agent's own files go there too, such as Copilot CLI's stream,
 - `agent` names the arm's agent class, Harbor's name for it, and the version
   the installed agent reports, which `kwargs` may ask for and not get. `model`
   and `kwargs` are what the arm passed Harbor.
-- `grader` names the dataset the trial's task came from, and a sha256 digest of
-  every file of every task in the lane's download, the directory `swe_rebench`
-  or `senior_swe_bench` names, by path and content. A link inside a task counts
-  by its target, and is not followed. A task directory that is a link counts as
-  the task it names. File times, modes, empty directories, and files outside
-  every task, such as the download's `README.md`, leave the digest unchanged, so
-  two downloads of the same tasks have the same digest. Suss fails a trial on a
-  lane with no dataset before its sandbox starts.
+- `grader` names the dataset the trial's task came from. Suss fails a trial on
+  a lane with no dataset before its sandbox starts.
 - On `senior`, `grader` also holds the litellm requirement the lane's
   `test.sh` installs, and the models and validation harness in the table
   above. Each is what the verifier is given: the value `.env` sets, where the
@@ -362,7 +356,6 @@ The agent's own files go there too, such as Copilot CLI's stream,
   {
     "grader": {
       "dataset": "senior-swe-bench-v2026.06",
-      "digest": "0e0174e2…",
       "litellm": "litellm>=1.0,<1.106",
       "judge_model": "anthropic/claude-sonnet-4-6",
       "classifier_model": "anthropic/claude-haiku-4-5-20251001",
@@ -960,13 +953,24 @@ It exits with an error, and prints nothing else, when:
   ```
 - The arms' trials that have a `suss.json` do not all carry the same `grader`.
   A trial with no `suss.json` has no `grader` to compare, and still counts as
-  `harness-failed`. Two `senior` graders are named by the fields they differ in:
+  `harness-failed`. Two graders are named by the fields they differ in:
 
   ```
   $ suss compare senior claude-code self-review
   error: trials carry different graders: judge_model "anthropic/claude-sonnet-4-6"
   in results/senior/claude-code/20261031T142500Z-1, judge_model "openai/gpt-5.5"
   in results/senior/self-review/20261103T090000Z-1
+  ```
+- Two trials of one task, in any of the arms, carry different `task_checksum`
+  in their `result.json`, which is Harbor's hash of the task's files as the
+  trial ran them:
+
+  ```
+  $ suss compare rebench claude-code self-review
+  error: the trials of ArcadeData__arcadedb-4281 in
+  results/rebench/claude-code/20261031T142500Z-1 and
+  results/rebench/self-review/20261103T090000Z-1 ran different versions of the
+  task, as their task_checksum differs
   ```
 - A trial whose `suss.json` has `patch_bytes` above 0 has a verifier that
   applied no patch: its `replay.json` has `"patch": null`, or it has no

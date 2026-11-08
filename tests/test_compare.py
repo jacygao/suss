@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import random
 import shutil
@@ -15,13 +16,12 @@ from harbor.trial.errors import VerifierTimeoutError
 from harbor.verifier.factory import VerifierFactory
 from harbor.verifier.verifier import RewardFileEmptyError
 
-from suss import agents, cli, compare, config, replay
+from suss import cli, compare, replay
 from suss.compare import Difference, Trial, read_trials, resolved_difference
 
 LANE = "pro-go"
 ARM = "claude-code"
-DIGEST = "9c2f04b1" + "0" * 56
-GRADER = {"dataset": "swe-rebench-07-2026", "digest": DIGEST}
+GRADER = {"dataset": "swe-rebench-07-2026"}
 FLIPT = "instance_flipt-io__flipt-02e21636c58e86c51119b63e0fb5ca7b813b07b1"
 # Harbor truncates a trial directory's name, so this task's trials begin as
 # FLIPT's do.
@@ -88,7 +88,12 @@ def write_agent_trial(
     write_json(trial / "config.json", {"task": {"path": f"lanes/{LANE}/{task}"}})
     write_json(
         trial / "result.json",
-        {"task_name": f"swebench-pro/{task}", "trial_name": trial.name, "verifier_result": None},
+        {
+            "task_name": f"swebench-pro/{task}",
+            "trial_name": trial.name,
+            "task_checksum": hashlib.sha256(task.encode()).hexdigest(),
+            "verifier_result": None,
+        },
     )
     (trial / "agent").mkdir()
     (trial / "agent" / "model.patch").write_text("x" * patch_bytes)
@@ -1163,7 +1168,8 @@ def add_trial(root: Path, arm: str, job: str, task: str, grader) -> None:
 
 
 # GRADER, as the error names it.
-SHORT = "swe-rebench-07-2026 (9c2f04b1)"
+SHORT = 'dataset "swe-rebench-07-2026"'
+OTHER = 'dataset "swe-rebench-08-2026"'
 
 
 def graders_differ(one: str, one_in: str, other: str, other_in: str) -> str:
@@ -1174,67 +1180,32 @@ def graders_differ(one: str, one_in: str, other: str, other_in: str) -> str:
     )
 
 
-@pytest.mark.parametrize(
-    "other, named",
-    [
-        ({**GRADER, "dataset": "swe-rebench-08-2026"}, "swe-rebench-08-2026 (9c2f04b1)"),
-        ({**GRADER, "digest": "4e7a1c90" + "f" * 56}, "swe-rebench-07-2026 (4e7a1c90)"),
-    ],
-    ids=["dataset", "digest"],
-)
-def test_arms_whose_graders_differ_are_an_error_naming_both(results, capsys, other, named):
-    add_trial(results, "beta", "S-9", "t1", other)
+def test_arms_whose_graders_differ_are_an_error_naming_both(results, capsys):
+    add_trial(results, "beta", "S-9", "t1", {"dataset": "swe-rebench-08-2026"})
 
     code, out, err = run_compare(results, capsys, LANE, "base", "beta")
 
     assert code != 0
-    assert (out, err) == (
-        "",
-        graders_differ(SHORT, "base/S-1", named, "beta/S-9"),
-    )
+    assert (out, err) == ("", graders_differ(SHORT, "base/S-1", OTHER, "beta/S-9"))
 
 
 def test_graders_that_differ_within_one_arm_are_an_error(results, capsys):
-    add_trial(results, "base", "S-9", "t1", {**GRADER, "digest": "4e7a1c90" + "f" * 56})
+    add_trial(results, "base", "S-9", "t1", {"dataset": "swe-rebench-08-2026"})
 
     code, out, err = run_compare(results, capsys, LANE, "base", "beta")
 
     assert code != 0
-    assert (out, err) == (
-        "",
-        graders_differ(SHORT, "base/S-1", "swe-rebench-07-2026 (4e7a1c90)", "base/S-9"),
-    )
+    assert (out, err) == ("", graders_differ(SHORT, "base/S-1", OTHER, "base/S-9"))
 
 
 def test_a_grader_that_differs_on_a_task_not_every_arm_has_is_still_an_error(results, capsys):
     # t5 is alpha's alone, so it counts in neither table, and is still read.
-    add_trial(results, "alpha", "S-9", "t5", {**GRADER, "dataset": "swe-rebench-08-2026"})
+    add_trial(results, "alpha", "S-9", "t5", {"dataset": "swe-rebench-08-2026"})
 
     code, out, err = run_compare(results, capsys, LANE, "base", "alpha")
 
     assert code != 0
-    assert (out, err) == (
-        "",
-        graders_differ(SHORT, "base/S-1", "swe-rebench-08-2026 (9c2f04b1)", "alpha/S-9"),
-    )
-
-
-def test_graders_whose_digests_share_a_short_form_print_in_full(results, capsys):
-    other = "9c2f04b1" + "f" * 56
-    add_trial(results, "beta", "S-9", "t1", {**GRADER, "digest": other})
-
-    code, out, err = run_compare(results, capsys, LANE, "base", "beta")
-
-    assert code != 0
-    assert (out, err) == (
-        "",
-        graders_differ(
-            f'{{"dataset": "swe-rebench-07-2026", "digest": "{DIGEST}"}}',
-            "base/S-1",
-            f'{{"dataset": "swe-rebench-07-2026", "digest": "{other}"}}',
-            "beta/S-9",
-        ),
-    )
+    assert (out, err) == ("", graders_differ(SHORT, "base/S-1", OTHER, "alpha/S-9"))
 
 
 def test_a_grader_of_another_shape_prints_in_full(results, capsys):
@@ -1247,11 +1218,27 @@ def test_a_grader_of_another_shape_prints_in_full(results, capsys):
     assert (out, err) == (
         "",
         graders_differ(
-            f'{{"dataset": "swe-rebench-07-2026", "digest": "{DIGEST}"}}',
+            '{"dataset": "swe-rebench-07-2026"}',
             "base/S-1",
             '{"commit": "66f92766", "dataset": "swe-bench-pro-v2"}',
             "beta/S-9",
         ),
+    )
+
+
+def test_trials_of_one_task_whose_task_checksum_differs_are_an_error_naming_both(results, capsys):
+    add_trial(results, "beta", "S-9", "t1", GRADER)
+    trial = grading_trial(results / "results" / LANE / "beta" / "S-9", "t1", "agentX")
+    result = json.loads((trial / "result.json").read_text())
+    write_json(trial / "result.json", result | {"task_checksum": "f" * 64})
+
+    code, out, err = run_compare(results, capsys, LANE, "base", "beta")
+
+    assert code != 0
+    assert (out, err) == (
+        "",
+        f"error: the trials of t1 in results/{LANE}/base/S-1 and results/{LANE}/beta/S-9 "
+        "ran different versions of the task, as their task_checksum differs\n",
     )
 
 
@@ -1268,15 +1255,6 @@ def test_a_trial_with_no_suss_json_takes_no_part_in_the_grader_check(tmp_path, c
         "base       2       50%     50%         0%",
         "beta       2       50%     50%         0%",
     ]
-
-
-def test_graders_whose_keys_come_in_another_order_are_the_same_grader(results, capsys):
-    add_trial(results, "beta", "S-9", "t1", {"digest": GRADER["digest"], "dataset": GRADER["dataset"]})
-
-    code, out, err = run_compare(results, capsys, LANE, "base", "beta")
-
-    assert (code, err) == (0, "")
-    assert out.startswith("arm ")
 
 
 NAMED = "These trials' verifiers recorded no test result, so their grading may have broken:\n"
@@ -1457,7 +1435,6 @@ def judged(rubric=None, practice=None, relative=None, bloat=None, base=JUDGED) -
 
 SENIOR_GRADER = {
     "dataset": "senior-swe-bench-v2026.06",
-    "digest": "0e0174e2" + "0" * 56,
     "litellm": "litellm>=1.0,<1.106",
     "judge_model": "anthropic/claude-sonnet-4-6",
     "classifier_model": "anthropic/claude-haiku-4-5-20251001",
@@ -1705,36 +1682,6 @@ def test_senior_graders_that_differ_in_two_fields_name_both(tmp_path, capsys):
         'judge_model "openai/gpt-5.5" and validation_harness "claude_code" '
         f"in results/{SENIOR}/beta/S-1\n",
     )
-
-
-# A suss.json suss wrote before senior trials had a grader, over a download
-# holding one task, owner__repo-1, whose task.toml is OLD_TASK_TOML.
-OLD_REBENCH_RECORD = Path(__file__).resolve().parent / "old_records" / "rebench-suss.json"
-OLD_TASK_TOML = '[environment]\nnetwork_mode = "public"\n'
-
-
-def test_a_rebench_trial_recorded_before_senior_graders_compares_with_one_recorded_now(
-    tmp_path, capsys
-):
-    download = tmp_path / "tasks" / "swe-rebench-07-2026"
-    (download / "owner__repo-1").mkdir(parents=True)
-    (download / "owner__repo-1" / "task.toml").write_text(OLD_TASK_TOML)
-    (tmp_path / "suss.toml").write_text(
-        'swe_rebench = "tasks/swe-rebench-07-2026"\nenvironment = "docker"\nk = 1\n'
-        'concurrency = 1\n\n[arms.base]\nagent = "suss.agents:SussCopilotCli"\n\n'
-        '[arms.beta]\nagent = "suss.agents:SussCopilotCli"\nbaseline = "base"\n'
-    )
-    settings = config.load(tmp_path / "suss.toml", "beta", "rebench")
-    jobs = tmp_path / "results" / "rebench"
-    old = write_agent_trial(jobs / "base" / "S-1", "t1", "agent1")
-    shutil.copy(OLD_REBENCH_RECORD, old / "agent" / "suss.json")
-    write_agent_trial(jobs / "beta" / "S-1", "t1", "agent1", grader=agents.grader(settings, "rebench"))
-    for arm in ("base", "beta"):
-        write_regrade_trial(jobs / arm / f"S-1{REGRADE}", "t1", "regrd1")
-
-    code, out, err = run_compare(tmp_path, capsys, "rebench", "base", "beta")
-
-    assert (code, err) == (0, ""), "a rebench trial recorded before senior graders no longer compares"
 
 
 ARGON = "gemini-4-argon"

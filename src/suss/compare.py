@@ -63,6 +63,8 @@ class Trial:
     judge: str | None = None
     # What graded the trial, and in which job, as an error names it.
     grading: str = ""
+    # Harbor's hash of the task's files as the trial ran them, or None.
+    task_checksum: str | None = None
 
 
 def read_trials(directory: Path, lane: str, arm: str) -> list[Trial]:
@@ -125,6 +127,7 @@ def _trial(lane: str, job: str, task: str, trial: Path) -> Trial:
         rubric_status=rubric_status,
         judge=judged_by,
         grading=f"verifier in {job}",
+        task_checksum=_task_checksum(trial),
     )
 
 
@@ -183,6 +186,12 @@ def _task(trial: Path) -> str | None:
     if isinstance(task, dict) and isinstance(task.get("path"), str):
         return task["path"].rstrip("/").rsplit("/", 1)[-1]
     return None
+
+
+def _task_checksum(trial: Path) -> str | None:
+    result = _json(trial / "result.json")
+    checksum = result.get("task_checksum") if isinstance(result, dict) else None
+    return checksum if isinstance(checksum, str) else None
 
 
 def _reward(trial: Path) -> float | int | None:
@@ -398,11 +407,13 @@ def report(directory: Path, lane: str, arms: Sequence[str]) -> str:
     Raises ConfigError when suss.toml does not define every arm, and
     CompareError when an arm has no trials or only invalid ones, a trial's
     verifier applied none of its patch or could not apply it, two trials carry
-    different graders, or the arms share no task.
+    different graders, two trials of a task carry different task_checksum, or
+    the arms share no task.
     """
     baselines = config.baselines(Path(directory) / "suss.toml", list(arms))
     trials = _read(directory, lane, arms)
     _one_grader(lane, trials)
+    _one_checksum(lane, trials)
     valid = {arm: [trial for trial in found if not trial.invalid] for arm, found in trials.items()}
     common = set.intersection(*({trial.task for trial in found} for found in valid.values()))
     if not common:
@@ -563,27 +574,10 @@ def _one_grader(lane: str, trials: Mapping[str, Sequence[Trial]]) -> None:
 
 def _graders(one, other) -> tuple[str, str]:
     """
-    The two graders as a person reads them, `<dataset> (<first 8 of digest>)`.
-
-    Graders with the same fields, where those are more than a dataset and a
-    digest, print only the fields they differ in, as `<field> <JSON value>`.
-    Any others print in full when the short form would read the same or does
-    not fit them.
+    The two graders as a person reads them: only the fields they differ in, as
+    `<field> <JSON value>`, when they have the same fields, and in full otherwise.
     """
-    def short(grader) -> str | None:
-        if isinstance(grader, dict) and grader.keys() == {"dataset", "digest"}:
-            if all(isinstance(value, str) for value in grader.values()):
-                return f"{grader['dataset']} ({grader['digest'][:8]})"
-        return None
-
-    named = short(one), short(other)
-    if None not in named and named[0] != named[1]:
-        return named
-    if (
-        isinstance(one, dict)
-        and isinstance(other, dict)
-        and one.keys() == other.keys() != {"dataset", "digest"}
-    ):
+    if isinstance(one, dict) and isinstance(other, dict) and one.keys() == other.keys():
         fields = [field for field in one if one[field] != other[field]]
         first, second = (
             " and ".join(f"{field} {json.dumps(grader[field])}" for field in fields)
@@ -591,6 +585,25 @@ def _graders(one, other) -> tuple[str, str]:
         )
         return first, second
     return json.dumps(one, sort_keys=True), json.dumps(other, sort_keys=True)
+
+
+def _one_checksum(lane: str, trials: Mapping[str, Sequence[Trial]]) -> None:
+    """
+    Raise CompareError naming the first two trials of a task whose task_checksum
+    differs. A trial with none takes no part.
+    """
+    first = {}
+    for arm, found in trials.items():
+        for trial in found:
+            if trial.task_checksum is None:
+                continue
+            seen = first.setdefault(trial.task, (arm, trial))
+            if trial.task_checksum != seen[1].task_checksum:
+                raise CompareError(
+                    f"the trials of {trial.task} in results/{lane}/{seen[0]}/{seen[1].job} and "
+                    f"results/{lane}/{arm}/{trial.job} ran different versions of the task, "
+                    "as their task_checksum differs"
+                )
 
 
 def _outcomes(trials: Sequence[Trial]) -> dict[str, list[bool]]:

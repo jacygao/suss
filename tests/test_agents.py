@@ -3,9 +3,8 @@ Run whole trials through suss's agents, in the stand-in environment.
 
 SussMixin is tested on Scripted, a Harbor installed agent whose run is a shell
 script the test writes, so what the mixin does is seen apart from any coding
-agent. The host holds suss.toml, its .env, and a download of one task for the
-grader's digest. The sandbox is a directory beside it, with its workspace and
-its logs and artifacts directories as siblings.
+agent. The host holds suss.toml and its .env. The sandbox is a directory beside
+it, with its workspace and its logs and artifacts directories as siblings.
 """
 
 import asyncio
@@ -96,7 +95,6 @@ class Trial:
     logs: Path
     artifacts: Path
     host_logs: Path
-    download: Path
 
     def agent(self, cls=SussScripted, arm: str = "fake", config: str | None = None, **kwargs):
         return cls(
@@ -145,10 +143,6 @@ def trial(tmp_path, local_environment) -> Trial:
         "max_seconds = 1\n"
     )
     (host / ".env").write_text("COPILOT_GITHUB_TOKEN=from-the-env-file\n")
-    download = host / "tasks" / "swe-rebench-07-2026"
-    (download / "owner__repo-1").mkdir(parents=True)
-    (download / "owner__repo-1" / "task.toml").write_text('[environment]\nnetwork_mode = "public"\n')
-
     sandbox = tmp_path / "the sandbox"
     workspace = sandbox / "gleam"
     base = init_repo(workspace, {"hello.txt": "hello\n"})
@@ -164,7 +158,6 @@ def trial(tmp_path, local_environment) -> Trial:
         logs=sandbox / "logs" / "agent",
         artifacts=sandbox / "logs" / "artifacts",
         host_logs=tmp_path / "harbor trial" / "agent",
-        download=download,
     )
 
 
@@ -193,7 +186,7 @@ def test_a_whole_trial_leaves_the_patch_and_a_record_with_the_specs_fields(
         "class": "test_agents:SussScripted", "name": "scripted", "version": "scripted 0.0.7",
     }
     assert record["kwargs"] == {}
-    assert record["grader"] == {"dataset": "swe-rebench-07-2026", "digest": lanes.digest(trial.download)}
+    assert record["grader"] == {"dataset": "swe-rebench-07-2026"}
     assert record["base"] == trial.base
     assert record["status"] == "ok"
     assert record["run_seconds"] >= 0
