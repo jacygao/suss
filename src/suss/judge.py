@@ -873,8 +873,42 @@ def _oracle(task: Path) -> str:
 
 
 async def install_copilot(environment: BaseEnvironment, copilot_version: str, logs_dir: Path) -> None:
-    """Install Copilot CLI at `copilot_version`, as Harbor's own agent installs it. Raises when it cannot."""
-    await CopilotCli(logs_dir=logs_dir, version=copilot_version).install(environment)
+    """Install Copilot CLI at `copilot_version`, as NpmCopilotCli installs it. Raises when it cannot."""
+    await NpmCopilotCli(logs_dir=logs_dir, version=copilot_version).install(environment)
+
+
+class NpmCopilotCli(CopilotCli):
+    """
+    Harbor's Copilot CLI agent, installing Copilot CLI from npm's registry
+    instead of GitHub's releases.
+
+    npm's package for each platform holds the same binary as GitHub's release
+    of the version, and needs no Node to run. GitHub's release downloads fail
+    for hours at a time while npm's registry serves.
+    """
+
+    async def install(self, environment: BaseEnvironment) -> None:
+        """Install Copilot CLI at the agent's version into $HOME/.local/bin. Raises when it cannot."""
+        await self.ensure_system_dependencies(environment, ("curl", "bash", "git", "tar"))
+        version = shlex.quote(self._version or "latest")
+        await self.exec_as_agent(
+            environment,
+            command=(
+                "set -euo pipefail; "
+                'case "$(uname -m)" in x86_64|amd64) arch=x64;; aarch64|arm64) arch=arm64;; '
+                '*) echo "no Copilot CLI build for $(uname -m)"; exit 1;; esac; '
+                "libc=linux; if ls /lib/ld-musl-* >/dev/null 2>&1; then libc=linuxmusl; fi; "
+                'package="copilot-$libc-$arch"; '
+                "dir=$(mktemp -d); trap 'rm -rf \"$dir\"' EXIT; "
+                'curl -fsSL --retry 5 -o "$dir/copilot.tgz" '
+                f'"https://registry.npmjs.org/@github/$package/-/$package-"{version}".tgz"; '
+                'tar -xzf "$dir/copilot.tgz" -C "$dir"; '
+                'mkdir -p "$HOME/.local/bin"; install -m 755 "$dir/package/copilot" "$HOME/.local/bin/copilot"; '
+                "echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc; "
+                'export PATH="$HOME/.local/bin:$PATH"; '
+                "copilot --version"
+            ),
+        )
 
 
 async def _run(environment: BaseEnvironment, command: str) -> str:

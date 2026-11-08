@@ -9,6 +9,7 @@ points the agent's paths at its own sandbox directory instead.
 
 import asyncio
 import json
+import re
 import subprocess
 import sys
 import tarfile
@@ -23,11 +24,14 @@ from harbor.models.trial.config import AgentConfig as TrialAgentConfig
 
 from suss.agents import SussCopilotCli, SussCopilotCliHve, full_auto_prompt
 from suss.config import ConfigError
+from suss.judge import NpmCopilotCli
 
 TOKEN = "github_pat_from_the_env_file"
 INSTRUCTION = "Fix the bug.\n"
 COMMIT = "55352bb8e9f0622ff40f5c6afa80363adaf6b07f"
 FULL_AUTO = "Run every phase in full auto mode."
+# The real install, taken before the box fixture stubs it out.
+INSTALL = SussCopilotCli.install
 AGENT_FILE = f"""---
 name: RPI Agent
 handoffs:
@@ -136,8 +140,8 @@ def box(tmp_path, local_environment, monkeypatch):
     local_environment.task_env_config.workdir = str(workspace)
     local_environment._persistent_env = {"HOME": str(home), "PATH": f"{bin_dir}:/usr/bin:/bin"}
     local_environment._resolve_user = lambda user: None if user == "root" else user
-    # Harbor's install downloads from GitHub, which no test reaches.
-    monkeypatch.setattr(CopilotCli, "install", _no_install)
+    # The install downloads from npm's registry, which no test reaches.
+    monkeypatch.setattr(NpmCopilotCli, "install", _no_install)
     monkeypatch.setattr(CopilotCli, "ensure_system_dependencies", _no_install)
     return tmp_path
 
@@ -328,6 +332,23 @@ def publish(box: Path, agent_file: str = AGENT_FILE, plugin: bool = True) -> Non
 
 def hve(box: Path, **kwargs) -> SussCopilotCliHve:
     return agent(box, SussCopilotCliHve, hve_core_commit=COMMIT, reasoning_effort="high", **kwargs)
+
+
+def test_copilot_cli_is_installed_from_npms_registry_not_githubs_releases(box, local_environment):
+    package = box / "npm" / "package"
+    package.mkdir(parents=True)
+    (package / "copilot").write_text("#!/bin/sh\necho 'GitHub Copilot CLI 1.0.105.'\n")
+    (package / "copilot").chmod(0o755)
+    with tarfile.open(bin_dir(box) / "hve-core.tar.gz", "w:gz") as archive:
+        archive.add(package, arcname="package")
+
+    go(INSTALL(agent(box), local_environment))
+
+    url = (bin_dir(box) / "curl.urls").read_text()
+    assert re.fullmatch(
+        r"https://registry\.npmjs\.org/@github/copilot-linux-(x64|arm64)/-/copilot-linux-\1-1\.0\.105\.tgz\n", url
+    ), f"Copilot CLI came from {url!r}"
+    assert (bin_dir(box) / "copilot").read_text() == (package / "copilot").read_text()
 
 
 def plugin_dir(box: Path) -> Path:

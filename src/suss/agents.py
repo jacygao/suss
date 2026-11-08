@@ -22,7 +22,6 @@ from typing import Any, ClassVar
 from harbor.agents.base import BaseAgent
 from harbor.agents.installed.base import NonZeroAgentExitCodeError
 from harbor.agents.installed.claude_code import ClaudeCode
-from harbor.agents.installed.copilot_cli import CopilotCli
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 from harbor.utils.import_path import import_symbol
@@ -354,7 +353,7 @@ def check_arm(cls: type[SussMixin], settings: config.Config) -> None:
         raise ConfigError(f"{where} sets no model, which {arm.agent} needs")
 
 
-class SussCopilotCli(SussMixin, CopilotCli):
+class SussCopilotCli(SussMixin, judge.NpmCopilotCli):
     """
     Harbor's Copilot CLI agent, with the built-in MCP servers, the web tools,
     auto-update and client telemetry off, and only the arm's own token.
@@ -573,7 +572,7 @@ class SussCopilotCliHve(SussCopilotCli):
 
     async def install(self, environment: BaseEnvironment) -> None:
         """
-        Install Copilot CLI as Harbor's agent does, then hve-core at the
+        Install Copilot CLI as SussCopilotCli does, then hve-core at the
         commit, as a plugin directory under $HOME/.local/share/hve-core/.
 
         GitHub's archive of a commit holds one directory, named for the
