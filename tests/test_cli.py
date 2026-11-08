@@ -95,6 +95,10 @@ def spec_config(tmp_path: Path, lane: str) -> Config:
     return config.load(path, "copilot-gpt", lane)
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="The spec describes the egress proxy's variables and allowlist, which #230 builds.",
+)
 @pytest.mark.parametrize(
     "lane, reads", [("rebench", ()), ("senior", ("ANTHROPIC_API_KEY",))]
 )

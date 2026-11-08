@@ -181,6 +181,10 @@ def assert_patch_carries_the_known_change(trial: Trial, tmp_path: Path) -> None:
 # The mixin
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="The spec's record has the egress proxy's `egress` fields, which #231 adds.",
+)
 def test_a_whole_trial_leaves_the_patch_and_a_record_with_the_specs_fields(
     local_environment, trial, tmp_path
 ):

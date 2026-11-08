@@ -540,6 +540,9 @@ every credential the agent's requests need, and decides each request by the
 run's rules: it tunnels it unread, passes it with a credential put in, or
 refuses it. No sandbox holds a real token.
 
+The proxy is mitmproxy, with suss's rules, credentials and log as a mitmproxy
+addon in `src/suss/`.
+
 Harbor's allowlist is the fence around the proxy. In the agent phase it holds
 the proxy's host alone, so a request that does not go through the proxy is
 refused there. The setup phase has the whole network, and the verifier keeps
