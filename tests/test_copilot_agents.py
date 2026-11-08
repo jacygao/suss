@@ -351,6 +351,12 @@ def test_copilot_cli_is_installed_from_npms_registry_not_githubs_releases(box, l
     assert (bin_dir(box) / "copilot").read_text() == (package / "copilot").read_text()
 
 
+@pytest.mark.parametrize("version", ["latest", "1.0", "v1.0.107"])
+def test_a_copilot_version_that_is_not_exact_is_refused_before_a_sandbox_starts(box, version):
+    with pytest.raises(ValueError, match="exact version"):
+        agent(box, version=version)
+
+
 def plugin_dir(box: Path) -> Path:
     return box / "sandbox" / "home" / ".local" / "share" / "hve-core" / COMMIT
 

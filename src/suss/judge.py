@@ -887,10 +887,19 @@ class NpmCopilotCli(CopilotCli):
     for hours at a time while npm's registry serves.
     """
 
+    def __init__(self, **kwargs: Any):
+        """
+        Raises ValueError for a version that is not exact, as 1.0.107 is.
+        npm names each package file for its exact version, never a tag.
+        """
+        super().__init__(**kwargs)
+        if not re.fullmatch(r"\d+\.\d+\.\d+", self._version or ""):
+            raise ValueError(f"Copilot CLI's version must be an exact version, as 1.0.107 is, not {self._version!r}")
+
     async def install(self, environment: BaseEnvironment) -> None:
         """Install Copilot CLI at the agent's version into $HOME/.local/bin. Raises when it cannot."""
         await self.ensure_system_dependencies(environment, ("curl", "bash", "git", "tar"))
-        version = shlex.quote(self._version or "latest")
+        version = self._version
         await self.exec_as_agent(
             environment,
             command=(
@@ -901,7 +910,7 @@ class NpmCopilotCli(CopilotCli):
                 'package="copilot-$libc-$arch"; '
                 "dir=$(mktemp -d); trap 'rm -rf \"$dir\"' EXIT; "
                 'curl -fsSL --retry 5 -o "$dir/copilot.tgz" '
-                f'"https://registry.npmjs.org/@github/$package/-/$package-"{version}".tgz"; '
+                f'"https://registry.npmjs.org/@github/$package/-/$package-{version}.tgz"; '
                 'tar -xzf "$dir/copilot.tgz" -C "$dir"; '
                 'mkdir -p "$HOME/.local/bin"; install -m 755 "$dir/package/copilot" "$HOME/.local/bin/copilot"; '
                 "echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc; "
