@@ -813,9 +813,9 @@ credit_budget = 2000
 - `[lanes.senior.judge]` gives the judge a `senior` run is judged with:
   `credit_budget`, which it requires, and `model` and `effort`, which take the
   judge's defaults where it leaves them out. They are the `--verifier-kwarg`s
-  the agent job gives `JudgeVerifier`. A budget that is not a positive number,
-  a model or effort that is not a string, or any other key, makes `suss run`
-  exit with an error before it builds any lane or runs any job.
+  the agent job gives `JudgeVerifier`. A budget that is not a positive, finite
+  number, a model or effort that is not a string, or any other key, makes
+  `suss run` exit with an error before it builds any lane or runs any job.
 
   ```toml
   [lanes.senior.judge]

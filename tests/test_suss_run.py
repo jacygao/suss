@@ -1249,8 +1249,11 @@ def write_dotenv(project: Project, text: str) -> None:
     (project.directory / ".env").write_text(text)
 
 
-def test_the_agent_job_takes_no_grading_key_from_env_or_suss_own_environment(senior, monkeypatch):
+def test_the_agent_job_takes_no_grading_key_or_token_from_env_or_suss_own_environment(
+    senior, monkeypatch
+):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "from-the-shell")
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "exported-in-the-shell")
     write_dotenv(senior, JUDGES_KEY + "ANTHROPIC_API_KEY=from-dotenv\nPORTKEY_API_KEY=pk-1\n")
 
     assert senior.run("peer-review", "senior") == 0

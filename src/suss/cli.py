@@ -24,7 +24,7 @@ from harbor.cli.utils import parse_kwargs
 
 from suss import compare, config, lanes
 from suss.compare import CompareError
-from suss.config import GRADING_KEYS, Config, ConfigError, verifier_env
+from suss.config import GRADING_KEYS, TOKEN_NAME, Config, ConfigError, verifier_env
 from suss.harness import Manifest, ManifestError, load_manifest
 from suss.lanes import LaneError
 
@@ -78,7 +78,8 @@ def harbor_commands(
     as `config.host_variables` gives them. The job does not take them from
     suss's own environment. It is given those of `verifier_reads` that .env
     sets, which the tasks read in `[verifier.env]` alone and so reach the
-    verifier's test.sh and no sandbox. On senior that leaves out GRADING_KEYS.
+    verifier's test.sh and no sandbox. On senior that leaves out GRADING_KEYS,
+    and it withholds the judge's token too.
 
     Raises ValueError, with a message for the user, when `harbor_args` include
     a positional argument, an option suss sets on the job, an option that
@@ -118,9 +119,12 @@ def harbor_commands(
         _refuse_sharing(harbor_args, lane)
     agent += harbor_args
     given = verifier_env(config, verifier_reads)
+    withheld = tuple(reads)
     if lane == lanes.SENIOR:
         given = {name: value for name, value in given.items() if name not in GRADING_KEYS}
-    return Command(agent, tuple(reads), given)
+        # The judge reads it from .env itself, and gives it to its sessions alone.
+        withheld += (TOKEN_NAME,)
+    return Command(agent, withheld, given)
 
 
 def _judge_kwargs(config: Config) -> list[str]:

@@ -1,5 +1,6 @@
 """The settings one named arm runs with, read from suss.toml and the .env beside it."""
 
+import math
 import tomllib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -218,10 +219,11 @@ def _judge(path: Path, table: Any) -> Judge:
         if key not in JUDGE_KEYS:
             raise ConfigError(f"{where} sets {key}, but suss reads only {_and(list(JUDGE_KEYS))} there")
     budget = table.get("credit_budget")
-    if isinstance(budget, bool) or not isinstance(budget, int | float) or budget <= 0:
+    # TOML reads nan and inf as floats, which Harbor would not parse back as numbers.
+    if isinstance(budget, bool) or not isinstance(budget, int | float) or not 0 < budget < math.inf:
         raise ConfigError(
             f"{where} must set credit_budget, the AI credits every judge session of a job may"
-            f" spend together, to a positive number, not {budget!r}"
+            f" spend together, to a positive finite number, not {budget!r}"
         )
     for key in ("model", "effort"):
         if key in table and not isinstance(table[key], str):

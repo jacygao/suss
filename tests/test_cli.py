@@ -219,7 +219,7 @@ def test_a_senior_agent_job_gives_its_verifier_no_key_for_seniors_own_judges(tmp
 
     # They would run senior's judges and validation agent on API keys, at about $100 a run.
     assert agent.given == {"SSB_OVERRIDE_ALL_JUDGE_MODEL": "anthropic/x"}
-    assert agent.withheld == reads
+    assert agent.withheld == (*reads, "COPILOT_GITHUB_TOKEN")
 
 
 def test_a_rebench_agent_job_grades_its_trials_in_suss_verifier_with_no_regrade(tmp_path):
@@ -424,7 +424,7 @@ def test_the_agent_job_withholds_every_variable_the_tasks_read_and_is_given_none
 
     agent = harbor_commands(settings, make_manifest(), "senior", STAMP, 1, reads=READS)
 
-    assert agent.withheld == READS
+    assert agent.withheld == (*READS, "COPILOT_GITHUB_TOKEN")
     assert agent.given == {}
 
 
@@ -438,7 +438,7 @@ def test_the_agent_job_is_given_the_values_env_sets_for_what_its_verifier_alone_
         settings, make_manifest(), "senior", STAMP, 1, reads=READS, verifier_reads=READS
     )
 
-    assert agent.withheld == READS
+    assert agent.withheld == (*READS, "COPILOT_GITHUB_TOKEN")
     assert agent.given == {"SSB_OVERRIDE_ALL_JUDGE_MODEL": "anthropic/x"}
 
 

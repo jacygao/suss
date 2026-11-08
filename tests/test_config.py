@@ -581,8 +581,10 @@ def test_a_senior_run_needs_no_key_for_seniors_own_judges(tmp_path: Path):
         "[lanes.senior.judge]\ncredit_budget = 0\n",
         "[lanes.senior.judge]\ncredit_budget = \"lots\"\n",
         "[lanes.senior.judge]\ncredit_budget = true\n",
+        "[lanes.senior.judge]\ncredit_budget = nan\n",
+        "[lanes.senior.judge]\ncredit_budget = inf\n",
     ],
-    ids=["missing", "zero", "string", "bool"],
+    ids=["missing", "zero", "string", "bool", "nan", "infinity"],
 )
 def test_a_judge_with_no_positive_credit_budget_is_an_error(tmp_path: Path, text: str):
     with pytest.raises(config.ConfigError, match=r"\[lanes.senior.judge\] must set credit_budget"):
