@@ -19,6 +19,17 @@ from harbor.models.trial.config import EnvironmentConfig as TrialEnvironmentConf
 from harbor.trial.network_policy import resolve_agent_env_baseline, resolve_agent_phase_policy
 
 from suss import cli, lanes
+from test_agents import SussScripted
+
+
+class PeerReview(SussScripted):
+    """The arm's agent class. `suss run` reads its class attributes and never constructs it."""
+
+    ALLOWED_HOSTS = ("api.anthropic.com",)
+
+
+class PeerReviewOnPypi(SussScripted):
+    ALLOWED_HOSTS = ("api.anthropic.com", "pypi.org")
 
 STANDINS = Path(__file__).resolve().parent / "stand_ins"
 REPO = Path(__file__).resolve().parent.parent
@@ -100,7 +111,7 @@ class Project:
             f"{lane_tables}\n"
             f"{JUDGE}\n"
             "[arms.peer-review]\n"
-            'harness = "adapter"\n'
+            'agent = "test_suss_run:PeerReview"\n'
             f"{arm_extra}\n"
         )
 
@@ -147,11 +158,7 @@ def project(tmp_path, monkeypatch) -> Project:
     shutil.copytree(SENIOR_TASKS, senior_tasks)
 
     directory = tmp_path / "evals" / "project"
-    (directory / "adapter").mkdir(parents=True)
-    (directory / "adapter" / "suss-harness.toml").write_text(
-        '[harness]\nname = "peer-review"\nversion = "0.1.0"\nrun = "run.sh"\n'
-        'allowed_hosts = ["api.anthropic.com"]\n'
-    )
+    directory.mkdir(parents=True)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     created = Project(
@@ -200,7 +207,7 @@ def test_the_default_harbor_is_the_one_beside_this_python():
     harbor = cli.harbor_executable()
 
     assert harbor == Path(sys.executable).parent / "harbor"
-    assert harbor.is_file(), f"{harbor} is not installed, so it cannot import suss.agent"
+    assert harbor.is_file(), f"{harbor} is not installed, so it cannot import suss.agents"
 
 
 # What runs, and in what order
@@ -286,16 +293,14 @@ def write_allowlist_task(tasks: Path, name: str, hosts: list[str]) -> Path:
     return task
 
 
-def test_each_trials_agent_phase_reaches_its_tasks_hosts_and_the_manifests_and_no_other(project):
+def test_each_trials_agent_phase_reaches_its_tasks_hosts_and_its_agents_and_no_other(project):
     write_allowlist_task(
         project.tasks, "posthog-fix-a", [*SENIOR_HOSTS, "clickhouse.com", "*.clickhouse.com"]
     )
     write_allowlist_task(project.tasks, "prefect-fix-b", [*SENIOR_HOSTS, "docs.sqlalchemy.org"])
     # pypi.org is the tasks' as well, and must be opened once.
-    (project.directory / "adapter" / "suss-harness.toml").write_text(
-        '[harness]\nname = "peer-review"\nversion = "0.1.0"\nrun = "run.sh"\n'
-        'allowed_hosts = ["api.anthropic.com", "pypi.org"]\n'
-    )
+    toml = project.directory / "suss.toml"
+    toml.write_text(toml.read_text().replace(':PeerReview"', ':PeerReviewOnPypi"'))
 
     assert project.run("peer-review", "rebench") == 0
 
@@ -675,14 +680,14 @@ def test_each_lanes_agent_jobs_name_their_lane_to_the_agent(
 
     out, err = capfd.readouterr()
     assert code == 0, err
-    agents = [shlex.split(line) for line in out.splitlines() if "suss.agent:SussAgent" in line]
+    agents = [shlex.split(line) for line in out.splitlines() if "test_suss_run:PeerReview" in line]
     suffix = "-check" if check else ""
     assert {
         (value(argv, "-p"), tuple(token for flag, token in zip(argv, argv[1:]) if flag == "--ak"))
         for argv in agents
     } == {
-        (f"lanes/rebench{suffix}", ("arm=peer-review", "config=suss.toml", "lane=rebench")),
-        (f"lanes/senior{suffix}", ("arm=peer-review", "config=suss.toml", "lane=senior")),
+        (f"lanes/rebench{suffix}", ("arm=peer-review", "suss_config=suss.toml", "lane=rebench")),
+        (f"lanes/senior{suffix}", ("arm=peer-review", "suss_config=suss.toml", "lane=senior")),
     }
 
 
@@ -700,8 +705,7 @@ def test_an_old_max_cost_usd_is_refused_as_the_spec_shows(project, capfd, monkey
     assert code != 0
     assert err == (
         f"error: {project.directory / 'suss.toml'}: [arms.peer-review] sets max_cost_usd, but suss "
-        "does not read it; set the arm's spending limit in its params, under the name its "
-        "adapter takes, such as max_budget_usd for adapters/claude-code\n"
+        "does not read it, and caps an arm's trials by max_seconds alone\n"
     )
     assert out == ""
     assert_nothing_ran(project)
@@ -1155,7 +1159,7 @@ def test_a_dry_run_prints_each_job_in_run_order_and_runs_nothing(project, capfd,
             jobs = f"results/{lane}/peer-review"
             common = f"{project.harbor} run -p lanes/{lane} -e docker -n 4 -k 1"
             expected.append(
-                f"{common} -a suss.agent:SussAgent --ak arm=peer-review --ak config=suss.toml "
+                f"{common} -a test_suss_run:PeerReview --ak arm=peer-review --ak suss_config=suss.toml "
                 f"--ak lane={lane} --allow-agent-host api.anthropic.com "
                 f"--verifier suss.replay:ReplayVerifier --jobs-dir {jobs} --job-name {STAMP}-{trial}"
             )
@@ -1165,10 +1169,10 @@ def test_a_dry_run_prints_each_job_in_run_order_and_runs_nothing(project, capfd,
 def test_a_dry_run_quotes_what_a_shell_would_split(project, capfd, monkeypatch):
     monkeypatch.setenv("DRY_RUN", "1")
 
-    project.run("peer-review", "rebench", "--", "--agent-env", "NOTE=two words")
+    project.run("peer-review", "rebench", "--", "--extra-instruction", "two words")
 
     agent = capfd.readouterr().out.splitlines()[0]
-    assert shlex.split(agent)[-2:] == ["--agent-env", "NOTE=two words"]
+    assert shlex.split(agent)[-2:] == ["--extra-instruction", "two words"]
 
 
 # Check
@@ -1259,7 +1263,7 @@ def test_the_agent_job_takes_no_grading_key_or_token_from_env_or_suss_own_enviro
     assert senior.run("peer-review", "senior") == 0
 
     for agent in senior.records("harbor"):
-        assert "suss.agent:SussAgent" in agent["argv"]
+        assert "test_suss_run:PeerReview" in agent["argv"]
         assert not {"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PORTKEY_API_KEY"} & set(agent["env"])
         assert "COPILOT_GITHUB_TOKEN" not in agent["env"], "the judge's token is in Harbor's environment"
         assert agent["env"]["PATH"] == os.environ["PATH"]
@@ -1342,7 +1346,7 @@ def test_a_dry_run_names_each_variable_the_agent_job_is_given_and_never_its_valu
     assert len(lines) == 4
     names, agent = lines[:2]
     assert names == "# from .env: SSB_OVERRIDE_ALL_JUDGE_MODEL"
-    assert "suss.agent:SussAgent" in agent and agent.split()[1:3] == ["run", "-y"]
+    assert "test_suss_run:PeerReview" in agent and agent.split()[1:3] == ["run", "-y"]
     assert "--verifier suss.judge:JudgeVerifier --verifier-kwarg credit_budget=2000" in agent
 
 
@@ -1478,3 +1482,63 @@ def test_one_senior_trial_that_does_not_fit_in_docker_is_refused(project, capfd,
     )
     assert project.records("harbor") == []
     assert not (project.directory / "lanes").exists()
+
+
+# The arm's agent class
+
+
+def use_agent(project: Project, agent: str, extra: str = "") -> None:
+    toml = project.directory / "suss.toml"
+    toml.write_text(toml.read_text().replace('"test_suss_run:PeerReview"', f'"{agent}"') + extra)
+
+
+@pytest.mark.parametrize("dry_run", [False, True], ids=["run", "dry-run"])
+def test_an_agent_not_built_on_the_mixin_is_refused_before_anything_runs(project, capfd, monkeypatch, dry_run):
+    if dry_run:
+        monkeypatch.setenv("DRY_RUN", "1")
+    use_agent(project, "harbor.agents.installed.copilot_cli:CopilotCli")
+
+    code = project.run("peer-review", "rebench")
+
+    _, err = capfd.readouterr()
+    assert code != 0
+    assert "is not an agent built on suss.agents.SussMixin" in err
+    assert_nothing_ran(project)
+
+
+def test_an_agent_that_cannot_be_imported_is_refused_naming_it(project, capfd):
+    use_agent(project, "suss.agents:NoSuchAgent")
+
+    assert project.run("peer-review", "rebench") != 0
+
+    _, err = capfd.readouterr()
+    assert "agent = 'suss.agents:NoSuchAgent'" in err and "NoSuchAgent" in err
+    assert_nothing_ran(project)
+
+
+def test_a_kwarg_the_agent_does_not_take_is_refused_as_the_spec_shows(project, capfd):
+    use_agent(project, "suss.agents:SussCopilotCli",
+              'model = "gpt-6.1-sol"\nkwargs = { version = "1.0.105", max_ai_credits = 1000 }\n')
+
+    assert project.run("peer-review", "rebench") != 0
+
+    _, err = capfd.readouterr()
+    assert err == (
+        f"error: {project.directory / 'suss.toml'}: [arms.peer-review] sets kwargs max_ai_credits,"
+        " which suss.agents:SussCopilotCli does not take; it takes version, reasoning_effort\n"
+    )
+    assert_nothing_ran(project)
+
+
+@pytest.mark.parametrize(
+    "extra, missing",
+    [('kwargs = { version = "1.0.105" }\n', "sets no model"), ('model = "gpt-6.1-sol"\n', "sets no kwargs version")],
+)
+def test_a_model_or_kwarg_the_agent_needs_is_refused_when_missing(project, capfd, extra, missing):
+    use_agent(project, "suss.agents:SussCopilotCli", extra)
+
+    assert project.run("peer-review", "rebench") != 0
+
+    _, err = capfd.readouterr()
+    assert missing in err
+    assert_nothing_ran(project)

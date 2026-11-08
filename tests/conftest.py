@@ -176,6 +176,7 @@ class ContainerEnvironment(LocalEnvironment):
         self, command: str, cwd: str | None, env: dict[str, str] | None, user: str | int | None
     ) -> subprocess.Popen:
         argv = ["docker", "exec"]
+        cwd = cwd or self.task_env_config.workdir
         if cwd:
             argv += ["-w", cwd]
         for name, value in (env or {}).items():

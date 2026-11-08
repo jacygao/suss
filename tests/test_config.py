@@ -40,7 +40,7 @@ concurrency = 4
 
 
 def test_reads_the_top_level_keys_of_the_spec_example(spec_config: Path):
-    settings = config.load(spec_config, "claude-code", "rebench")
+    settings = config.load(spec_config, "copilot-sonnet", "rebench")
 
     assert settings.swe_rebench == (spec_config.parent / "../tasks/swe-rebench-07-2026").resolve()
     assert settings.environment == "docker"
@@ -50,29 +50,26 @@ def test_reads_the_top_level_keys_of_the_spec_example(spec_config: Path):
 
 
 def test_reads_each_arm_of_the_spec_example(spec_config: Path):
-    claude_code = config.load(spec_config, "claude-code", "rebench").arm
-    peer_review = config.load(spec_config, "peer-review", "rebench").arm
+    sonnet = config.load(spec_config, "copilot-sonnet", "rebench").arm
+    hve = config.load(spec_config, "hve-sol", "rebench").arm
 
-    assert claude_code.name == "claude-code"
-    assert claude_code.baseline is None
-    assert claude_code.params == {
-        "version": "2.1.293",
-        "model": "claude-opus-4-6",
-        "effort": "high",
-        "max_budget_usd": 20,
-    }
-    assert peer_review.name == "peer-review"
-    assert peer_review.baseline == "claude-code"
-    assert peer_review.params == {
-        "model": "claude-opus-4-6",
-        "effort": "high",
-        "rounds": 3,
-        "reviewer": "deepseek/deepseek-v3.2",
+    assert (sonnet.name, sonnet.agent, sonnet.model) == (
+        "copilot-sonnet", "suss.agents:SussCopilotCli", "claude-sonnet-5.5",
+    )
+    assert sonnet.baseline is None
+    assert sonnet.kwargs == {"version": "1.0.105", "reasoning_effort": "high"}
+    assert (hve.agent, hve.model, hve.baseline) == (
+        "suss.agents:SussCopilotCliHve", "gpt-6.1-sol", "copilot-gpt",
+    )
+    assert hve.kwargs == {
+        "version": "1.0.105",
+        "reasoning_effort": "high",
+        "hve_core_commit": "55352bb8e9f0622ff40f5c6afa80363adaf6b07f",
     }
 
 
 def test_an_arm_that_sets_no_max_seconds_takes_the_tops(tmp_path: Path):
-    path = write_config(tmp_path, TOP + 'max_seconds = 2700\n[arms.a]\nharness = "h"\n')
+    path = write_config(tmp_path, TOP + 'max_seconds = 2700\n[arms.a]\nagent = "m:A"\n')
 
     assert config.load(path, "a", "rebench").arm.max_seconds == 2700
 
@@ -82,20 +79,20 @@ def test_an_arm_that_sets_no_max_seconds_takes_the_tops(tmp_path: Path):
 def test_an_arms_own_max_seconds_overrides_the_tops(tmp_path: Path, seconds: int):
     path = write_config(
         tmp_path,
-        TOP + f'max_seconds = 2700\n[arms.a]\nharness = "h"\nmax_seconds = {seconds}\n',
+        TOP + f'max_seconds = 2700\n[arms.a]\nagent = "m:A"\nmax_seconds = {seconds}\n',
     )
 
     assert config.load(path, "a", "rebench").arm.max_seconds == seconds
 
 
 def test_an_arms_max_seconds_applies_where_the_top_sets_none(tmp_path: Path):
-    path = write_config(tmp_path, TOP + '[arms.a]\nharness = "h"\nmax_seconds = 600\n')
+    path = write_config(tmp_path, TOP + '[arms.a]\nagent = "m:A"\nmax_seconds = 600\n')
 
     assert config.load(path, "a", "rebench").arm.max_seconds == 600
 
 
 def test_a_max_seconds_set_nowhere_is_none(tmp_path: Path):
-    path = write_config(tmp_path, TOP + '[arms.a]\nharness = "h"\n')
+    path = write_config(tmp_path, TOP + '[arms.a]\nagent = "m:A"\n')
 
     assert config.load(path, "a", "rebench").arm.max_seconds is None
 
@@ -103,7 +100,7 @@ def test_a_max_seconds_set_nowhere_is_none(tmp_path: Path):
 def test_a_lanes_max_seconds_overrides_the_tops_on_that_lane_alone(tmp_path: Path):
     path = write_config(
         tmp_path,
-        TOP + 'max_seconds = 2700\n[lanes.senior]\nmax_seconds = 5400\n[arms.a]\nharness = "h"\n',
+        TOP + 'max_seconds = 2700\n[lanes.senior]\nmax_seconds = 5400\n[arms.a]\nagent = "m:A"\n',
     )
 
     assert config.load(path, "a", "senior").arm.max_seconds == 5400
@@ -116,7 +113,7 @@ def test_an_arms_own_max_seconds_overrides_its_lanes(tmp_path: Path, seconds: in
     path = write_config(
         tmp_path,
         TOP + "max_seconds = 2700\n[lanes.senior]\nmax_seconds = 5400\n"
-        f'[arms.a]\nharness = "h"\nmax_seconds = {seconds}\n',
+        f'[arms.a]\nagent = "m:A"\nmax_seconds = {seconds}\n',
     )
 
     assert config.load(path, "a", "senior").arm.max_seconds == seconds
@@ -124,7 +121,7 @@ def test_an_arms_own_max_seconds_overrides_its_lanes(tmp_path: Path, seconds: in
 
 def test_a_lanes_max_seconds_applies_where_the_top_sets_none(tmp_path: Path):
     path = write_config(
-        tmp_path, TOP + '[lanes.rebench]\nmax_seconds = 0\n[arms.a]\nharness = "h"\n'
+        tmp_path, TOP + '[lanes.rebench]\nmax_seconds = 0\n[arms.a]\nagent = "m:A"\n'
     )
 
     assert config.load(path, "a", "rebench").arm.max_seconds == 0
@@ -134,7 +131,7 @@ def test_a_lane_suss_does_not_have_is_an_error_naming_it(tmp_path: Path):
     path = write_config(
         tmp_path,
         TOP + "[lanes.rebench]\nmax_seconds = 2400\n[lanes.senoir]\nmax_seconds = 5400\n"
-        '[arms.a]\nharness = "h"\n',
+        '[arms.a]\nagent = "m:A"\n',
     )
 
     with pytest.raises(config.ConfigError) as error:
@@ -147,7 +144,7 @@ def test_a_lane_suss_does_not_have_is_an_error_naming_it(tmp_path: Path):
 
 def test_a_key_suss_does_not_read_on_a_lane_is_an_error_naming_it(tmp_path: Path):
     path = write_config(
-        tmp_path, TOP + '[lanes.rebench]\nmax_cost_usd = 20\n[arms.a]\nharness = "h"\n'
+        tmp_path, TOP + '[lanes.rebench]\nmax_cost_usd = 20\n[arms.a]\nagent = "m:A"\n'
     )
 
     with pytest.raises(config.ConfigError) as error:
@@ -162,7 +159,7 @@ def test_a_key_suss_does_not_read_on_a_lane_is_an_error_naming_it(tmp_path: Path
     "text", ["lanes = 3\n", "lanes = { rebench = 2400 }\n"], ids=["lanes", "lane"]
 )
 def test_lanes_that_are_not_tables_are_an_error(tmp_path: Path, text: str):
-    path = write_config(tmp_path, TOP + text + '[arms.a]\nharness = "h"\n')
+    path = write_config(tmp_path, TOP + text + '[arms.a]\nagent = "m:A"\n')
 
     with pytest.raises(config.ConfigError) as error:
         config.load(path, "a", "rebench")
@@ -173,7 +170,7 @@ def test_lanes_that_are_not_tables_are_an_error(tmp_path: Path, text: str):
 def test_paths_resolve_from_the_directory_holding_suss_toml(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    path = write_config(tmp_path / "project", TOP + '[arms.a]\nharness = "../self-review"\n')
+    path = write_config(tmp_path / "project", TOP + '[arms.a]\nagent = "m:A"\n')
     elsewhere = tmp_path / "elsewhere" / "deeper"
     elsewhere.mkdir(parents=True)
     monkeypatch.chdir(elsewhere)
@@ -184,23 +181,21 @@ def test_paths_resolve_from_the_directory_holding_suss_toml(
     assert settings.senior_swe_bench == (
         tmp_path / "tasks" / "senior" / "senior-swe-bench-v2026.06"
     ).resolve()
-    assert settings.arm.harness == (tmp_path / "self-review").resolve()
 
 
 def test_paths_resolve_from_suss_toml_given_by_a_relative_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    write_config(tmp_path / "project", TOP + '[arms.a]\nharness = "adapters/claude-code"\n')
+    write_config(tmp_path / "project", TOP + '[arms.a]\nagent = "m:A"\n')
     monkeypatch.chdir(tmp_path)
 
     settings = config.load(Path("project/suss.toml"), "a", "rebench")
 
     assert settings.swe_rebench == (tmp_path / "tasks" / "swe-rebench-07-2026").resolve()
-    assert settings.arm.harness == (tmp_path / "project" / "adapters" / "claude-code").resolve()
 
 
 def test_reads_the_env_file_beside_suss_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    path = write_config(tmp_path / "project", TOP + '[arms.a]\nharness = "h"\n')
+    path = write_config(tmp_path / "project", TOP + '[arms.a]\nagent = "m:A"\n')
     (tmp_path / "project" / ".env").write_text(
         "ANTHROPIC_API_KEY=sk-ant-123\n\nDEEPSEEK_API_KEY=ds-456\n"
     )
@@ -213,7 +208,7 @@ def test_reads_the_env_file_beside_suss_toml(tmp_path: Path, monkeypatch: pytest
 
 
 def test_an_env_value_keeps_everything_after_the_first_equals_sign(tmp_path: Path):
-    path = write_config(tmp_path, TOP + '[arms.a]\nharness = "h"\n')
+    path = write_config(tmp_path, TOP + '[arms.a]\nagent = "m:A"\n')
     (tmp_path / ".env").write_text("TOKEN=abc=def==\nEMPTY=\n")
 
     settings = config.load(path, "a", "rebench")
@@ -222,7 +217,7 @@ def test_an_env_value_keeps_everything_after_the_first_equals_sign(tmp_path: Pat
 
 
 def test_a_missing_env_file_is_an_empty_mapping(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    path = write_config(tmp_path / "project", TOP + '[arms.a]\nharness = "h"\n')
+    path = write_config(tmp_path / "project", TOP + '[arms.a]\nagent = "m:A"\n')
     (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=from-the-cwd\n")
     monkeypatch.chdir(tmp_path)
 
@@ -232,7 +227,7 @@ def test_a_missing_env_file_is_an_empty_mapping(tmp_path: Path, monkeypatch: pyt
 
 
 def test_an_empty_env_file_is_an_empty_mapping(tmp_path: Path):
-    path = write_config(tmp_path, TOP + '[arms.a]\nharness = "h"\n')
+    path = write_config(tmp_path, TOP + '[arms.a]\nagent = "m:A"\n')
     (tmp_path / ".env").write_text("")
 
     settings = config.load(path, "a", "rebench")
@@ -241,7 +236,7 @@ def test_an_empty_env_file_is_an_empty_mapping(tmp_path: Path):
 
 
 def test_an_env_line_without_an_equals_sign_is_an_error(tmp_path: Path):
-    path = write_config(tmp_path, TOP + '[arms.a]\nharness = "h"\n')
+    path = write_config(tmp_path, TOP + '[arms.a]\nagent = "m:A"\n')
     (tmp_path / ".env").write_text("A=1\nANTHROPIC_API_KEY\n")
 
     with pytest.raises(config.ConfigError) as error:
@@ -297,7 +292,7 @@ def test_a_missing_top_level_key_is_an_error_naming_it_and_the_file(
     tmp_path: Path, key: str, lane: str
 ):
     lines = [line for line in TOP.splitlines() if not line.startswith(f"{key} =")]
-    path = write_config(tmp_path, "\n".join(lines) + '\n[arms.a]\nharness = "h"\n')
+    path = write_config(tmp_path, "\n".join(lines) + '\n[arms.a]\nagent = "m:A"\n')
 
     with pytest.raises(config.ConfigError) as error:
         config.load(path, "a", lane)
@@ -310,7 +305,7 @@ def test_a_missing_top_level_key_is_an_error_naming_it_and_the_file(
 )
 def test_a_lane_needs_no_other_lanes_download(tmp_path: Path, key: str, lane: str):
     lines = [line for line in TOP.splitlines() if not line.startswith(f"{key} =")]
-    path = write_config(tmp_path, "\n".join(lines) + '\n[arms.a]\nharness = "h"\n')
+    path = write_config(tmp_path, "\n".join(lines) + '\n[arms.a]\nagent = "m:A"\n')
 
     settings = config.load(path, "a", lane)
 
@@ -326,7 +321,7 @@ TOP_DOWNLOADS = {
 
 def test_each_lane_reads_the_download_its_own_key_names(spec_config: Path):
     for lane in ("rebench", "senior"):
-        settings = config.load(spec_config, "claude-code", lane)
+        settings = config.load(spec_config, "copilot-sonnet", lane)
 
         assert settings.download(lane) == (spec_config.parent / TOP_DOWNLOADS[lane]).resolve()
 
@@ -341,7 +336,7 @@ def test_each_lane_reads_the_download_its_own_key_names(spec_config: Path):
     ids=["swe_bench_pro", "dataset", "both"],
 )
 def test_a_key_suss_no_longer_reads_is_an_error_naming_it(tmp_path: Path, old: str, named: str):
-    path = write_config(tmp_path, old + TOP + '[arms.a]\nharness = "h"\n')
+    path = write_config(tmp_path, old + TOP + '[arms.a]\nagent = "m:A"\n')
 
     with pytest.raises(config.ConfigError) as error:
         config.load(path, "a", "rebench")
@@ -357,13 +352,13 @@ def test_an_old_suss_toml_without_swe_rebench_is_refused_for_its_old_keys(tmp_pa
         'swe_rebench = "../tasks/swe-rebench-07-2026"\n',
         'swe_bench_pro = "../SWE-bench_Pro-os"\ndataset = "swe-bench-pro-v2"\n',
     )
-    path = write_config(tmp_path, old + '[arms.a]\nharness = "h"\n')
+    path = write_config(tmp_path, old + '[arms.a]\nagent = "m:A"\n')
 
     with pytest.raises(config.ConfigError, match="sets swe_bench_pro and dataset"):
         config.load(path, "a", "rebench")
 
 
-def test_an_arm_without_a_harness_is_an_error_naming_the_key_the_arm_and_the_file(
+def test_an_arm_without_an_agent_is_an_error_naming_the_key_the_arm_and_the_file(
     tmp_path: Path,
 ):
     path = write_config(tmp_path, TOP + '[arms.lonely]\nbaseline = "claude-code"\n')
@@ -371,7 +366,7 @@ def test_an_arm_without_a_harness_is_an_error_naming_the_key_the_arm_and_the_fil
     with pytest.raises(config.ConfigError) as error:
         config.load(path, "lonely", "rebench")
 
-    assert "'harness'" in str(error.value)
+    assert "'agent'" in str(error.value)
     assert "lonely" in str(error.value)
     assert str(path) in str(error.value)
 
@@ -386,30 +381,29 @@ def test_an_arm_without_a_harness_is_an_error_naming_the_key_the_arm_and_the_fil
     ],
     ids=["top", "arm", "both"],
 )
-def test_max_cost_usd_is_refused_naming_the_param_that_replaces_it(
+def test_max_cost_usd_is_refused_naming_max_seconds_as_the_only_cap(
     tmp_path: Path, top: str, arm_table: str, where: str
 ):
-    path = write_config(tmp_path, TOP + top + '[arms.a]\nharness = "h"\n' + arm_table)
+    path = write_config(tmp_path, TOP + top + '[arms.a]\nagent = "m:A"\n' + arm_table)
 
     with pytest.raises(config.ConfigError) as error:
         config.load(path, "a", "rebench")
 
     assert str(error.value) == (
-        f"{path}: {where}, but suss does not read it; set the arm's spending limit in its "
-        "params, under the name its adapter takes, such as max_budget_usd for "
-        "adapters/claude-code"
+        f"{path}: {where}, but suss does not read it, and caps an arm's trials by "
+        "max_seconds alone"
     )
 
 
 def test_baselines_reads_each_arms_baseline_and_none_where_it_names_none(spec_config: Path):
-    assert config.baselines(spec_config, ["peer-review", "claude-code"]) == {
-        "peer-review": "claude-code",
-        "claude-code": None,
+    assert config.baselines(spec_config, ["copilot-gpt", "copilot-sonnet"]) == {
+        "copilot-gpt": "copilot-sonnet",
+        "copilot-sonnet": None,
     }
 
 
 def test_baselines_needs_none_of_what_a_run_needs(tmp_path: Path):
-    # No top-level key, no harness, and a max_cost_usd that load refuses.
+    # No top-level key, no agent, and a max_cost_usd that load refuses.
     path = write_config(
         tmp_path, 'max_cost_usd = 20\n[arms.a]\nbaseline = "b"\nmax_cost_usd = 5\n[arms.b]\n'
     )
@@ -469,7 +463,7 @@ SENIOR_VARIABLES = (
 
 
 def with_env(tmp_path: Path, dotenv: str) -> config.Config:
-    path = write_config(tmp_path, TOP + '[arms.a]\nharness = "h"\n')
+    path = write_config(tmp_path, TOP + '[arms.a]\nagent = "m:A"\n')
     (tmp_path / ".env").write_text(dotenv)
     return config.load(path, "a", "rebench")
 
@@ -516,7 +510,7 @@ JUDGE = '[lanes.senior.judge]\ncredit_budget = 2000\n'
 
 
 def senior(tmp_path: Path, lanes_text: str, dotenv: str = "COPILOT_GITHUB_TOKEN=gh-1\n") -> config.Config:
-    path = write_config(tmp_path, TOP + lanes_text + '[arms.a]\nharness = "h"\n')
+    path = write_config(tmp_path, TOP + lanes_text + '[arms.a]\nagent = "m:A"\n')
     (tmp_path / ".env").write_text(dotenv)
     return config.load(path, "a", "senior")
 
@@ -535,7 +529,7 @@ def test_the_senior_lanes_judge_names_its_model_and_effort(tmp_path: Path):
 
 
 def test_another_lanes_run_takes_no_judge(tmp_path: Path):
-    path = write_config(tmp_path, TOP + JUDGE + '[arms.a]\nharness = "h"\n')
+    path = write_config(tmp_path, TOP + JUDGE + '[arms.a]\nagent = "m:A"\n')
 
     settings = config.load(path, "a", "rebench")
 
@@ -608,7 +602,7 @@ def test_a_judge_model_that_is_not_a_string_is_an_error(tmp_path: Path):
 
 def test_a_judge_on_another_lane_is_an_error(tmp_path: Path):
     path = write_config(
-        tmp_path, TOP + '[lanes.rebench.judge]\ncredit_budget = 1\n[arms.a]\nharness = "h"\n'
+        tmp_path, TOP + '[lanes.rebench.judge]\ncredit_budget = 1\n[arms.a]\nagent = "m:A"\n'
     )
 
     with pytest.raises(config.ConfigError) as error:
@@ -617,3 +611,35 @@ def test_a_judge_on_another_lane_is_an_error(tmp_path: Path):
     assert str(error.value) == (
         f"{path}: [lanes.rebench] sets judge, but suss reads only max_seconds there"
     )
+
+
+@pytest.mark.parametrize("retired", ["harness", "params"])
+def test_an_arm_that_sets_harness_or_params_is_refused_naming_what_replaces_them(tmp_path, retired):
+    path = write_config(tmp_path, TOP + f'[arms.a]\nagent = "m:A"\n{retired} = "x"\n')
+
+    with pytest.raises(config.ConfigError) as error:
+        config.load(path, "a", "rebench")
+
+    assert str(error.value) == (
+        f"{path}: [arms.a] sets {retired}, which suss no longer reads; name the arm's Harbor "
+        "agent class with agent, its model with model, and its settings with kwargs"
+    )
+
+
+@pytest.mark.parametrize(
+    "table, says",
+    [
+        ('agent = "no-colon"\n', "module:Class"),
+        ('agent = 7\n', "module:Class"),
+        ('agent = "m:A"\nmodel = 5\n', "model must be a string"),
+        ('agent = "m:A"\nkwargs = 5\n', "kwargs must be a table"),
+        ('agent = "m:A"\nkwargs = { limits = [1, 2] }\n', "kwargs limits must be"),
+        ('agent = "m:A"\nkwargs = { arm = "b" }\n', "kwargs sets arm, which suss sets"),
+        ('agent = "m:A"\nkwargs = { suss_config = "x" }\n', "kwargs sets suss_config"),
+    ],
+)
+def test_an_arm_harbor_could_not_be_given_is_refused(tmp_path, table, says):
+    path = write_config(tmp_path, TOP + "[arms.a]\n" + table)
+
+    with pytest.raises(config.ConfigError, match=says):
+        config.load(path, "a", "rebench")

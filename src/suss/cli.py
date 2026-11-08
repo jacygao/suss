@@ -22,10 +22,9 @@ import typer.main
 from harbor.cli.main import app as harbor_app
 from harbor.cli.utils import parse_kwargs
 
-from suss import compare, config, lanes
+from suss import agents, compare, config, lanes
 from suss.compare import CompareError
 from suss.config import GRADING_KEYS, TOKEN_NAME, Config, ConfigError, verifier_env
-from suss.harness import Manifest, ManifestError, load_manifest
 from suss.lanes import LaneError
 
 
@@ -56,7 +55,7 @@ def stamp(started: datetime) -> str:
 
 def harbor_commands(
     config: Config,
-    manifest: Manifest,
+    allowed_hosts: Sequence[str],
     lane: str,
     run_stamp: str,
     trial: int,
@@ -71,8 +70,9 @@ def harbor_commands(
     rebench, and on senior JudgeVerifier, given the lane's judge.
 
     It must run in the directory holding suss.toml, which its relative paths
-    resolve from. `harbor_args` are added to it. With `check`, it takes the
-    lane's check directory and writes under `checks/` instead of `results/`.
+    resolve from. `allowed_hosts` are those the arm's agent class lists.
+    `harbor_args` are added to it. With `check`, it takes the lane's check
+    directory and writes under `checks/` instead of `results/`.
 
     `reads` are the variables the lane's tasks read from Harbor's environment,
     as `config.host_variables` gives them. The job does not take them from
@@ -100,14 +100,16 @@ def harbor_commands(
         "-k", "1",
     ]
 
-    agent = [
-        *common,
-        "-a", "suss.agent:SussAgent",
-        "--ak", _kwarg("arm", config.arm.name),
-        "--ak", _kwarg("config", "suss.toml"),
+    arm = config.arm
+    agent = [*common, "-a", arm.agent, *(["-m", arm.model] if arm.model else [])]
+    for key, value in arm.kwargs.items():
+        agent += ["--ak", _kwarg(key, value)]
+    agent += [
+        "--ak", _kwarg("arm", arm.name),
+        "--ak", _kwarg("suss_config", "suss.toml"),
         "--ak", _kwarg("lane", lane),
     ]
-    for host in manifest.allowed_hosts:
+    for host in allowed_hosts:
         agent += ["--allow-agent-host", host]
     if lane == lanes.SENIOR:
         agent += ["--verifier", JUDGE_VERIFIER, *_judge_kwargs(config)]
@@ -156,22 +158,23 @@ def _refuse_sharing(harbor_args: Sequence[str], lane: str) -> None:
         )
 
 
-def _kwarg(key: str, value: str) -> str:
+def _kwarg(key: str, value: str | int | float | bool) -> str:
     """
-    A `--ak` value that Harbor hands to the agent as the string `value`.
+    A `--ak` value that Harbor hands to the agent as `value`, of its own type.
 
     Harbor parses each value as JSON first, then as a Python literal, and
-    strips it, so a value it would not return unchanged is written as a JSON
-    string. An ordinary one stays as it is.
+    strips it, so a value it would not return unchanged is written as JSON.
+    An ordinary one stays as it is.
     """
     plain = f"{key}={value}"
-    if parse_kwargs([plain]) == {key: value}:
+    parsed = parse_kwargs([plain])
+    if parsed == {key: value} and type(parsed[key]) is type(value):
         return plain
     return f"{key}={json.dumps(value)}"
 
 
 _ALL_TASKS = "a run covers every task in its lanes"
-_NO_SIMULATED_USER = "suss runs SussAgent alone, with no simulated user"
+_NO_SIMULATED_USER = "suss runs the arm's agent alone, with no simulated user"
 _HARBOR_STOPS = "it stops harbor before the job runs; DRY_RUN=1 prints suss's commands instead"
 _GRADED = (
     "suss grades each trial with its own verifier, which applies the trial's patch, and on"
@@ -182,15 +185,19 @@ _GRADED = (
 # setting comes from instead, or why suss cannot honour it.
 _REFUSED = {
     # Those suss sets on the job, even one a job leaves out, such as
-    # --allow-agent-host for a harness that allows no hosts.
+    # --allow-agent-host for an agent that allows no hosts.
     "path": "suss gives each job its lane's directory",
     "environment": "set environment in suss.toml",
     "n_concurrent_trials": "set concurrency in suss.toml",
     "n_attempts": "suss runs one trial per agent job, and k in suss.toml sets how many jobs",
-    "agent_name": "suss runs every agent job with SussAgent",
-    "model_names": "set the arm's model in its params in suss.toml",
-    "agent_kwargs": "set the arm's params in suss.toml",
-    "allow_agent_hosts": "list the hosts in allowed_hosts in the harness's manifest",
+    "agent_name": "set the arm's agent in suss.toml",
+    "model_names": "set the arm's model in suss.toml",
+    "agent_kwargs": "set the arm's kwargs in suss.toml",
+    "allow_agent_hosts": "suss allows the hosts the arm's agent class lists in ALLOWED_HOSTS",
+    "agent_env": (
+        "the arm's agent takes only the variables its class names, from .env, and an --ae"
+        " value would reach every command it runs"
+    ),
     "jobs_dir": "suss writes each job under results/<lane>/<arm>/, or checks/ with --check",
     "job_name": "suss names each job from the run's stamp and its trial number",
     "disable_verification": "suss grades each trial in the agent job's own verifier, in a fresh sandbox",
@@ -200,7 +207,7 @@ _REFUSED = {
     "yes": "suss answers Harbor's question itself, on a lane whose tasks read Harbor's environment",
     # Those that would change what the agent job runs.
     "config_path": "a job config file can change anything suss sets on the job",
-    "agent_import_path": "suss runs every agent job with SussAgent",
+    "agent_import_path": "set the arm's agent in suss.toml",
     "environment_import_path": "set environment in suss.toml",
     "dataset_name_version": _ALL_TASKS,
     "registry_url": _ALL_TASKS,
@@ -320,7 +327,7 @@ def harbor_executable() -> Path:
     """
     The `harbor` installed beside this Python, in suss's own environment.
 
-    Harbor imports suss.agent and suss's verifiers in its own process, so only
+    Harbor imports suss.agents and suss's verifiers in its own process, so only
     a Harbor that can import suss can run an agent job. One
     installed as a tool of its own cannot, and it may be the one on PATH.
     """
@@ -352,7 +359,7 @@ def main(
             str(docker),
             clock,
         )
-    except (_Stop, ConfigError, LaneError, ManifestError, CompareError) as error:
+    except (_Stop, ConfigError, LaneError, CompareError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
@@ -415,14 +422,15 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
     if settings.environment == "modal":
         _require_modal()
     root = settings.path.parent
-    manifest = load_manifest(settings.arm.harness)
+    agent_class = agents.agent_class(settings.arm.agent, settings.path, args.arm)
+    agents.check_arm(agent_class, settings)
     for at, lane in enumerate(args.lanes):
         if lane in args.lanes[:at]:
             raise _Stop(f"{lane} is named twice: each lane runs once in a suss run")
 
     # Everything that can refuse the run does so here, before any lane is built.
     planned = [
-        _plan(on_lane[lane], manifest, lane, run_stamp, harbor_args, args.check, harbor)
+        _plan(on_lane[lane], agent_class.ALLOWED_HOSTS, lane, run_stamp, harbor_args, args.check, harbor)
         for lane in args.lanes
     ]
     if settings.environment == "docker":
@@ -485,7 +493,7 @@ def _require_modal() -> None:
 
 def _plan(
     settings: Config,
-    manifest: Manifest,
+    allowed_hosts: Sequence[str],
     lane: str,
     run_stamp: str,
     harbor_args: list[str],
@@ -517,7 +525,7 @@ def _plan(
     for trial in range(1, 2 if check else settings.k + 1):
         try:
             command = harbor_commands(
-                settings, manifest, lane, run_stamp, trial, harbor_args, check, reads,
+                settings, allowed_hosts, lane, run_stamp, trial, harbor_args, check, reads,
                 verifier_reads,
             )
         except ValueError as error:
