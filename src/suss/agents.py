@@ -191,12 +191,15 @@ class SussMixin:
         deadline: float | None = None
         loop = asyncio.get_running_loop()
         while not finishing.done():
+            if deadline is not None and loop.time() >= deadline:
+                finishing.cancel()
+                # Retrieved once the cancel settles it, so a failure it
+                # raises meanwhile is never reported as unretrieved.
+                finishing.add_done_callback(lambda task: task.cancelled() or task.exception())
+                raise late
             try:
                 if deadline is None:
                     await asyncio.shield(finishing)
-                elif loop.time() >= deadline:
-                    finishing.cancel()
-                    break
                 else:
                     await asyncio.wait({finishing}, timeout=deadline - loop.time())
             except asyncio.CancelledError as cancel:
