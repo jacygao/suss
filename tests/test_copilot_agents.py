@@ -15,9 +15,11 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from harbor.agents.factory import AgentFactory
 from harbor.agents.installed.base import NonZeroAgentExitCodeError
 from harbor.agents.installed.copilot_cli import CopilotCli
 from harbor.models.agent.context import AgentContext
+from harbor.models.trial.config import AgentConfig as TrialAgentConfig
 
 from suss.agents import SussCopilotCli, SussCopilotCliHve, full_auto_prompt
 from suss.config import ConfigError
@@ -235,6 +237,34 @@ def test_copilot_gets_the_env_files_token_alone_whatever_harbors_environment_hol
     )
     setup = [env for command, env in seen if "copilot --version" in command]
     assert setup and "COPILOT_GITHUB_TOKEN" not in setup[0], "the setup phase was given the token"
+
+
+@pytest.mark.parametrize("cls", [SussCopilotCli, SussCopilotCliHve])
+def test_harbors_preflight_takes_every_kwarg_suss_run_passes(box, cls):
+    kwargs = {"version": "1.0.105", "reasoning_effort": "high", "arm": "copilot-gpt",
+              "lane": "rebench", "suss_config": str(box / "host" / "suss.toml")}
+    if cls is SussCopilotCliHve:
+        kwargs["hve_core_commit"] = COMMIT
+
+    AgentFactory.run_preflight(TrialAgentConfig(
+        import_path=f"suss.agents:{cls.__name__}", model_name="gpt-6.1-sol", kwargs=kwargs
+    ))
+
+
+def test_an_effort_in_harbors_environment_does_not_reach_copilot(box, local_environment, monkeypatch):
+    monkeypatch.setenv("COPILOT_CLI_EFFORT", "low")
+
+    run(box, local_environment, agent(box))
+
+    assert "--effort" not in copilot_argv(box)
+
+
+def test_a_model_that_names_a_provider_fails_before_a_sandbox_starts(box):
+    with pytest.raises(ConfigError, match="names a provider"):
+        SussCopilotCli(
+            arm="copilot-gpt", lane="rebench", suss_config=str(box / "host" / "suss.toml"),
+            logs_dir=logs(box), model_name="anthropic/claude-sonnet-5.5", version="1.0.105",
+        )
 
 
 def test_an_env_file_with_no_token_fails_before_a_sandbox_starts(box):

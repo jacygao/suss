@@ -59,7 +59,7 @@ def ak_values(argv: list[str]) -> dict[str, str]:
 
 
 def harbor_parses(argv: list[str]) -> dict:
-    """The `--ak` values as Harbor 0.22.0's own parser hands them to the agent."""
+    """The `--ak` values as Harbor's own parser hands them to the agent."""
     return parse_kwargs([token for flag, token in zip(argv, argv[1:]) if flag == "--ak"])
 
 
@@ -354,10 +354,18 @@ def test_every_option_suss_sets_on_the_job_is_refused(tmp_path):
 
 
 def test_the_options_refused_beyond_those_suss_sets_are_these(tmp_path):
-    # Each selects other tasks, another agent, model or verifier, stops the job grading its
-    # trials, or keeps it from leaving a local trial for its verifier to read.
+    # Each selects other tasks, another agent, model, effort, endpoint or verifier, stops the
+    # job grading its trials, widens the verifier's network, or keeps it from leaving a local
+    # trial for its verifier to read.
     assert refused_options(tmp_path) - options_suss_sets(tmp_path) == {
         "model_names",
+        "effort",
+        "base_url",
+        "api_key_name",
+        "api_format",
+        "skip_model_parsing",
+        "allow_verifier_hosts",
+        "diff_sources",
         "disable_verification",
         "config_path",
         "agent_import_path",
@@ -384,7 +392,6 @@ def test_the_options_refused_beyond_those_suss_sets_are_these(tmp_path):
         "install_only",
         "launch",
         "dry_run",
-        "init",
         "print_config",
         "env_file",
         "agent_env",
@@ -474,19 +481,19 @@ def test_an_env_file_after_the_separator_is_refused(tmp_path):
 
 
 def test_sharing_with_an_organization_is_refused_where_suss_answers_harbors_question(tmp_path):
-    extra = ["--upload", "--share-org", "acme"]
+    extra = ["--upload", "--share", "acme"]
 
     with pytest.raises(ValueError) as refused:
         harbor_commands(make_config(tmp_path), hosts(), "senior", STAMP, 1, extra, reads=READS)
 
     assert str(refused.value) == (
-        "--share-org can't be passed after -- on senior: suss passes -y there, which would "
+        "--share can't be passed after -- on senior: suss passes -y there, which would "
         "share the job with an organization you are not a member of without asking"
     )
 
 
 def test_sharing_with_an_organization_passes_through_where_harbor_asks_no_question(tmp_path):
-    extra = ["--upload", "--share-org", "acme"]
+    extra = ["--upload", "--share", "acme"]
 
     agent = harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1, extra)
 
@@ -547,9 +554,19 @@ def test_sharing_with_an_organization_passes_through_where_harbor_asks_no_questi
             " verifier reads the trial on the host",
         ),
         (
-            ["--init"],
-            "--init can't be passed after --: it stops harbor before the job runs;"
+            ["--print-config"],
+            "--print-config can't be passed after --: it stops harbor before the job runs;"
             " DRY_RUN=1 prints suss's commands instead",
+        ),
+        (
+            ["--base-url", "https://example.com"],
+            "--base-url can't be passed after --: the arm's agent reaches its model through"
+            " the harness's own service, as it ships",
+        ),
+        (
+            ["--allow-verifier-host", "example.com"],
+            "--allow-verifier-host can't be passed after --: suss grades each trial with the"
+            " network its task gives the verifier, and no more",
         ),
     ],
 )

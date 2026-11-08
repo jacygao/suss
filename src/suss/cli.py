@@ -83,7 +83,7 @@ def harbor_commands(
 
     Raises ValueError, with a message for the user, when `harbor_args` include
     a positional argument, an option suss sets on the job, an option that
-    changes what it runs, `--share-org` where suss passes `-y`, or anything
+    changes what it runs, `--share` where suss passes `-y`, or anything
     Harbor's parser rejects.
     """
     lane_dir = f"lanes/{lane}-check" if check else f"lanes/{lane}"
@@ -153,7 +153,7 @@ def _refuse_sharing(harbor_args: Sequence[str], lane: str) -> None:
     given, _, _ = parser.parse_args(list(harbor_args))
     if given.get("share_org"):
         raise ValueError(
-            f"--share-org can't be passed after -- on {lane}: suss passes -y there, which would "
+            f"--share can't be passed after -- on {lane}: suss passes -y there, which would "
             "share the job with an organization you are not a member of without asking"
         )
 
@@ -176,6 +176,7 @@ def _kwarg(key: str, value: str | int | float | bool) -> str:
 _ALL_TASKS = "a run covers every task in its lanes"
 _NO_SIMULATED_USER = "suss runs the arm's agent alone, with no simulated user"
 _HARBOR_STOPS = "it stops harbor before the job runs; DRY_RUN=1 prints suss's commands instead"
+_OWN_MODELS = "the arm's agent reaches its model through the harness's own service, as it ships"
 _GRADED = (
     "suss grades each trial with its own verifier, which applies the trial's patch, and on"
     " senior judges it"
@@ -193,6 +194,7 @@ _REFUSED = {
     "agent_name": "set the arm's agent in suss.toml",
     "model_names": "set the arm's model in suss.toml",
     "agent_kwargs": "set the arm's kwargs in suss.toml",
+    "effort": "set the arm's kwargs in suss.toml",
     "allow_agent_hosts": "suss allows the hosts the arm's agent class lists in ALLOWED_HOSTS",
     "agent_env": (
         "the arm's agent takes only the variables its class names, from .env, and an --ae"
@@ -230,8 +232,15 @@ _REFUSED = {
     "install_only": "it skips the agent run, so the verifier would find no patch to grade",
     "launch": "suss runs each agent job locally, where its verifier reads the trial on the host",
     "dry_run": "it validates a --launch, and suss runs each agent job locally",
-    "init": _HARBOR_STOPS,
     "print_config": _HARBOR_STOPS,
+    "diff_sources": "it reuses or regrades another job's trials in place of running the arm's agent",
+    "base_url": _OWN_MODELS,
+    "api_key_name": _OWN_MODELS,
+    "api_format": _OWN_MODELS,
+    "skip_model_parsing": _OWN_MODELS,
+    "allow_verifier_hosts": (
+        "suss grades each trial with the network its task gives the verifier, and no more"
+    ),
     "env_file": (
         "it would give the agent job every variable its tasks read from Harbor's environment; "
         "suss gives it only those .env sets that reach its verifier alone"
@@ -295,8 +304,8 @@ def _overrides(harbor_args: Sequence[str]) -> dict[str, int]:
                 found[option] = int(given[param.name])
             except ValueError:
                 raise _Stop(
-                    f"harbor run would refuse {option} {given[param.name]!r}: "
-                    "it takes a whole number"
+                    f"suss can't take {option} {given[param.name]!r}: it counts what"
+                    " Docker holds in whole numbers"
                 ) from None
     return found
 
@@ -422,6 +431,12 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
     if settings.environment == "modal":
         _require_modal()
     root = settings.path.parent
+    # harbor run loads it into its own environment, where it would refill what suss withholds.
+    if (root / ".env.local").exists():
+        raise _Stop(
+            f"{root / '.env.local'} exists, and harbor run, which runs in {root}, would load"
+            " it, giving the agent job variables suss keeps from it; move it out"
+        )
     agent_class = agents.agent_class(settings.arm.agent, settings.path, args.arm)
     agents.check_arm(agent_class, settings)
     for at, lane in enumerate(args.lanes):

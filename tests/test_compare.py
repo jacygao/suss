@@ -237,6 +237,8 @@ def test_reads_whether_the_verifier_applied_the_patch_from_what_replay_verifier_
     monkeypatch.setattr(replay, "find_workspace", find_workspace)
     task = tmp_path / "task"
     (task / "tests").mkdir(parents=True)
+    # Harbor refuses a task with no test.sh, though the replay runs none.
+    (task / "tests" / "test.sh").write_text("#!/bin/bash\n")
     (task / "environment").mkdir()
     (task / "instruction.md").write_text("Fix it.\n")
     (task / "task.toml").write_text('[verifier]\nenvironment_mode = "separate"\n')

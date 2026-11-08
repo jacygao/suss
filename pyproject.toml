@@ -6,14 +6,14 @@ readme = "README.md"
 license = "MIT"
 requires-python = "==3.12.*"
 dependencies = [
-    "harbor==0.22.0",
+    "harbor==0.25.0",
     "pygments>=2.17,<3.0",
     "unidiff>=0.7,<1.0",
 ]
 
 [project.optional-dependencies]
 modal = [
-    "harbor[modal]==0.22.0",
+    "harbor[modal]==0.25.0",
 ]
 
 [project.scripts]
