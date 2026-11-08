@@ -31,7 +31,7 @@ peer-review - claude-code   +8% [+1%, +15%]
 
 | Dependency | Version | Needed for |
 |---|---|---|
-| Harbor | 0.22.0, exactly | Runs each task in a sandbox, runs each arm's agent in it, and grades the result with the task's own verifier. Suss's agents subclass Harbor's agent classes, so each Harbor upgrade is checked against them before it is taken. |
+| Harbor | 0.25.0, exactly | Runs each task in a sandbox, runs each arm's agent in it, and grades the result with the task's own verifier. Suss's agents and verifiers subclass Harbor's classes, so upgrading Harbor is a change of its own, and it is taken only when `uv run pytest`, `SUSS_MODAL_TESTS=1 uv run pytest tests/test_modal_sandbox.py`, a `rebench` check and a `senior` check, both on Modal, pass on the new version, and each check gives the reward it gave on the old one. |
 | Docker | Docker Desktop 4.86.0 or later on macOS. On Linux and Windows, a Docker engine whose kernel has `CONFIG_NFT_FIB_INET`. | The sandboxes, with `environment = "docker"` in `suss.toml`. Without `CONFIG_NFT_FIB_INET`, Harbor refuses every task, because the agent phase has no network. |
 | Modal | 1.5.1 or later, and the account Harbor's `modal` environment uses. `uv sync --extra modal` installs its client into suss's environment, through Harbor's own `modal` extra at the Harbor version above. A plain `uv sync` leaves it out. | The sandboxes, when `environment` is `modal`. Versions before 1.5.1 cannot take a network policy per phase. |
 | SWE-rebench | `ibragim-badertdinov/swe-rebench-07-2026` from Harbor Hub, as `harbor download` writes it | The `rebench` lane's tasks. |
@@ -199,6 +199,9 @@ value there, since Harbor gives `[verifier.env]` to the command that runs
 `test.sh` and to no sandbox. It never passes one as an argument. No job's
 Harbor takes these variables from suss's own environment. So a variable `.env`
 leaves out or leaves empty takes the task's default, and the agent phase gets one only when the arm's agent class gives it to its commands.
+`harbor run` loads a `.env.local` in the directory it runs in, so a run exits
+with an error before it builds any lane or runs any job when one is beside
+`suss.toml`.
 
 Every `senior` task has Senior SWE-Bench's verifier, which runs LLM judges and,
 on a design task, a validation agent. They call their models with
@@ -416,7 +419,7 @@ A class names, as class attributes, the hosts its agent phase reaches in
 
 | Agent | Model and kwargs | Hosts | What it does |
 |---|---|---|---|
-| `suss.agents:SussCopilotCli` | a model, required; `version`, required; `reasoning_effort` | `api.github.com`, `api.enterprise.githubcopilot.com` | Harbor's `copilot-cli` agent. It installs Copilot CLI at `version` with `https://gh.io/copilot-install`, and runs `copilot --prompt=<instruction> --yolo --model=<model> --effort <reasoning_effort> --output-format=json`. Suss adds `--disable-builtin-mcps`, `--no-auto-update`, `--disable-client-telemetry`, `--no-ask-user` and `--excluded-tools web_fetch web_search`. Copilot CLI's commands in the agent phase get `COPILOT_GITHUB_TOKEN` from `.env` and no other token: never `GH_TOKEN` or `GITHUB_TOKEN`, and none from Harbor's environment. Harbor constructs it only when `.env` sets that token. |
+| `suss.agents:SussCopilotCli` | a model, required; `version`, required; `reasoning_effort` | `api.github.com`, `api.enterprise.githubcopilot.com` | Harbor's `copilot-cli` agent. It installs Copilot CLI at `version` with `https://gh.io/copilot-install`, and runs `copilot --prompt=<instruction> --yolo --deny-tool web_fetch --deny-tool web_search --model=<model> --effort <reasoning_effort> --output-format=json`, denying the web tools because the agent phase's network is an allowlist. Suss adds `--disable-builtin-mcps`, `--no-auto-update`, `--disable-client-telemetry`, `--no-ask-user` and `--excluded-tools web_fetch web_search`. The model is one of Copilot's own, by the name `--model` takes, and Harbor constructs no agent for one that names a provider, as `anthropic/<model>` does, which Harbor would run against that provider's API. Copilot CLI's commands in the agent phase get `COPILOT_GITHUB_TOKEN` from `.env` and no other token: never `GH_TOKEN` or `GITHUB_TOKEN`, and none from Harbor's environment. Harbor constructs it only when `.env` sets that token. |
 | `suss.agents:SussCopilotCliHve` | as `SussCopilotCli`, and `hve_core_commit`, required | as `SussCopilotCli` | `SussCopilotCli` as Microsoft's hve-core RPI Agent. Its install also downloads hve-core at `hve_core_commit`, a full 40-digit commit, from `https://codeload.github.com/microsoft/hve-core/tar.gz/<commit>` to `$HOME/.local/share/hve-core/<commit>/`, and fails when the archive holds no `plugin.json`, or that commit's `rpi-agent.agent.md` has no "Full Auto" handoff prompt. It adds `--plugin-dir` with that directory and `--agent hve-core:rpi-agent`, and gives as the prompt the Full Auto prompt, a blank line, then the instruction. `model` and `reasoning_effort` apply to the RPI Agent, and its subagents' own files name theirs. RPI keeps its state in the workspace's `.copilot-tracking/`, which suss makes a link to `/logs/agent/copilot-tracking/` and adds to `.git/info/exclude`, so it is kept as it is written and stays out of the patch. The trial is `harness-failed`, with Copilot CLI never started, when the workspace already has `.copilot-tracking`, or its own ignore rules keep git from ignoring it. |
 
 Both record Copilot CLI's usage from its stream, which Harbor's agent does not
@@ -629,8 +632,11 @@ nothing:
   the arm's `model` sets, and `--disable-verification` and its opposite
   `--enable-verification`, since the agent job grades its own trials.
 - `--env-file`, which would load the file into the agent job's environment,
-  `--ae`, which would reach every command the agent runs, and `--share-org`
+  `--ae`, which would reach every command the agent runs, and `--share`
   where the jobs take `-y`.
+- An option that changes how the agent reaches its model, or what the verifier
+  reaches: `--effort`, which the arm's `kwargs` set, `--base-url`,
+  `--api-key-name`, `--api-format`, `--sm` and `--allow-verifier-host`.
 - An option that changes the tasks or the agent the agent job runs, or keeps it
   from leaving a trial on this machine for its verifier: `-c`, `-d`, `-t`, `-i`,
   `-x`, `-l`, `--registry-url`, `--registry-path`, `--repo`, `--task-git-url`,
@@ -638,7 +644,7 @@ nothing:
   `--environment-import-path`,
   `--user-agent`, `--user-model`, `--uk`, `--user-persona-path`,
   `--user-prompt-template-path`, `--bridge`, `--bridge-prompt-path`, `--bk`,
-  `--install-only`, `--launch`, `--dry-run`, `--init` and `--print-config`.
+  `--install-only`, `--launch`, `--dry-run`, `--diff` and `--print-config`.
 - A positional argument, which `harbor run` does not take.
 
 ```
@@ -721,8 +727,8 @@ credit_budget = 2000
   `-m`, and each of `kwargs` as `--ak`, of its own type. A class that is not
   built on `SussMixin`, a kwarg it does not take, or a model or kwarg it needs
   and the arm leaves out, makes `suss run` exit with an error before it builds
-  any lane or runs any job, since Harbor gives an agent every `--ak` and ignores
-  those it has no use for:
+  any lane or runs any job. Harbor refuses such a kwarg only once the agent job
+  has started, and takes any kwarg for an agent class that declares no options:
 
   ```
   $ suss run copilot-gpt rebench
