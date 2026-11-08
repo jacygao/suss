@@ -476,3 +476,36 @@ def test_harbors_own_environment_does_not_reach_the_agent(trial, monkeypatch):
 
     assert Flagged(arm="fake", lane="rebench", suss_config=str(trial.config),
                    logs_dir=trial.host_logs).build_cli_flags() == ""
+
+
+def test_a_cancel_during_the_stop_still_captures_the_patch_then_raises(local_environment, trial):
+    agent = trial.agent()
+    SussScripted.script = KNOWN_CHANGE
+    exec_as_given = local_environment.exec
+    stopping = asyncio.Event()
+
+    async def slow_stop(command, **kwargs):
+        if "suss_kill_marked" in command and not stopping.is_set():
+            stopping.set()
+            await asyncio.sleep(2)
+        return await exec_as_given(command, **kwargs)
+
+    async def scenario():
+        await agent.setup(environment=local_environment)
+        local_environment.exec = slow_stop
+        running = asyncio.create_task(
+            agent.run(instruction=INSTRUCTION, environment=local_environment, context=AgentContext())
+        )
+        await stopping.wait()
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+
+    try:
+        go(scenario())
+    finally:
+        del local_environment.exec
+
+    assert "a known change" in trial.patch(), "a cancel during the stop skipped the patch"
+    assert (trial.artifacts / "model.patch").exists()
+    assert trial.record()["status"] == "ok"

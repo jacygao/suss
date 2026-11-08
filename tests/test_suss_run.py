@@ -1542,3 +1542,14 @@ def test_a_model_or_kwarg_the_agent_needs_is_refused_when_missing(project, capfd
     _, err = capfd.readouterr()
     assert missing in err
     assert_nothing_ran(project)
+
+
+@pytest.mark.parametrize("agent", ["suss.agents:SussMixin", "test_suss_run:Project"])
+def test_a_class_that_is_not_a_harbor_agent_is_refused_before_anything_runs(project, capfd, agent):
+    use_agent(project, agent)
+
+    assert project.run("peer-review", "rebench") != 0
+
+    _, err = capfd.readouterr()
+    assert "is not an agent built on suss.agents.SussMixin" in err
+    assert_nothing_ran(project)

@@ -10,6 +10,7 @@ fails before a sandbox starts.
 """
 
 import asyncio
+import inspect
 import json
 import re
 import shlex
@@ -18,6 +19,7 @@ import time
 from pathlib import Path
 from typing import Any, ClassVar
 
+from harbor.agents.base import BaseAgent
 from harbor.agents.installed.base import NonZeroAgentExitCodeError
 from harbor.agents.installed.copilot_cli import CopilotCli
 from harbor.environments.base import BaseEnvironment
@@ -181,8 +183,42 @@ class SussMixin:
             status, raised = "harness-failed", error
         run_seconds = time.monotonic() - started
         token, self._token = self._token, None
-        await sandbox.stop_marked(environment, token)
+        finishing = asyncio.ensure_future(self._finish(environment, token, status, run_seconds, raised))
+        # A cancel that arrives during the stop or the capture waits for them,
+        # for CLEANUP_SECONDS at most, since Harbor waits on a cancelled agent
+        # with no limit. It is raised once they are done.
+        late: asyncio.CancelledError | None = None
+        deadline: float | None = None
+        loop = asyncio.get_running_loop()
+        while not finishing.done():
+            try:
+                if deadline is None:
+                    await asyncio.shield(finishing)
+                elif loop.time() >= deadline:
+                    finishing.cancel()
+                    break
+                else:
+                    await asyncio.wait({finishing}, timeout=deadline - loop.time())
+            except asyncio.CancelledError as cancel:
+                late = late or cancel
+                deadline = deadline or loop.time() + CLEANUP_SECONDS
+        if finishing.cancelled() or (finishing.exception() is None and late is not None):
+            raise late or asyncio.CancelledError()
+        finishing.result()
 
+    async def _finish(
+        self,
+        environment: BaseEnvironment,
+        token: str,
+        status: str,
+        run_seconds: float,
+        raised: BaseException | None,
+    ) -> None:
+        """
+        Stop everything the agent started, capture the patch and write
+        suss.json, then raise what the run raised.
+        """
+        await sandbox.stop_marked(environment, token)
         try:
             # Harbor waits on a cancelled agent with no limit.
             cleanup = CLEANUP_SECONDS if isinstance(raised, asyncio.CancelledError) else None
@@ -270,7 +306,8 @@ def agent_class(import_path: str, path: Path, arm: str) -> type[SussMixin]:
         found = import_symbol(import_path)
     except ValueError as error:
         raise ConfigError(f"{path}: [arms.{arm}] agent = {import_path!r}: {error}") from None
-    if not isinstance(found, type) or not issubclass(found, SussMixin):
+    concrete = isinstance(found, type) and issubclass(found, BaseAgent) and not inspect.isabstract(found)
+    if not concrete or not issubclass(found, SussMixin):
         raise ConfigError(
             f"{path}: [arms.{arm}] agent = {import_path!r} is not an agent built on "
             "suss.agents.SussMixin, and only such an agent leaves the patch its trial is "
