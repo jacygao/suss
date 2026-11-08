@@ -1,12 +1,14 @@
 """
-Judge trials through JudgeAgent, in the stand-in environment, with a stand-in
-`copilot` and a stand-in senior task.
+Judge trials through JudgeVerifier, in the stand-in environment, with a
+stand-in `copilot` and a stand-in senior task.
 
 The task, under lanes/senior/ in the test's directory, has senior's file
 layout and the names in run_judge.py the judge calls. The stand-in `copilot`
 answers each session from a scenario the test writes, and records every
-call. The source job, the regrade trial and the workspace are laid out as in
-test_replay.py.
+call. The agent trial and the verifier's sandbox are laid out as in
+test_replay.py: the patch in the sandbox's artifacts directory and in the
+trial's agent/ on the host. Harbor's own verifier, which runs test.sh, is
+stood in for by one that records what test.sh would find.
 """
 
 import asyncio
@@ -19,21 +21,26 @@ import sys
 from pathlib import Path
 
 import pytest
-from harbor.agents.factory import AgentFactory
 from harbor.cli.utils import parse_kwargs
-from harbor.models.agent.context import AgentContext
-from harbor.models.trial.config import AgentConfig
+from harbor.models.task.task import Task
+from harbor.models.trial.config import VerifierConfig
+from harbor.models.trial.paths import TrialPaths
+from harbor.models.verifier.result import VerifierResult
+from harbor.utils.env import resolve_env_vars
+from harbor.verifier.factory import VerifierFactory
+from harbor.verifier.verifier import Verifier
 
 import suss.judge
 import suss.replay
-from suss.judge import CreditLedger, JudgeAgent, JudgePaths, extract_json
-from suss.replay import ReplayAgent
-from test_replay import edit_line, git, go, patch_of, trial
+from suss.judge import CreditLedger, JudgePaths, JudgeVerifier, extract_json
+from suss.replay import ReplayError, ReplayVerifier
+from test_replay import edit_line, git, go, patch_of
 
 HERE = Path(__file__).resolve().parent
 FAKE_TASK = HERE / "fake_senior_task"
 FAKE_ADAPTER = HERE / "fake_adapter"
 TASK = "fake-senior-task"
+TRIAL = "fake-senior-task__AbCdEfG"
 TOKEN = "github_pat_stand_in_judge_token"
 TEST_FILE = "tests/test_lines.py"
 
@@ -91,7 +98,6 @@ def found(monkeypatch, workspace):
         return str(workspace)
 
     monkeypatch.setattr(suss.replay, "find_workspace", find_workspace)
-    monkeypatch.setattr(suss.judge, "find_workspace", find_workspace)
 
 
 @pytest.fixture
@@ -141,46 +147,80 @@ def calls(box: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
 
-def source_job(box: Path, workspace: Path, change=whole_fix) -> Path:
-    job = box / "agent-job"
-    trial(job, "fake-senior-task__AbCdEfG", TASK, patch_of(workspace, change) if change else None)
-    # trial() names the task under lanes/rebench/, and the judge reads it from lanes/senior/.
-    config = job / "fake-senior-task__AbCdEfG" / "config.json"
-    config.write_text(json.dumps({"task": {"path": f"lanes/senior/{TASK}", "source": "senior"}}))
-    return job
+def a_patch(workspace: Path, change=whole_fix) -> bytes | None:
+    """The patch the agent trial left, or None for a trial that left none."""
+    return patch_of(workspace, change) if change else None
 
 
-def regrade_dir(box: Path, name: str = "fake-senior-task__XyZ1234", job: str = "judge-job") -> Path:
-    regrade = box / job / name
-    regrade.mkdir(parents=True)
-    config = {"task": {"path": f"lanes/senior/{TASK}", "source": "senior"}}
-    (regrade / "config.json").write_text(json.dumps(config))
-    return regrade
-
-
-def judge_agent(box: Path, job: Path, regrade: Path | None = None, **kwargs) -> JudgeAgent:
-    """A JudgeAgent for the regrade trial of the task, constructed as Harbor constructs it."""
-    regrade = regrade or regrade_dir(box)
+def judge_verifier(
+    box: Path, environment, patch: bytes | None, trial: str = TRIAL, job: str = "agent-job",
+    **kwargs,
+) -> JudgeVerifier:
+    """
+    A JudgeVerifier for the agent trial `trial` of `job`, built as Harbor
+    builds a separate verifier, with `patch` in the sandbox's artifacts and
+    the trial's agent/ where it is not None.
+    """
     sandbox = box / "sandbox"
+    paths = TrialPaths(box / job / trial)
+    paths.mkdir()
+    artifacts = sandbox / "logs" / trial / "artifacts"
+    if patch is not None:
+        artifacts.mkdir(parents=True, exist_ok=True)
+        (artifacts / "model.patch").write_bytes(patch)
+        (paths.agent_dir / "model.patch").write_bytes(patch)
     kwargs.setdefault("credit_budget", 1000)
-    return JudgeAgent(
-        source_job=str(job),
+    return VerifierFactory.create_verifier_from_config(
+        VerifierConfig(import_path="suss.judge:JudgeVerifier"),
+        task=Task(box / "lanes" / "senior" / TASK),
+        trial_paths=paths,
+        environment=environment,
+        skip_tests_upload=True,
+        artifacts=str(artifacts),
         adapter=str(box / "adapter"),
         paths=JudgePaths(
-            root=str(sandbox / "opt" / regrade.name),
-            logs=str(sandbox / "logs" / regrade.name / "judge"),
+            root=str(sandbox / "opt" / trial),
+            logs=str(sandbox / "logs" / trial / "verifier" / "judge"),
             copilot=str(box / "copilot" / "copilot"),
         ),
-        patch_target=str(sandbox / "tmp" / f"{regrade.name}.patch"),
-        logs_dir=regrade / "agent",
         **kwargs,
     )
 
 
-def judge(agent: JudgeAgent, environment) -> dict:
-    go(agent.setup(environment))
-    go(agent.run("an instruction", environment, AgentContext()))
-    return json.loads((agent.logs_dir / "judge.json").read_text())
+@pytest.fixture
+def tested(monkeypatch, workspace) -> list[dict]:
+    """
+    Stand in for Harbor's own verifier, which runs test.sh: each run records
+    what test.sh would read of the workspace, and the environment Harbor would
+    give it, then rewards 1.
+    """
+    runs: list[dict] = []
+
+    async def run_test_sh(self) -> VerifierResult:
+        merged = {**self.task.config.verifier.env, **(self.verifier_env or {}), **self.override_env}
+        result = await self.environment.exec("env", env=resolve_env_vars(merged) or None)
+        runs.append({"workspace": verifier_input(workspace), "env": result.stdout or ""})
+        return VerifierResult(rewards={"reward": 1.0})
+
+    monkeypatch.setattr(Verifier, "verify", run_test_sh)
+    return runs
+
+
+def verify(verifier) -> VerifierResult:
+    return go(verifier.verify())
+
+
+def judge(verifier: JudgeVerifier) -> dict:
+    verify(verifier)
+    return recorded(verifier)
+
+
+def recorded(verifier) -> dict:
+    return json.loads((verifier.trial_paths.verifier_dir / "judge.json").read_text())
+
+
+def ledger(verifier) -> Path:
+    return verifier.trial_paths.trial_dir.parent / "judge-credits.jsonl"
 
 
 def verifier_input(workspace: Path) -> dict:
@@ -198,17 +238,23 @@ def verifier_input(workspace: Path) -> dict:
     }
 
 
-def regraded_input(box: Path, workspace: Path, job: Path, environment) -> dict:
-    """What a verifier would read after ReplayAgent regraded the same trial, with the workspace reset after."""
-    regrade = regrade_dir(box, "fake-senior-task__RePlay1", job="replay-job")
-    agent = ReplayAgent(
-        source_job=str(job),
-        patch_target=str(box / "sandbox" / "tmp" / "replay.patch"),
-        logs_dir=regrade / "agent",
+def replayed_input(box: Path, workspace: Path, patch: bytes, environment, tested) -> dict:
+    """What test.sh would read after ReplayVerifier graded the same patch, with the workspace reset after."""
+    paths = TrialPaths(box / "replay-job" / TRIAL)
+    paths.mkdir()
+    artifacts = box / "sandbox" / "logs" / "replay" / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "model.patch").write_bytes(patch)
+    verifier = VerifierFactory.create_verifier_from_config(
+        VerifierConfig(import_path="suss.replay:ReplayVerifier"),
+        task=Task(box / "lanes" / "senior" / TASK),
+        trial_paths=paths,
+        environment=environment,
+        skip_tests_upload=True,
+        artifacts=str(artifacts),
     )
-    go(agent.setup(environment))
-    go(agent.run("an instruction", environment, AgentContext()))
-    seen = verifier_input(workspace)
+    verify(verifier)
+    seen = tested.pop()["workspace"]
     git(workspace, "reset", "-q", "--hard", "HEAD")
     git(workspace, "clean", "-qfdx")
     return seen
@@ -217,45 +263,42 @@ def regraded_input(box: Path, workspace: Path, job: Path, environment) -> dict:
 # Loading
 
 
-def test_harbor_loads_it_with_gemini_4_argon_at_high_effort_by_default(tmp_path):
-    job = tmp_path / "agent-job"
-    job.mkdir()
-    config = AgentConfig(
-        name="suss.judge:JudgeAgent",
-        model_name="judge",
-        kwargs=parse_kwargs([f"source_job={job}", "credit_budget=80"]),
+def test_harbor_loads_it_with_gemini_4_argon_at_high_effort_by_default(tmp_path, local_environment):
+    paths = TrialPaths(tmp_path / "agent-job" / TRIAL)
+    paths.mkdir()
+    config = VerifierConfig(
+        import_path="suss.judge:JudgeVerifier", kwargs=parse_kwargs(["credit_budget=80"])
     )
 
-    agent = AgentFactory.create_agent_from_config(config, logs_dir=tmp_path / "agent")
+    verifier = VerifierFactory.create_verifier_from_config(
+        config, task=Task(FAKE_TASK), trial_paths=paths, environment=local_environment,
+        skip_tests_upload=True,
+    )
 
-    assert isinstance(agent, JudgeAgent)
-    assert (agent.model, agent.effort, agent.classifier_model) == (
+    assert isinstance(verifier, JudgeVerifier)
+    assert (verifier.model, verifier.effort, verifier.classifier_model) == (
         "gemini-4-argon",
         "high",
         "claude-haiku-4.5",
     )
-    assert agent.credit_budget == 80
+    assert verifier.credit_budget == 80
+    assert verifier.judge_seconds == 1800
 
 
-def test_a_credit_budget_that_is_not_a_number_is_an_error(tmp_path):
-    job = tmp_path / "agent-job"
-    job.mkdir()
-
+def test_a_credit_budget_that_is_not_a_number_is_an_error(box, local_environment):
     with pytest.raises(TypeError, match="credit_budget"):
-        JudgeAgent(source_job=str(job), credit_budget="lots", logs_dir=tmp_path / "agent")
+        judge_verifier(box, local_environment, None, credit_budget="lots")
 
 
 # What the judge sees
 
 
-def test_judges_the_whole_patch_with_its_test_files_then_puts_them_back(
-    box, workspace, local_environment
+def test_judges_the_whole_patch_with_its_test_files_then_puts_them_back_for_test_sh(
+    box, workspace, local_environment, tested
 ):
-    job = source_job(box, workspace)
+    verifier = judge_verifier(box, local_environment, a_patch(workspace))
 
-    agent = judge_agent(box, job)
-
-    record = judge(agent, local_environment)
+    record = judge(verifier)
 
     judged = [call for call in calls(box) if call["kind"] in ("rubric", "taste")]
     assert [call["kind"] for call in judged] == ["rubric", "taste"]
@@ -264,18 +307,16 @@ def test_judges_the_whole_patch_with_its_test_files_then_puts_them_back(
         "the rubric judge ran on a workspace without the trial's test file"
     )
     assert f"+++ b/{TEST_FILE}" in rubric["prompt"], "the rubric prompt lacks the trial's test file"
-    assert TEST_FILE in record["judged_files"]
-    assert not (workspace / TEST_FILE).exists(), "the test file was not put back for the verifier"
-    replayed = json.loads((agent.logs_dir / "replay.json").read_text())
+    assert TEST_FILE in record["judged_files"], "the judge was given the patch with its test files reset"
+    assert TEST_FILE not in tested[0]["workspace"]["files"], "test.sh ran with the trial's test file"
+    replayed = json.loads((verifier.trial_paths.verifier_dir / "replay.json").read_text())
     assert replayed["tests_reset"] == {"restored": [], "removed": [TEST_FILE]}
 
 
 def test_builds_each_prompt_with_the_tasks_own_code_and_says_how_to_answer(
-    box, workspace, local_environment
+    box, workspace, local_environment, tested
 ):
-    job = source_job(box, workspace)
-
-    judge(judge_agent(box, job), local_environment)
+    judge(judge_verifier(box, local_environment, a_patch(workspace)))
 
     by_kind = {call["kind"]: call["prompt"] for call in calls(box)}
     assert by_kind["rubric"].startswith("You are the stand-in rubric judge. Call submit_scores.")
@@ -289,10 +330,8 @@ def test_builds_each_prompt_with_the_tasks_own_code_and_says_how_to_answer(
         assert '"$defs"' in prompt or '"properties"' in prompt
 
 
-def test_each_session_reads_and_cannot_write(box, workspace, local_environment):
-    job = source_job(box, workspace)
-
-    judge(judge_agent(box, job), local_environment)
+def test_each_session_reads_and_cannot_write(box, workspace, local_environment, tested):
+    judge(judge_verifier(box, local_environment, a_patch(workspace)))
 
     tools = {call["kind"]: call["flags"]["--available-tools"] for call in calls(box)}
     assert tools == {"classify": ["view"], "rubric": ["view"], "taste": ["view", "glob", "grep", "rg"]}
@@ -308,10 +347,8 @@ def test_each_session_reads_and_cannot_write(box, workspace, local_environment):
 # What the trial records
 
 
-def test_records_the_scores_in_the_shape_of_seniors_reward_json(box, workspace, local_environment):
-    job = source_job(box, workspace)
-
-    record = judge(judge_agent(box, job), local_environment)
+def test_records_the_scores_in_the_shape_of_seniors_reward_json(box, workspace, local_environment, tested):
+    record = judge(judge_verifier(box, local_environment, a_patch(workspace)))
 
     assert (record["rubric_status"], record["taste_status"]) == ("ok", "ok")
     assert record["scores"] == {
@@ -331,13 +368,12 @@ def test_records_the_scores_in_the_shape_of_seniors_reward_json(box, workspace, 
 
 
 def test_records_the_client_the_model_and_effort_asked_for_and_reported_and_the_installed_version(
-    box, workspace, local_environment
+    box, workspace, local_environment, tested
 ):
     # Installed is not what was asked for, as an auto-update would leave it.
     (box / "copilot" / "version").write_text("1.0.106")
-    job = source_job(box, workspace)
 
-    record = judge(judge_agent(box, job, copilot_version="1.0.105"), local_environment)
+    record = judge(judge_verifier(box, local_environment, a_patch(workspace), copilot_version="1.0.105"))
 
     assert record["judge"] == {
         "client": "copilot-cli",
@@ -347,21 +383,21 @@ def test_records_the_client_the_model_and_effort_asked_for_and_reported_and_the_
         "effort": "high",
         "classifier_model": "claude-haiku-4.5",
     }
-    rubric = next(session for session in record["sessions"] if session["name"] == "rubric")
+    rubric = session_named(record, "rubric")
     assert rubric["reported_models"] == ["gemini-4-argon"]
     assert rubric["reported_efforts"] == ["high"]
-    classify = next(session for session in record["sessions"] if session["name"] == "classify-agent")
+    classify = session_named(record, "classify-agent")
     assert (classify["model"], classify["effort"]) == ("claude-haiku-4.5", None)
     assert "--reasoning-effort" not in next(c for c in calls(box) if c["kind"] == "classify")["argv"]
 
 
 @pytest.mark.parametrize("effort", ["high", ""], ids=["with-effort", "without-effort"])
 def test_judges_with_a_model_of_another_family_as_with_the_default(
-    box, workspace, local_environment, effort
+    box, workspace, local_environment, tested, effort
 ):
-    job = source_job(box, workspace)
-
-    record = judge(judge_agent(box, job, model="gpt-6.1-sol", effort=effort), local_environment)
+    record = judge(
+        judge_verifier(box, local_environment, a_patch(workspace), model="gpt-6.1-sol", effort=effort)
+    )
 
     assert (record["rubric_status"], record["taste_status"]) == ("ok", "ok")
     assert (record["judge"]["model"], record["judge"]["effort"]) == ("gpt-6.1-sol", effort or None)
@@ -371,15 +407,25 @@ def test_judges_with_a_model_of_another_family_as_with_the_default(
         assert call["flags"].get("--reasoning-effort") == ([effort] if effort else None)
 
 
-def test_records_each_sessions_credits_and_their_total(box, workspace, local_environment):
+def test_records_each_sessions_credits_and_their_total(box, workspace, local_environment, tested):
     write_scenario(box, classify={"nano": 1_250_000_000})
-    job = source_job(box, workspace)
 
-    record = judge(judge_agent(box, job), local_environment)
+    record = judge(judge_verifier(box, local_environment, a_patch(workspace)))
 
     credits = {session["name"]: session["credits"] for session in record["sessions"]}
     assert credits == {"classify-agent": 1.25, "classify-oracle": 1.25, "rubric": 8.0, "taste": 20.0}
     assert record["credits"] == 30.5
+
+
+def test_keeps_the_judges_logs_in_the_verifiers_logs(box, workspace, local_environment, tested):
+    verifier = judge_verifier(box, local_environment, a_patch(workspace))
+
+    judge(verifier)
+
+    logs = Path(verifier.paths.logs)
+    assert logs.parts[-2:] == ("verifier", "judge")
+    assert (logs / "rubric" / "out.jsonl").is_file()
+    assert JudgePaths().logs == "/logs/verifier/judge"
 
 
 # Answers
@@ -404,18 +450,17 @@ def test_a_reply_with_no_json_object_gives_none(text):
     assert extract_json(text) == (None, "none")
 
 
-def test_reads_an_answer_in_a_code_fence_or_with_prose_around_it(box, workspace, local_environment):
+def test_reads_an_answer_in_a_code_fence_or_with_prose_around_it(box, workspace, local_environment, tested):
     write_scenario(
         box,
         rubric={"answer": f"My scores:\n\n{json.dumps(RUBRIC_ANSWER)}\n"},
         taste={"answer": f"```json\n{json.dumps(TASTE_ANSWER)}\n```"},
     )
-    job = source_job(box, workspace)
 
-    record = judge(judge_agent(box, job), local_environment)
+    record = judge(judge_verifier(box, local_environment, a_patch(workspace)))
 
     assert (record["rubric_status"], record["taste_status"]) == ("ok", "ok")
-    assert {s["name"]: s["json"] for s in record["sessions"]}["rubric"] == "embedded"
+    assert session_named(record, "rubric")["json"] == "embedded"
     assert record["scores"]["rubric_score"] == 0.5
 
 
@@ -443,12 +488,11 @@ def without(answer: dict, *path: str) -> dict:
          "rubric-missing-a-criterion", "rubric-unknown-criterion", "rubric-out-of-range"],
 )
 def test_an_answer_that_is_missing_or_invalid_twice_fails_and_records_no_score(
-    box, workspace, local_environment, kind, answer, status
+    box, workspace, local_environment, tested, kind, answer, status
 ):
     write_scenario(box, **{kind: {"answer": answer, "retry": {"answer": answer}}})
-    job = source_job(box, workspace)
 
-    record = judge(judge_agent(box, job), local_environment)
+    record = judge(judge_verifier(box, local_environment, a_patch(workspace)))
 
     assert [call["resumed"] for call in calls(box) if call["kind"] == kind] == [False, True]
     assert record[f"{kind}_status"] == status
@@ -469,24 +513,22 @@ def test_an_answer_that_is_missing_or_invalid_twice_fails_and_records_no_score(
     ],
 )
 def test_a_session_on_the_wrong_model_or_effort_or_that_fails_records_no_score(
-    box, workspace, local_environment, scenario, status
+    box, workspace, local_environment, tested, scenario, status
 ):
     write_scenario(box, rubric=scenario)
-    job = source_job(box, workspace)
 
-    record = judge(judge_agent(box, job), local_environment)
+    record = judge(judge_verifier(box, local_environment, a_patch(workspace)))
 
     assert record["rubric_status"] == status
     assert "rubric_score" not in record["scores"]
     assert record["taste_status"] == "ok"
 
 
-def test_a_task_with_no_rubric_criteria_skips_the_rubric_judge(box, workspace, local_environment):
+def test_a_task_with_no_rubric_criteria_skips_the_rubric_judge(box, workspace, local_environment, tested):
     rubric = box / "lanes" / "senior" / TASK / "tests" / "judge" / "rubric.json"
     rubric.write_text(json.dumps({"files": [], "fail_to_pass": [], "pass_to_pass": []}))
-    job = source_job(box, workspace)
 
-    record = judge(judge_agent(box, job), local_environment)
+    record = judge(judge_verifier(box, local_environment, a_patch(workspace)))
 
     assert record["rubric_status"] == "skipped:no_criteria"
     assert "rubric" not in [call["kind"] for call in calls(box)]
@@ -494,34 +536,43 @@ def test_a_task_with_no_rubric_criteria_skips_the_rubric_judge(box, workspace, l
     assert record["scores"]["rubric_judge_ok"] == 0
 
 
-@pytest.mark.parametrize("patch", ["empty", "missing"])
-def test_an_empty_or_missing_patch_skips_both_judges(box, workspace, local_environment, patch):
-    job = source_job(box, workspace, change=(lambda repo: None) if patch == "empty" else None)
-
-    record = judge(judge_agent(box, job), local_environment)
+def test_an_empty_patch_skips_both_judges_and_is_still_graded(box, workspace, local_environment, tested):
+    record = judge(judge_verifier(box, local_environment, a_patch(workspace, lambda repo: None)))
 
     assert (record["rubric_status"], record["taste_status"]) == ("skipped:no_patch", "skipped:no_patch")
     assert calls(box) == []
+    assert len(tested) == 1
 
 
-def test_an_install_that_fails_fails_both_judges_and_the_trial_is_still_regraded(
-    box, workspace, local_environment
+def test_a_trial_that_left_no_patch_skips_both_judges_and_runs_no_test(
+    box, workspace, local_environment, tested
+):
+    verifier = judge_verifier(box, local_environment, None)
+
+    with pytest.raises(ReplayError, match="no patch"):
+        verify(verifier)
+
+    record = recorded(verifier)
+    assert (record["rubric_status"], record["taste_status"]) == ("skipped:no_patch", "skipped:no_patch")
+    assert tested == []
+
+
+def test_an_install_that_fails_fails_both_judges_and_the_trial_is_still_graded(
+    box, workspace, local_environment, tested
 ):
     (box / "adapter" / "install.then").write_text("exit 3\n")
-    job = source_job(box, workspace)
 
-    record = judge(judge_agent(box, job), local_environment)
+    record = judge(judge_verifier(box, local_environment, a_patch(workspace)))
 
     assert (record["rubric_status"], record["taste_status"]) == ("failed:install", "failed:install")
     assert "3" in record["rubric_error"]
-    assert (workspace / "lines.txt").read_text().splitlines()[2] == "the fix"
+    assert tested[0]["workspace"]["files"]["lines.txt"].splitlines()[2] == b"the fix"
 
 
-def test_a_dotenv_with_no_token_skips_both_judges(box, workspace, local_environment):
+def test_a_dotenv_with_no_token_skips_both_judges(box, workspace, local_environment, tested):
     (box / ".env").write_text("OTHER_KEY=x\n")
-    job = source_job(box, workspace)
 
-    record = judge(judge_agent(box, job), local_environment)
+    record = judge(judge_verifier(box, local_environment, a_patch(workspace)))
 
     assert (record["rubric_status"], record["taste_status"]) == ("skipped:no_token", "skipped:no_token")
     assert calls(box) == []
@@ -540,64 +591,126 @@ def test_a_dotenv_with_no_token_skips_both_judges(box, workspace, local_environm
     ],
     ids=["judged", "failing", "session-timing-out", "judge-timing-out"],
 )
-def test_the_verifier_sees_what_it_would_after_a_regrade_whatever_the_judge_does(
-    box, workspace, local_environment, scenario, settings
+def test_test_sh_sees_what_it_would_after_replayverifier_and_gives_its_reward_whatever_the_judge_does(
+    box, workspace, local_environment, tested, scenario, settings
 ):
-    job = source_job(box, workspace)
-    expected = regraded_input(box, workspace, job, local_environment)
+    patch = a_patch(workspace)
+    expected = replayed_input(box, workspace, patch, local_environment, tested)
     write_scenario(box, **scenario)
 
-    record = judge(judge_agent(box, job, **settings), local_environment)
+    result = verify(judge_verifier(box, local_environment, patch, **settings))
 
-    assert verifier_input(workspace) == expected
+    assert tested[-1]["workspace"] == expected, "the judge changed what test.sh grades"
+    assert result.rewards == {"reward": 1.0}, "the judge changed the test reward"
+    record = json.loads((box / "agent-job" / TRIAL / "verifier" / "judge.json").read_text())
     if scenario:
         assert "failed:" in record["rubric_status"] + record["taste_status"]
 
 
-def test_a_session_timing_out_fails_its_judge_alone(box, workspace, local_environment):
+def test_a_judge_that_raises_fails_both_judges_and_test_sh_still_gives_the_reward(
+    box, workspace, local_environment, tested
+):
+    patch = a_patch(workspace)
+    expected = replayed_input(box, workspace, patch, local_environment, tested)
+    run_judge = box / "lanes" / "senior" / TASK / "tests" / "run_judge.py"
+    run_judge.write_text("raise SystemExit(3)\n" + run_judge.read_text())
+
+    verifier = judge_verifier(box, local_environment, patch)
+
+    result = verify(verifier)
+
+    assert result.rewards == {"reward": 1.0}, "a judge that raised changed the test reward"
+    assert tested[-1]["workspace"] == expected
+    record = recorded(verifier)
+    assert (record["rubric_status"], record["taste_status"]) == ("failed:error", "failed:error")
+
+
+def test_a_session_timing_out_fails_its_judge_alone(box, workspace, local_environment, tested):
     write_scenario(box, taste={"sleep": 30})
-    job = source_job(box, workspace)
 
-    record = judge(judge_agent(box, job, session_seconds=1), local_environment)
+    record = judge(judge_verifier(box, local_environment, a_patch(workspace), session_seconds=1))
 
     assert (record["rubric_status"], record["taste_status"]) == ("ok", "failed:timeout")
 
 
-def test_the_judge_timing_out_fails_every_judge_it_had_not_finished(box, workspace, local_environment):
+def test_the_judge_timing_out_fails_every_judge_it_had_not_finished(box, workspace, local_environment, tested):
     write_scenario(box, taste={"sleep": 60})
-    job = source_job(box, workspace)
 
-    record = judge(judge_agent(box, job, judge_seconds=10), local_environment)
+    record = judge(judge_verifier(box, local_environment, a_patch(workspace), judge_seconds=10))
 
     assert (record["rubric_status"], record["taste_status"]) == ("ok", "failed:timeout")
+    assert record["scores"]["taste_judge_ok"] == 0
+
+
+def test_a_task_whose_verifier_timeout_cannot_hold_the_judge_is_refused_before_anything_runs(
+    box, workspace, local_environment, tested
+):
+    toml = box / "lanes" / "senior" / TASK / "task.toml"
+    toml.write_text(toml.read_text().replace("timeout_sec = 2700.0", "timeout_sec = 600.0"))
+    verifier = judge_verifier(box, local_environment, a_patch(workspace))
+
+    with pytest.raises(suss.judge.JudgeError, match="600 seconds"):
+        verify(verifier)
+
+    assert calls(box) == [], "a judge session ran that Harbor's verifier timeout would cut off"
+    assert tested == []
+    assert not (verifier.trial_paths.verifier_dir / "judge.json").exists()
+
+
+def test_a_judge_harbors_verifier_timeout_cancels_is_recorded_unjudged_and_runs_no_test(
+    box, workspace, local_environment, tested
+):
+    patch = a_patch(workspace)
+    expected = replayed_input(box, workspace, patch, local_environment, tested)
+    write_scenario(box, taste={"sleep": 60})
+    verifier = judge_verifier(box, local_environment, patch)
+
+    async def cancel_during_taste():
+        # As Harbor's asyncio.wait_for cancels verify() at the verifier timeout.
+        run = asyncio.create_task(verifier.verify())
+        while "taste" not in [call["kind"] for call in calls(box)]:
+            await asyncio.sleep(0.1)
+        run.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await run
+
+    go(cancel_during_taste())
+
+    assert verifier_input(workspace) == expected
+    assert tested == []
+    record = recorded(verifier)
+    assert (record["rubric_status"], record["taste_status"]) == ("ok", "failed:cancelled")
+    assert record["scores"]["taste_judge_ok"] == 0, "a cancelled taste judge reads as judged"
+    assert session_named(record, "taste")["status"] == "failed:cancelled"
 
 
 @pytest.mark.parametrize("path", ["lines.txt", "notes.txt"], ids=["edits-a-file", "adds-a-file"])
-def test_a_session_that_changes_the_repository_fails_and_the_change_is_undone(
-    box, workspace, local_environment, path
+def test_a_session_that_changes_the_repository_fails_and_the_change_is_undone_before_test_sh(
+    box, workspace, local_environment, tested, path
 ):
-    job = source_job(box, workspace)
-    expected = regraded_input(box, workspace, job, local_environment)
+    patch = a_patch(workspace)
+    expected = replayed_input(box, workspace, patch, local_environment, tested)
     write_scenario(box, rubric={"write": path})
 
-    record = judge(judge_agent(box, job), local_environment)
+    record = judge(judge_verifier(box, local_environment, patch))
 
     assert record["rubric_status"] == "failed:repo_changed"
-    rubric = next(session for session in record["sessions"] if session["name"] == "rubric")
+    rubric = session_named(record, "rubric")
     assert rubric["repo_unchanged"] is False
     assert rubric["restored"] is True
     assert "rubric_score" not in record["scores"]
-    assert verifier_input(workspace) == expected
+    assert tested[-1]["workspace"] == expected
 
 
 # The token
 
 
-def test_the_token_reaches_copilot_alone_and_no_record_or_log(box, workspace, local_environment):
-    job = source_job(box, workspace)
-    agent = judge_agent(box, job)
+def test_the_token_reaches_copilot_alone_and_no_record_log_or_test_sh(
+    box, workspace, local_environment, tested
+):
+    verifier = judge_verifier(box, local_environment, a_patch(workspace))
 
-    record = judge(agent, local_environment)
+    record = judge(verifier)
 
     sha = hashlib.sha256(TOKEN.encode()).hexdigest()
     for call in calls(box):
@@ -606,22 +719,22 @@ def test_the_token_reaches_copilot_alone_and_no_record_or_log(box, workspace, lo
         assert TOKEN not in " ".join(call["argv"])
         assert call["argv"][call["argv"].index("--secret-env-vars") + 1] == "COPILOT_GITHUB_TOKEN"
     assert record["rubric_status"] == "ok"
+    assert TOKEN not in tested[0]["env"], "test.sh's environment holds the judge's token"
     written = [path for path in (box / "sandbox").rglob("*") if path.is_file()]
-    written += [path for path in agent.logs_dir.rglob("*") if path.is_file()]
+    written += [path for path in verifier.trial_paths.trial_dir.rglob("*") if path.is_file()]
     assert [path for path in written if TOKEN.encode() in path.read_bytes()] == []
-    # A later command, as the verifier's, starts with no token.
+    # A later command, as test.sh's, starts with no token.
     later = go(local_environment.exec("printenv COPILOT_GITHUB_TOKEN"))
     assert later.return_code != 0
 
 
-def test_a_log_holding_the_token_is_removed(box, workspace, local_environment):
+def test_a_log_holding_the_token_is_removed(box, workspace, local_environment, tested):
     write_scenario(box, rubric={"leak": True})
-    job = source_job(box, workspace)
-    agent = judge_agent(box, job)
+    verifier = judge_verifier(box, local_environment, a_patch(workspace))
 
-    record = judge(agent, local_environment)
+    record = judge(verifier)
 
-    rubric = next(session for session in record["sessions"] if session["name"] == "rubric")
+    rubric = session_named(record, "rubric")
     assert len(rubric["removed_for_token"]) == 1
     assert not Path(rubric["removed_for_token"][0]).exists()
     written = [path for path in (box / "sandbox").rglob("*") if path.is_file()]
@@ -631,33 +744,43 @@ def test_a_log_holding_the_token_is_removed(box, workspace, local_environment):
 # The credit budget
 
 
-def test_a_job_starts_no_session_its_budget_cannot_hold(box, workspace, local_environment):
-    job = source_job(box, workspace)
+def test_a_job_starts_no_session_its_budget_cannot_hold(box, workspace, local_environment, tested):
     # The classifiers take 2 and the rubric judge 8, so the taste judge's
     # reservation of 60 would pass a budget of 40.
-    agent = judge_agent(box, job, credit_budget=40)
+    verifier = judge_verifier(box, local_environment, a_patch(workspace), credit_budget=40)
 
-    record = judge(agent, local_environment)
+    record = judge(verifier)
 
     assert record["rubric_status"] == "ok"
     assert record["taste_status"] == "skipped:budget"
     assert "taste" not in [call["kind"] for call in calls(box)]
-    assert CreditLedger(agent.logs_dir.parent.parent / "judge-credits.jsonl", 40).spent() == 10.0
+    assert CreditLedger(ledger(verifier), 40).spent() == 10.0
 
 
-def test_every_trial_of_a_job_charges_one_ledger(box, workspace, local_environment):
-    job = source_job(box, workspace)
-    first = judge_agent(box, job, regrade=regrade_dir(box, "fake-senior-task__One1111"))
-    judge(first, local_environment)
+def test_every_trial_of_a_job_charges_one_ledger_on_the_host_and_another_jobs_charges_its_own(
+    box, workspace, local_environment, tested
+):
+    patch = a_patch(workspace)
+    first = judge_verifier(box, local_environment, patch, trial="fake-senior-task__One1111")
+    judge(first)
     git(workspace, "reset", "-q", "--hard", "HEAD")
     git(workspace, "clean", "-qfdx")
-    second = judge_agent(box, job, regrade=regrade_dir(box, "fake-senior-task__Two2222"), credit_budget=40)
+    second = judge_verifier(
+        box, local_environment, patch, trial="fake-senior-task__Two2222", credit_budget=40
+    )
 
-    record = judge(second, local_environment)
+    record = judge(second)
 
+    assert ledger(first) == ledger(second) == box / "agent-job" / "judge-credits.jsonl"
     # The first trial spent 30, so the second has 10 left: the classifiers fit, and neither judge does.
     assert [s["status"] for s in record["sessions"]] == ["ok", "ok", "skipped:budget", "skipped:budget"]
     assert (record["rubric_status"], record["taste_status"]) == ("skipped:budget", "skipped:budget")
+    labels = {json.loads(line).get("label", "").split("/")[0] for line in ledger(first).read_text().splitlines()}
+    assert labels >= {"fake-senior-task__One1111", "fake-senior-task__Two2222"}
+    git(workspace, "reset", "-q", "--hard", "HEAD")
+    git(workspace, "clean", "-qfdx")
+    other = judge_verifier(box, local_environment, patch, job="other-job", credit_budget=40)
+    assert judge(other)["rubric_status"] == "ok", "another job's trials drew on this job's budget"
 
 
 def test_concurrent_sessions_never_take_a_ledger_past_its_budget(tmp_path, monkeypatch):
@@ -713,7 +836,7 @@ def test_a_reservation_whose_process_died_counts_as_spent_and_is_not_waited_for(
 # Found in review of #198
 
 
-def test_a_token_in_a_reply_or_an_error_never_reaches_the_record(box, workspace, local_environment):
+def test_a_token_in_a_reply_or_an_error_never_reaches_the_record(box, workspace, local_environment, tested):
     leaky = json.loads(json.dumps(TASTE_ANSWER))
     leaky["practice_alignment"]["style_consistency"]["rationale"] = f"saw {TOKEN}"
     write_scenario(
@@ -721,13 +844,12 @@ def test_a_token_in_a_reply_or_an_error_never_reaches_the_record(box, workspace,
         taste={"answer": json.dumps(leaky)},
         rubric={"answer": f"no scores, {TOKEN}", "retry": {"answer": f"still none, {TOKEN}"}},
     )
-    job = source_job(box, workspace)
-    agent = judge_agent(box, job)
+    verifier = judge_verifier(box, local_environment, a_patch(workspace))
 
-    record = judge(agent, local_environment)
+    record = judge(verifier)
 
     assert (record["rubric_status"], record["taste_status"]) == ("failed:no_json", "ok")
-    assert TOKEN not in (agent.logs_dir / "judge.json").read_text()
+    assert TOKEN not in (verifier.trial_paths.verifier_dir / "judge.json").read_text()
     assert "[redacted]" in record["rubric_error"]
 
 
@@ -741,60 +863,56 @@ def test_a_token_in_a_reply_or_an_error_never_reaches_the_record(box, workspace,
     ids=["stages-a-new-file", "commits-the-patch", "untracks-a-file"],
 )
 def test_a_session_that_stages_or_commits_is_put_back_whole(
-    box, workspace, local_environment, command
+    box, workspace, local_environment, tested, command
 ):
-    job = source_job(box, workspace)
-    expected = regraded_input(box, workspace, job, local_environment)
+    patch = a_patch(workspace)
+    expected = replayed_input(box, workspace, patch, local_environment, tested)
     write_scenario(box, rubric={"run": command})
 
-    record = judge(judge_agent(box, job), local_environment)
+    record = judge(judge_verifier(box, local_environment, patch))
 
     assert record["rubric_status"] == "failed:repo_changed"
-    assert next(s for s in record["sessions"] if s["name"] == "rubric")["restored"] is True
-    assert verifier_input(workspace) == expected
+    assert session_named(record, "rubric")["restored"] is True
+    assert tested[-1]["workspace"] == expected
 
 
-def test_a_workspace_that_cannot_be_put_back_fails_the_trial(
-    box, workspace, local_environment, monkeypatch
+def test_a_workspace_that_cannot_be_put_back_fails_the_trial_and_runs_no_test(
+    box, workspace, local_environment, tested, monkeypatch
 ):
-    job = source_job(box, workspace)
     write_scenario(box, rubric={"write": "notes.txt"})
-    agent = judge_agent(box, job)
+    verifier = judge_verifier(box, local_environment, a_patch(workspace))
 
     async def leaves_it(*args, **kwargs):
         pass
 
-    monkeypatch.setattr(agent, "_restore", leaves_it)
-    go(agent.setup(local_environment))
+    monkeypatch.setattr(verifier, "_restore", leaves_it)
 
     with pytest.raises(suss.judge.JudgeError, match="put back"):
-        go(agent.run("an instruction", local_environment, AgentContext()))
-    record = json.loads((agent.logs_dir / "judge.json").read_text())
-    assert record["rubric_status"] == "failed:repo_changed"
+        verify(verifier)
+    assert recorded(verifier)["rubric_status"] == "failed:repo_changed"
+    assert tested == []
 
 
-def test_a_restore_that_raises_fails_the_trial(box, workspace, local_environment, monkeypatch):
-    job = source_job(box, workspace)
+def test_a_restore_that_raises_fails_the_trial(box, workspace, local_environment, tested, monkeypatch):
     write_scenario(box, rubric={"write": "notes.txt"})
-    agent = judge_agent(box, job)
+    verifier = judge_verifier(box, local_environment, a_patch(workspace))
 
     async def stuck(*args, **kwargs):
         raise RuntimeError("the reset stopped midway")
 
-    monkeypatch.setattr(agent, "_restore", stuck)
-    go(agent.setup(local_environment))
+    monkeypatch.setattr(verifier, "_restore", stuck)
 
     with pytest.raises(suss.judge.JudgeError, match="put back"):
-        go(agent.run("an instruction", local_environment, AgentContext()))
+        verify(verifier)
 
 
 def test_a_cancel_during_cleanup_still_puts_the_test_files_back_and_fails_the_trial(
-    box, workspace, local_environment
+    box, workspace, local_environment, tested
 ):
-    job = source_job(box, workspace)
-    expected = regraded_input(box, workspace, job, local_environment)
-    agent = judge_agent(box, job)
-    real_cleanup = agent._cleanup
+    patch = a_patch(workspace)
+    expected = replayed_input(box, workspace, patch, local_environment, tested)
+    verifier = judge_verifier(box, local_environment, patch)
+    real_cleanup = verifier._cleanup
     entered = asyncio.Event()
 
     async def slow_cleanup(*args):
@@ -802,11 +920,10 @@ def test_a_cancel_during_cleanup_still_puts_the_test_files_back_and_fails_the_tr
         await asyncio.sleep(30)
         await real_cleanup(*args)
 
-    agent._cleanup = slow_cleanup
-    go(agent.setup(local_environment))
+    verifier._cleanup = slow_cleanup
 
     async def cancel_during_cleanup():
-        run = asyncio.create_task(agent.run("an instruction", local_environment, AgentContext()))
+        run = asyncio.create_task(verifier.verify())
         await entered.wait()
         run.cancel()
         with pytest.raises(suss.judge.JudgeError, match="put back"):
@@ -815,56 +932,30 @@ def test_a_cancel_during_cleanup_still_puts_the_test_files_back_and_fails_the_tr
     go(cancel_during_cleanup())
 
     assert verifier_input(workspace) == expected
-    assert (agent.logs_dir / "replay.json").exists()
+    assert (verifier.trial_paths.verifier_dir / "replay.json").exists()
+    assert tested == []
 
 
-def test_a_cancelled_run_still_puts_the_test_files_back_and_stays_cancelled(
-    box, workspace, local_environment
-):
-    job = source_job(box, workspace)
-    expected = regraded_input(box, workspace, job, local_environment)
+def test_a_session_the_judge_stops_keeps_the_credits_it_reported(box, workspace, local_environment, tested):
     write_scenario(box, taste={"sleep": 60})
-    agent = judge_agent(box, job)
-    go(agent.setup(local_environment))
+    verifier = judge_verifier(box, local_environment, a_patch(workspace), judge_seconds=10)
 
-    async def cancel_during_taste():
-        run = asyncio.create_task(agent.run("an instruction", local_environment, AgentContext()))
-        while "taste" not in [call["kind"] for call in calls(box)]:
-            await asyncio.sleep(0.1)
-        run.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await run
+    record = judge(verifier)
 
-    go(cancel_during_taste())
-
-    assert verifier_input(workspace) == expected
-    assert (agent.logs_dir / "replay.json").exists()
-    record = json.loads((agent.logs_dir / "judge.json").read_text())
-    assert (record["rubric_status"], record["taste_status"]) == ("ok", "failed:cancelled")
-
-
-def test_a_session_the_judge_stops_keeps_the_credits_it_reported(box, workspace, local_environment):
-    write_scenario(box, taste={"sleep": 60})
-    job = source_job(box, workspace)
-    agent = judge_agent(box, job, judge_seconds=10)
-
-    record = judge(agent, local_environment)
-
-    taste = next(s for s in record["sessions"] if s["name"] == "taste")
+    taste = session_named(record, "taste")
     assert taste["credits"] == 20.0
     assert record["credits"] == 30.0
-    assert CreditLedger(agent.logs_dir.parent.parent / "judge-credits.jsonl", 1000).spent() == 30.0
+    assert CreditLedger(ledger(verifier), 1000).spent() == 30.0
 
 
-def test_a_dotenv_with_no_token_leaves_the_judges_files_alone(box, workspace, local_environment):
+def test_a_dotenv_with_no_token_leaves_the_judges_files_alone(box, workspace, local_environment, tested):
     (box / ".env").write_text("OTHER_KEY=x\n")
-    job = source_job(box, workspace)
-    agent = judge_agent(box, job)
+    verifier = judge_verifier(box, local_environment, a_patch(workspace))
 
-    judge(agent, local_environment)
+    judge(verifier)
 
-    assert (Path(agent.paths.logs) / "install.log").exists()
-    assert (Path(agent.paths.adapter) / "install.sh").exists()
+    assert (Path(verifier.paths.logs) / "install.log").exists()
+    assert (Path(verifier.paths.adapter) / "install.sh").exists()
 
 
 # Retrying an answer that fails the schema
@@ -878,11 +969,12 @@ def session_named(record: dict, name: str) -> dict:
     return next(session for session in record["sessions"] if session["name"] == name)
 
 
-def test_an_answer_that_is_not_json_is_retried_by_resuming_the_same_session(box, workspace, local_environment):
+def test_an_answer_that_is_not_json_is_retried_by_resuming_the_same_session(
+    box, workspace, local_environment, tested
+):
     write_scenario(box, taste={"answer": UNESCAPED_TASTE})
-    job = source_job(box, workspace)
 
-    record = judge(judge_agent(box, job), local_environment)
+    record = judge(judge_verifier(box, local_environment, a_patch(workspace)))
 
     first = next(call for call in calls(box) if call["kind"] == "taste")
     retry = next(call for call in calls(box) if call["prompt"].startswith("Your final reply cannot be scored"))
@@ -895,12 +987,13 @@ def test_an_answer_that_is_not_json_is_retried_by_resuming_the_same_session(box,
     assert record["scores"]["taste_practice_alignment"] == 4.0
 
 
-def test_the_retry_names_what_was_wrong_and_both_answers_are_recorded(box, workspace, local_environment):
+def test_the_retry_names_what_was_wrong_and_both_answers_are_recorded(
+    box, workspace, local_environment, tested
+):
     partial = json.dumps({"criteria": RUBRIC_ANSWER["criteria"][:1]})
     write_scenario(box, rubric={"answer": partial})
-    job = source_job(box, workspace)
 
-    record = judge(judge_agent(box, job), local_environment)
+    record = judge(judge_verifier(box, local_environment, a_patch(workspace)))
 
     retried = [call for call in calls(box) if call["kind"] == "rubric"][1]
     assert "keeps_other_lines" in retried["prompt"], "the retry does not say which criterion was missing"
@@ -913,34 +1006,33 @@ def test_the_retry_names_what_was_wrong_and_both_answers_are_recorded(box, works
     assert record["scores"]["rubric_score"] == 0.5
 
 
-def test_the_retry_charges_the_jobs_ledger_what_it_spent_after_reserving(box, workspace, local_environment):
+def test_the_retry_charges_the_jobs_ledger_what_it_spent_after_reserving(
+    box, workspace, local_environment, tested
+):
     write_scenario(box, taste={"answer": "no scores", "retry": {"nano": 3_500_000_000}})
-    job = source_job(box, workspace)
-    agent = judge_agent(box, job)
+    verifier = judge_verifier(box, local_environment, a_patch(workspace))
 
-    record = judge(agent, local_environment)
+    record = judge(verifier)
 
     # Copilot CLI counts on across a resume: the retry reports 23.5, of which the first call spent 20.
     assert (session_named(record, "taste")["credits"], session_named(record, "taste-retry")["credits"]) == (20.0, 3.5)
     assert record["credits"] == 33.5
-    path = agent.logs_dir.parent.parent / "judge-credits.jsonl"
-    entries = [json.loads(line) for line in path.read_text().splitlines()]
+    entries = [json.loads(line) for line in ledger(verifier).read_text().splitlines()]
     reserved = next(i for i, e in enumerate(entries) if e.get("label", "").endswith("/taste-retry"))
     settled = next(i for i, e in enumerate(entries) if e.get("settle") == entries[reserved]["reserve"])
     assert reserved < settled
     assert entries[settled]["credits"] == 3.5
-    assert CreditLedger(path, 1000).spent() == 33.5
+    assert CreditLedger(ledger(verifier), 1000).spent() == 33.5
 
 
 def test_a_retry_the_budget_cannot_hold_is_skipped_and_the_first_failure_stands(
-    box, workspace, local_environment
+    box, workspace, local_environment, tested
 ):
     # The classifiers and the rubric judge spend 10 and the taste judge 55,
     # which leaves 5 of 70: less than a retry holds.
     write_scenario(box, taste={"answer": "no scores", "nano": 55_000_000_000})
-    job = source_job(box, workspace)
 
-    record = judge(judge_agent(box, job, credit_budget=70), local_environment)
+    record = judge(judge_verifier(box, local_environment, a_patch(workspace), credit_budget=70))
 
     assert [call["resumed"] for call in calls(box) if call["kind"] == "taste"] == [False]
     assert session_named(record, "taste-retry")["status"] == "skipped:budget"
@@ -960,40 +1052,40 @@ def test_a_retry_the_budget_cannot_hold_is_skipped_and_the_first_failure_stands(
     ids=["valid", "wrong-model", "wrong-effort", "exits-1", "changes-the-repository", "times-out"],
 )
 def test_only_an_answer_that_fails_the_schema_is_retried(
-    box, workspace, local_environment, scenario, settings
+    box, workspace, local_environment, tested, scenario, settings
 ):
     write_scenario(box, rubric=scenario)
-    job = source_job(box, workspace)
 
-    record = judge(judge_agent(box, job, **settings), local_environment)
+    record = judge(judge_verifier(box, local_environment, a_patch(workspace), **settings))
 
     assert [call["resumed"] for call in calls(box) if call["kind"] == "rubric"] == [False]
     assert "rubric-retry" not in [session["name"] for session in record["sessions"]]
 
 
 def test_a_retry_that_changes_the_repository_fails_and_the_change_is_undone(
-    box, workspace, local_environment
+    box, workspace, local_environment, tested
 ):
-    job = source_job(box, workspace)
-    expected = regraded_input(box, workspace, job, local_environment)
+    patch = a_patch(workspace)
+    expected = replayed_input(box, workspace, patch, local_environment, tested)
     write_scenario(box, rubric={"answer": "no scores", "retry": {"write": "notes.txt"}})
 
-    record = judge(judge_agent(box, job), local_environment)
+    record = judge(judge_verifier(box, local_environment, patch))
 
     retry = session_named(record, "rubric-retry")
     assert (retry["repo_unchanged"], retry["restored"]) == (False, True)
     assert record["rubric_status"] == "failed:repo_changed"
     assert "rubric_score" not in record["scores"]
-    assert verifier_input(workspace) == expected
+    assert tested[-1]["workspace"] == expected
 
 
 def test_reads_back_argons_effort_from_a_checkpoint_that_names_its_vendor_openai(
-    box, workspace, local_environment
+    box, workspace, local_environment, tested
 ):
     write_scenario(box, rubric=ARGON_CHECKPOINT, taste=ARGON_CHECKPOINT)
-    job = source_job(box, workspace)
 
-    record = judge(judge_agent(box, job, model="gemini-4-argon", effort="high"), local_environment)
+    record = judge(
+        judge_verifier(box, local_environment, a_patch(workspace), model="gemini-4-argon", effort="high")
+    )
 
     assert (record["rubric_status"], record["taste_status"]) == ("ok", "ok")
     for name in ("rubric", "taste"):

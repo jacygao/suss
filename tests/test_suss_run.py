@@ -41,6 +41,8 @@ SENIOR_TASKS = Path(__file__).resolve().parent / "senior_tasks"
 SENIOR_NAMES = sorted(task.name for task in SENIOR_TASKS.iterdir() if task.is_dir())
 LITELLM = b"litellm>=1.0,<2.0"
 PINNED = b"litellm>=1.0,<1.106"
+# The senior lane's judge, which every suss.toml here sets.
+JUDGE = "[lanes.senior.judge]\ncredit_budget = 2000\n"
 
 
 @dataclass
@@ -96,6 +98,7 @@ class Project:
             "concurrency = 4\n"
             f"{cap}\n"
             f"{lane_tables}\n"
+            f"{JUDGE}\n"
             "[arms.peer-review]\n"
             'harness = "adapter"\n'
             f"{arm_extra}\n"
@@ -203,20 +206,18 @@ def test_the_default_harbor_is_the_one_beside_this_python():
 # What runs, and in what order
 
 
-def test_the_senior_lane_runs_k_agent_jobs_each_followed_by_its_regrade(project):
+def test_the_senior_lane_runs_k_agent_jobs_each_judging_and_grading_its_own_trials(project):
     write_dotenv(project, JUDGES_KEY)
 
     assert project.run("peer-review", "senior") == 0
 
     runs = [
-        (value(record["argv"], "-p"), value(record["argv"], "-a"), value(record["argv"], "--job-name"))
+        (value(record["argv"], "-p"), value(record["argv"], "--verifier"), value(record["argv"], "--job-name"))
         for record in project.records("harbor")
     ]
     assert runs == [
-        ("lanes/senior", "suss.agent:SussAgent", f"{STAMP}-1"),
-        ("lanes/senior", "suss.replay:ReplayAgent", f"{STAMP}-1-regrade"),
-        ("lanes/senior", "suss.agent:SussAgent", f"{STAMP}-2"),
-        ("lanes/senior", "suss.replay:ReplayAgent", f"{STAMP}-2-regrade"),
+        ("lanes/senior", "suss.judge:JudgeVerifier", f"{STAMP}-1"),
+        ("lanes/senior", "suss.judge:JudgeVerifier", f"{STAMP}-2"),
     ]
 
 
@@ -373,30 +374,27 @@ def test_harbor_runs_in_the_directory_holding_suss_toml_not_the_current_one(proj
 
 
 @pytest.mark.parametrize("pythonpath", [None, "/somewhere/else"], ids=["unset", "set"])
-def test_both_jobs_run_in_suss_own_environment_unchanged(project, monkeypatch, pythonpath):
+def test_every_job_runs_in_suss_own_environment_unchanged(project, monkeypatch, pythonpath):
     monkeypatch.setenv("SUSS_TEST_KEY", "kept")
     if pythonpath is not None:
         monkeypatch.setenv("PYTHONPATH", pythonpath)
 
     project.run("peer-review", "rebench")
 
-    agent, regrade = project.records("harbor")[:2]
-    for record in (agent, regrade):
+    for record in project.records("harbor"):
         assert record["env"]["SUSS_TEST_KEY"] == "kept"
         assert record["env"]["PATH"] == os.environ["PATH"]
         assert record["env"]["HOME"] == os.environ["HOME"]
         assert record["env"].get("PYTHONPATH") == pythonpath
 
 
-def test_arguments_after_the_separator_reach_every_agent_job_and_no_regrade(project):
+def test_arguments_after_the_separator_reach_every_agent_job(project):
     write_dotenv(project, JUDGES_KEY)
     assert project.run("peer-review", "senior", "--", "--max-retries", "2") == 0
 
-    assert len(project.records("harbor")) == 4
+    assert len(project.records("harbor")) == 2
     for record in project.records("harbor"):
-        has_them = record["argv"][-2:] == ["--max-retries", "2"]
-        is_agent = "suss.agent:SussAgent" in record["argv"]
-        assert has_them == is_agent, record["argv"]
+        assert record["argv"][-2:] == ["--max-retries", "2"], record["argv"]
 
 
 def test_harbors_output_is_shown_as_it_runs(project, capfd):
@@ -405,7 +403,7 @@ def test_harbors_output_is_shown_as_it_runs(project, capfd):
 
     out, err = capfd.readouterr()
     assert f"stand-in harbor ran {STAMP}-1\n" in out
-    assert f"stand-in harbor ran {STAMP}-2-regrade\n" in out
+    assert f"stand-in harbor ran {STAMP}-2\n" in out
     assert f"stand-in harbor complained about {STAMP}-1\n" in out + err
 
 
@@ -424,13 +422,14 @@ def test_on_a_terminal_harbor_writes_to_one_so_its_live_progress_shows(tmp_path,
 # When a job fails
 
 
-def test_a_regrade_follows_an_agent_job_that_exits_non_zero(project):
+def test_the_next_agent_job_follows_one_that_exits_non_zero(project):
     write_dotenv(project, JUDGES_KEY)
     project.plan_jobs(**{f"{STAMP}_1": {"exit": 1}})
 
-    project.run("peer-review", "senior")
+    # Harbor's exit code is not its trials' result.
+    assert project.run("peer-review", "senior") == 0
 
-    assert project.job_names() == [f"{STAMP}-1", f"{STAMP}-1-regrade", f"{STAMP}-2", f"{STAMP}-2-regrade"]
+    assert project.job_names() == [f"{STAMP}-1", f"{STAMP}-2"]
 
 
 @pytest.mark.parametrize(
@@ -451,23 +450,11 @@ def test_an_agent_job_that_leaves_no_trial_stops_the_run(project, capfd, job):
 
     out, err = capfd.readouterr()
     assert code != 0
-    assert project.job_names() == [f"{STAMP}-1", f"{STAMP}-1-regrade", f"{STAMP}-2"]
+    assert project.job_names() == [f"{STAMP}-1", f"{STAMP}-2"]
     message = err[err.index("error: "):]
     assert f"{STAMP}-2" in message.splitlines()[0]
     assert f"stand-in harbor ran {STAMP}-2" in message
     assert f"stand-in harbor complained about {STAMP}-2" in message
-
-
-def test_a_regrade_that_exits_non_zero_is_reported_after_the_run_finishes(project, capfd):
-    write_dotenv(project, JUDGES_KEY)
-    project.plan_jobs(**{f"{STAMP}_1_regrade": {"exit": 2}})
-
-    code = project.run("peer-review", "senior")
-
-    _, err = capfd.readouterr()
-    assert code != 0
-    assert len(project.job_names()) == 4
-    assert f"error: regrade {STAMP}-1-regrade on senior exited 2" in err
 
 
 # Refused before anything runs
@@ -637,8 +624,8 @@ def test_the_max_seconds_error_is_printed_as_the_spec_shows(project, capfd):
     assert_nothing_ran(project)
 
 
-# A .env that gives the senior lane's judges their key.
-JUDGES_KEY = "ANTHROPIC_API_KEY=sk-ant-1\n"
+# A .env that gives the senior lane's judge its token.
+JUDGES_KEY = "COPILOT_GITHUB_TOKEN=gh-1\n"
 
 
 # Either lane alone over the timeout, so that a value read once for the run,
@@ -1017,7 +1004,7 @@ def test_a_checks_override_of_the_agent_jobs_memory_counts_toward_its_one_trial(
     assert_refused_before_any_lane(project)
 
 
-def test_an_override_below_the_tasks_own_need_still_leaves_the_regrade_needing_it(
+def test_an_override_below_the_tasks_own_need_still_counts_the_tasks_own_need(
     project, capfd, monkeypatch
 ):
     monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", f"10 {3 * GIB}")
@@ -1262,48 +1249,46 @@ def write_dotenv(project: Project, text: str) -> None:
     (project.directory / ".env").write_text(text)
 
 
-def test_the_agent_job_takes_no_key_its_tasks_read_even_from_suss_own_environment(
+def test_the_agent_job_takes_no_grading_key_or_token_from_env_or_suss_own_environment(
     senior, monkeypatch
 ):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "from-the-shell")
-    write_dotenv(senior, "ANTHROPIC_API_KEY=from-dotenv\n")
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "exported-in-the-shell")
+    write_dotenv(senior, JUDGES_KEY + "ANTHROPIC_API_KEY=from-dotenv\nPORTKEY_API_KEY=pk-1\n")
 
     assert senior.run("peer-review", "senior") == 0
 
-    agent, regrade = senior.records("harbor")[:2]
-    assert "suss.agent:SussAgent" in agent["argv"]
-    assert not set(JUDGE_VARIABLES) & set(agent["env"])
-    assert agent["env"]["PATH"] == os.environ["PATH"]
-    assert regrade["env"]["ANTHROPIC_API_KEY"] == "from-dotenv"
-    assert regrade["env"]["PATH"] == os.environ["PATH"]
+    for agent in senior.records("harbor"):
+        assert "suss.agent:SussAgent" in agent["argv"]
+        assert not {"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PORTKEY_API_KEY"} & set(agent["env"])
+        assert "COPILOT_GITHUB_TOKEN" not in agent["env"], "the judge's token is in Harbor's environment"
+        assert agent["env"]["PATH"] == os.environ["PATH"]
 
 
-def test_the_regrade_gets_an_override_env_sets_and_none_from_suss_own_environment(
+def test_the_agent_job_gets_an_override_env_sets_and_none_from_suss_own_environment(
     senior, monkeypatch
 ):
     monkeypatch.setenv("SSB_OVERRIDE_CLASSIFIER_MODEL", "anthropic/claude-opus-4-6")
-    write_dotenv(
-        senior, "ANTHROPIC_API_KEY=sk-ant-1\nSSB_OVERRIDE_ALL_JUDGE_MODEL=anthropic/claude-opus-4-6\n"
-    )
+    write_dotenv(senior, JUDGES_KEY + "SSB_OVERRIDE_ALL_JUDGE_MODEL=anthropic/claude-opus-4-6\n")
 
     assert senior.run("peer-review", "senior") == 0
 
-    regrade = senior.records("harbor")[1]
-    assert regrade["env"]["SSB_OVERRIDE_ALL_JUDGE_MODEL"] == "anthropic/claude-opus-4-6"
-    assert "SSB_OVERRIDE_CLASSIFIER_MODEL" not in regrade["env"]
+    agent = senior.records("harbor")[0]
+    assert agent["env"]["SSB_OVERRIDE_ALL_JUDGE_MODEL"] == "anthropic/claude-opus-4-6"
+    assert "SSB_OVERRIDE_CLASSIFIER_MODEL" not in agent["env"]
 
 
 @pytest.mark.parametrize(
     "dry_run, check", [(False, False), (True, False), (False, True)], ids=["run", "dry-run", "check"]
 )
-@pytest.mark.parametrize("dotenv", ["", "ANTHROPIC_API_KEY=\n"], ids=["unset", "empty"])
-def test_a_missing_grading_key_is_refused_as_the_spec_shows_before_anything_runs(
+@pytest.mark.parametrize("dotenv", ["", "COPILOT_GITHUB_TOKEN=\n"], ids=["unset", "empty"])
+def test_a_missing_copilot_token_is_refused_as_the_spec_shows_before_anything_runs(
     senior, capfd, monkeypatch, dry_run, check, dotenv
 ):
     if dry_run:
         monkeypatch.setenv("DRY_RUN", "1")
-    # suss's own environment does not count: the regrade takes the key from .env alone.
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "from-the-shell")
+    # suss's own environment does not count: the verifier reads the token from .env alone.
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "from-the-shell")
     write_dotenv(senior, dotenv)
 
     code = senior.run("peer-review", "senior", *(["--check"] if check else []))
@@ -1311,37 +1296,57 @@ def test_a_missing_grading_key_is_refused_as_the_spec_shows_before_anything_runs
     out, err = capfd.readouterr()
     assert code != 0
     assert err == (
-        f"error: {senior.directory / '.env'} sets no ANTHROPIC_API_KEY, which the verifier of "
-        "the tasks in senior needs for anthropic/claude-sonnet-4-6 and "
-        "anthropic/claude-haiku-4-5-20251001, or its judges cannot run; set it, or set "
-        "PORTKEY_API_KEY to reach every model through Portkey\n"
+        f"error: {senior.directory / '.env'} sets no COPILOT_GITHUB_TOKEN, which suss judges the"
+        " trials of senior with\n"
     )
     assert out == ""
     assert_nothing_ran(senior)
 
 
-def test_a_dry_run_names_each_variable_the_regrade_is_given_and_never_its_value(
+@pytest.mark.parametrize(
+    "dry_run, check", [(False, False), (True, False), (False, True)], ids=["run", "dry-run", "check"]
+)
+def test_a_senior_run_with_no_judge_is_refused_as_the_spec_shows_before_anything_runs(
+    senior, capfd, monkeypatch, dry_run, check
+):
+    if dry_run:
+        monkeypatch.setenv("DRY_RUN", "1")
+    write_dotenv(senior, JUDGES_KEY)
+    toml = senior.directory / "suss.toml"
+    toml.write_text(toml.read_text().replace(JUDGE, ""))
+
+    code = senior.run("peer-review", "senior", *(["--check"] if check else []))
+
+    assert code != 0
+    assert capfd.readouterr().err == (
+        f"error: {toml}: no [lanes.senior.judge], which suss judges senior with; set its"
+        " credit_budget, the AI credits every judge session of a job may spend together\n"
+    )
+    assert_nothing_ran(senior)
+
+
+def test_a_dry_run_names_each_variable_the_agent_job_is_given_and_never_its_value(
     senior, capfd, monkeypatch
 ):
     monkeypatch.setenv("DRY_RUN", "1")
     write_dotenv(
         senior,
-        "ANTHROPIC_API_KEY=sk-ant-secret\nSSB_OVERRIDE_ALL_JUDGE_MODEL=anthropic/claude-opus-4-6\n",
+        "COPILOT_GITHUB_TOKEN=gh-secret\nSSB_OVERRIDE_ALL_JUDGE_MODEL=anthropic/claude-opus-4-6\n",
     )
 
     assert senior.run("peer-review", "senior") == 0
 
     lines = capfd.readouterr().out.splitlines()
-    assert "sk-ant-secret" not in "\n".join(lines)
+    assert "gh-secret" not in "\n".join(lines)
     assert "claude-opus-4-6" not in "\n".join(lines)
-    assert len(lines) == 6
-    agent, names, regrade = lines[:3]
+    assert len(lines) == 4
+    names, agent = lines[:2]
+    assert names == "# from .env: SSB_OVERRIDE_ALL_JUDGE_MODEL"
     assert "suss.agent:SussAgent" in agent and agent.split()[1:3] == ["run", "-y"]
-    assert names == "# from .env: ANTHROPIC_API_KEY SSB_OVERRIDE_ALL_JUDGE_MODEL"
-    assert "suss.replay:ReplayAgent" in regrade and regrade.split()[1:3] == ["run", "-y"]
+    assert "--verifier suss.judge:JudgeVerifier --verifier-kwarg credit_budget=2000" in agent
 
 
-def test_a_rebench_regrade_runs_as_before_whatever_env_holds(project, capfd, monkeypatch):
+def test_a_rebench_job_runs_as_before_whatever_env_holds(project, capfd, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "from-the-shell")
     write_dotenv(project, "ANTHROPIC_API_KEY=from-dotenv\n")
 
@@ -1372,12 +1377,12 @@ def test_a_run_of_both_lanes_builds_each_from_its_own_download(project, capfd):
     for name in SENIOR_NAMES:
         lines = (senior / name / "tests" / "test.sh").read_bytes().splitlines()
         assert PINNED in lines and LITELLM not in lines, name
-    regrades = [
-        (value(record["argv"], "-p"), "-y" in record["argv"], "ANTHROPIC_API_KEY" in record["env"])
+    judged = [
+        (value(record["argv"], "-p"), "-y" in record["argv"])
         for record in project.records("harbor")
-        if "suss.replay:ReplayAgent" in record["argv"]
+        if "suss.judge:JudgeVerifier" in record["argv"]
     ]
-    assert regrades == [("lanes/senior", True, True)] * 2
+    assert judged == [("lanes/senior", True)] * 2
 
 
 def test_a_senior_check_builds_the_check_lane_from_its_first_task(project, capfd):
@@ -1425,15 +1430,15 @@ def test_a_lane_runs_with_only_its_own_download_named(project, capfd, lane, down
     assert project.run("peer-review", lane) == 0, capfd.readouterr().err
 
 
-def test_a_run_of_both_lanes_without_the_judges_key_is_refused_naming_senior(project, capfd):
+def test_a_run_of_both_lanes_without_the_judges_token_is_refused_naming_senior(project, capfd):
     code = project.run("peer-review", "rebench", "senior")
 
     assert code != 0
-    assert "the verifier of the tasks in senior needs" in capfd.readouterr().err
+    assert "which suss judges the trials of senior with" in capfd.readouterr().err
     assert_nothing_ran(project)
 
 
-def test_a_rebench_task_that_names_the_judges_setting_needs_no_key(project, capfd):
+def test_a_rebench_task_that_names_the_judges_setting_needs_no_token(project, capfd):
     for name in TASKS:
         with (project.tasks / name / "task.toml").open("a") as toml:
             toml.write(SENIOR_VERIFIER_ENV)

@@ -3,5 +3,9 @@ version = "1.0"
 [task]
 name = "stand-in/fake-senior-task"
 
+[verifier]
+environment_mode = "separate"
+timeout_sec = 2700.0
+
 [verifier.env]
 REPO_NAME = "gleam"

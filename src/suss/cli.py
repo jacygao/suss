@@ -24,12 +24,13 @@ from harbor.cli.utils import parse_kwargs
 
 from suss import compare, config, lanes
 from suss.compare import CompareError
-from suss.config import Config, ConfigError, verifier_env
+from suss.config import GRADING_KEYS, TOKEN_NAME, Config, ConfigError, verifier_env
 from suss.harness import Manifest, ManifestError, load_manifest
 from suss.lanes import LaneError
 
 
 VERIFIER = "suss.replay:ReplayVerifier"
+JUDGE_VERIFIER = "suss.judge:JudgeVerifier"
 
 
 @dataclass(frozen=True)
@@ -63,28 +64,27 @@ def harbor_commands(
     check: bool = False,
     reads: Sequence[str] = (),
     verifier_reads: Sequence[str] = (),
-) -> tuple[Command, Command | None]:
+) -> Command:
     """
-    The `harbor run` commands for agent job `trial` of the arm on `lane`, and
-    for its regrade, which is None on a lane in `lanes.SEPARATE_VERIFIER`.
-    There the agent job grades each trial itself, in ReplayVerifier.
+    The `harbor run` command for agent job `trial` of the arm on `lane`, which
+    grades each trial itself in Harbor's separate verifier: ReplayVerifier on
+    rebench, and on senior JudgeVerifier, given the lane's judge.
 
-    Both must run in the directory holding suss.toml, which their relative
-    paths resolve from. `harbor_args` go to the agent job only. With `check`,
-    both take the lane's check directory and write under `checks/` instead of
-    `results/`.
+    It must run in the directory holding suss.toml, which its relative paths
+    resolve from. `harbor_args` are added to it. With `check`, it takes the
+    lane's check directory and writes under `checks/` instead of `results/`.
 
     `reads` are the variables the lane's tasks read from Harbor's environment,
-    as `config.host_variables` gives them. No job takes them from suss's own
-    environment. The job that grades is given those .env sets: the regrade
-    every one of `reads`, and an agent job that grades only those of
-    `verifier_reads`, which the tasks read in `[verifier.env]` alone and so
-    reach the verifier's test.sh and no sandbox.
+    as `config.host_variables` gives them. The job does not take them from
+    suss's own environment. It is given those of `verifier_reads` that .env
+    sets, which the tasks read in `[verifier.env]` alone and so reach the
+    verifier's test.sh and no sandbox. On senior that leaves out GRADING_KEYS,
+    and it withholds the judge's token too.
 
     Raises ValueError, with a message for the user, when `harbor_args` include
-    a positional argument, an option suss sets on either job, an option that
-    changes what the agent job runs, `--share-org` where suss passes `-y`, or
-    anything Harbor's parser rejects.
+    a positional argument, an option suss sets on the job, an option that
+    changes what it runs, `--share-org` where suss passes `-y`, or anything
+    Harbor's parser rejects.
     """
     lane_dir = f"lanes/{lane}-check" if check else f"lanes/{lane}"
     jobs_dir = PurePosixPath("checks" if check else "results", lane, config.arm.name)
@@ -109,33 +109,39 @@ def harbor_commands(
     ]
     for host in manifest.allowed_hosts:
         agent += ["--allow-agent-host", host]
-    separate = lane in lanes.SEPARATE_VERIFIER
-    # Either way the trial is graded in a fresh sandbox, and only there.
-    agent += ["--verifier", VERIFIER] if separate else ["--disable-verification"]
+    if lane == lanes.SENIOR:
+        agent += ["--verifier", JUDGE_VERIFIER, *_judge_kwargs(config)]
+    else:
+        agent += ["--verifier", VERIFIER]
     agent += ["--jobs-dir", str(jobs_dir), "--job-name", job_name]
-
-    # Absolute, so that it names the agent job whatever directory Harbor is in.
-    # A source_job that names no job gives every trial reward 0 and fails nothing.
-    source_job = config.path.parent / jobs_dir / job_name
-    regrade = [
-        *common,
-        "-a", "suss.replay:ReplayAgent",
-        "-m", "replay",
-        "--ak", _kwarg("source_job", str(source_job)),
-        "--jobs-dir", str(jobs_dir),
-        "--job-name", f"{job_name}-regrade",
-    ]
     _refuse(harbor_args)
     if reads:
         _refuse_sharing(harbor_args, lane)
     agent += harbor_args
+    given = verifier_env(config, verifier_reads)
     withheld = tuple(reads)
-    if separate:
-        return Command(agent, withheld, verifier_env(config, verifier_reads)), None
-    return (
-        Command(agent, withheld),
-        Command(regrade, withheld, verifier_env(config, reads)),
-    )
+    if lane == lanes.SENIOR:
+        given = {name: value for name, value in given.items() if name not in GRADING_KEYS}
+        # The judge reads it from .env itself, and gives it to its sessions alone.
+        withheld += (TOKEN_NAME,)
+    return Command(agent, withheld, given)
+
+
+def _judge_kwargs(config: Config) -> list[str]:
+    """
+    The `--verifier-kwarg`s that give JudgeVerifier the lane's judge.
+
+    The token is not among them: Harbor writes each into the job's records,
+    so the verifier reads it from .env itself.
+    """
+    judge = config.judge
+    # A number, which Harbor parses as JSON into one.
+    kwargs = [f"credit_budget={judge.credit_budget}"]
+    for key in ("model", "effort"):
+        value = getattr(judge, key)
+        if value is not None:
+            kwargs.append(_kwarg(key, value))
+    return [part for kwarg in kwargs for part in ("--verifier-kwarg", kwarg)]
 
 
 def _refuse_sharing(harbor_args: Sequence[str], lane: str) -> None:
@@ -164,15 +170,18 @@ def _kwarg(key: str, value: str) -> str:
     return f"{key}={json.dumps(value)}"
 
 
-_ALL_TASKS = "a run covers every task in its lanes, and the regrade grades them all"
+_ALL_TASKS = "a run covers every task in its lanes"
 _NO_SIMULATED_USER = "suss runs SussAgent alone, with no simulated user"
 _HARBOR_STOPS = "it stops harbor before the job runs; DRY_RUN=1 prints suss's commands instead"
-_GRADED = "suss grades each rebench trial with its own verifier, which applies the trial's patch"
+_GRADED = (
+    "suss grades each trial with its own verifier, which applies the trial's patch, and on"
+    " senior judges it"
+)
 
 # Every option refused after --, keyed by Harbor's name for it, with where its
 # setting comes from instead, or why suss cannot honour it.
 _REFUSED = {
-    # Those suss sets on either job, even one a job leaves out, such as
+    # Those suss sets on the job, even one a job leaves out, such as
     # --allow-agent-host for a harness that allows no hosts.
     "path": "suss gives each job its lane's directory",
     "environment": "set environment in suss.toml",
@@ -184,16 +193,12 @@ _REFUSED = {
     "allow_agent_hosts": "list the hosts in allowed_hosts in the harness's manifest",
     "jobs_dir": "suss writes each job under results/<lane>/<arm>/, or checks/ with --check",
     "job_name": "suss names each job from the run's stamp and its trial number",
-    "disable_verification": (
-        "suss grades each trial in a fresh sandbox alone: on rebench in the agent job's own"
-        " verifier, and on senior by its regrade"
-    ),
+    "disable_verification": "suss grades each trial in the agent job's own verifier, in a fresh sandbox",
     "verifier": _GRADED,
     "verifier_import_path": _GRADED,
     "verifier_kwargs": _GRADED,
     "yes": "suss answers Harbor's question itself, on a lane whose tasks read Harbor's environment",
-    # Those that would change what the agent job runs. The regrade still grades
-    # every task in the lane, so a task the agent job skips scores 0.
+    # Those that would change what the agent job runs.
     "config_path": "a job config file can change anything suss sets on the job",
     "agent_import_path": "suss runs every agent job with SussAgent",
     "environment_import_path": "set environment in suss.toml",
@@ -215,14 +220,14 @@ _REFUSED = {
     "bridge_kind": _NO_SIMULATED_USER,
     "bridge_prompt_path": _NO_SIMULATED_USER,
     "bridge_kwargs": _NO_SIMULATED_USER,
-    "install_only": "it skips the agent run, so the regrade would find no patch to grade",
-    "launch": "suss runs each agent job locally, where its regrade can read it",
+    "install_only": "it skips the agent run, so the verifier would find no patch to grade",
+    "launch": "suss runs each agent job locally, where its verifier reads the trial on the host",
     "dry_run": "it validates a --launch, and suss runs each agent job locally",
     "init": _HARBOR_STOPS,
     "print_config": _HARBOR_STOPS,
     "env_file": (
         "it would give the agent job every variable its tasks read from Harbor's environment; "
-        "suss gives those .env sets only to the job that grades, for its verifier"
+        "suss gives it only those .env sets that reach its verifier alone"
     ),
 }
 
@@ -305,8 +310,8 @@ class _Lane:
     needs: tuple[int, int] | None
     # Which trials those are, as the capacity error names them.
     trials: str
-    # Each agent job, followed by its regrade where the lane has one.
-    jobs: list[list[Command]]
+    # Each agent job, which grades its own trials.
+    jobs: list[Command]
     # The download the lane is built from.
     download: Path
 
@@ -315,8 +320,8 @@ def harbor_executable() -> Path:
     """
     The `harbor` installed beside this Python, in suss's own environment.
 
-    Harbor imports suss.agent and suss.replay in its own process, so only a
-    Harbor that can import suss can run an agent job or its regrade. One
+    Harbor imports suss.agent and suss's verifiers in its own process, so only
+    a Harbor that can import suss can run an agent job. One
     installed as a tool of its own cannot, and it may be the one on PATH.
     """
     # Not resolved: the environment's python links to an interpreter outside
@@ -365,9 +370,9 @@ def _parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         "run",
         allow_abbrev=False,
         usage="suss run <arm> <lane>... [--check] [-- <harbor args>]",
-        help="run an arm's agent jobs, and on senior their regrades, on one or more lanes",
-        description="Run K agent jobs on each lane, each graded in its own verifier on "
-        "rebench and followed by its regrade on senior. "
+        help="run an arm's agent jobs on one or more lanes",
+        description="Run K agent jobs on each lane, each graded in its own verifier, "
+        "and on senior judged there too. "
         "Arguments after -- go to every agent job. "
         "With DRY_RUN=1, print the harbor commands instead of running them.",
     )
@@ -376,8 +381,7 @@ def _parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     run.add_argument(
         "--check",
         action="store_true",
-        help="run one agent job, and on senior its regrade, on each lane's first task,"
-        " under checks/",
+        help="run one agent job on each lane's first task, under checks/",
     )
     compare_ = commands.add_parser(
         "compare",
@@ -430,18 +434,16 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
     # A dry run builds no lane: a build empties the lane, which a running job may be reading.
     if dry_run:
         for lane in planned:
-            for job in lane.jobs:
-                for command in job:
-                    if command.given:
-                        print(f"# from .env: {' '.join(command.given)}")
-                    print(shlex.join(command.argv))
+            for command in lane.jobs:
+                if command.given:
+                    print(f"# from .env: {' '.join(command.given)}")
+                print(shlex.join(command.argv))
         return 0
 
-    failed_regrades = []
     for lane in planned:
         # Harbor builds each task's image when its trial starts, so suss pulls none.
         lanes.build(lane.name, lane.download, root / "lanes", args.check)
-        for agent, *regrades in lane.jobs:
+        for agent in lane.jobs:
             code, output = _stream(agent, root)
             job = root / _option(agent.argv, "--jobs-dir") / _option(agent.argv, "--job-name")
             if not _has_trial(job):
@@ -449,15 +451,8 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
                     f"agent job {job.name} on {lane.name} left no trial in {job}, so suss "
                     f"runs nothing more. Harbor exited {code}, and printed:\n{output.rstrip()}"
                 )
-            # Whatever the agent job's exit code, which is not its trials' result.
-            for regrade in regrades:
-                code, _ = _stream(regrade, root)
-                if code != 0:
-                    name = _option(regrade.argv, "--job-name")
-                    failed_regrades.append(f"regrade {name} on {lane.name} exited {code}")
-    for failure in failed_regrades:
-        print(f"error: {failure}, so its trials may not be graded", file=sys.stderr)
-    return 1 if failed_regrades else 0
+    # Whatever each agent job's exit code, which is not its trials' result.
+    return 0
 
 
 def _compare(lane: str, arms: list[str], harbor_args: list[str], directory: Path) -> int:
@@ -516,30 +511,24 @@ def _plan(
     verifier_reads = [
         name for name in config.host_variables(used, ("verifier",)) if name not in in_sandbox
     ]
-    config.check_grading_keys(settings, lane)
+    config.check_judge(settings, lane)
     on_docker = settings.environment == "docker"
     jobs = []
     for trial in range(1, 2 if check else settings.k + 1):
         try:
-            commands = harbor_commands(
+            command = harbor_commands(
                 settings, manifest, lane, run_stamp, trial, harbor_args, check, reads,
                 verifier_reads,
             )
         except ValueError as error:
             raise _Stop(str(error)) from None
-        jobs.append(
-            [
-                replace(command, argv=[str(harbor), *command.argv[1:]])
-                for command in commands
-                if command is not None
-            ]
-        )
+        jobs.append(replace(command, argv=[str(harbor), *command.argv[1:]]))
     needs = None
     trials = f"the first task in {lane}" if check else f"the tasks in {lane}"
     if on_docker:
         cpus, memory_mb = lanes.needs(used)
         overrides = _overrides(harbor_args)
-        # A regrade's sandbox takes its task's own size, after the agent job's.
+        # The larger of the two, which errs on the side of what Docker can hold.
         cpus = max(cpus, overrides.get("--override-cpus", 0))
         memory_mb = max(memory_mb, overrides.get("--override-memory-mb", 0))
         needs = (cpus, memory_mb)

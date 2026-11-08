@@ -493,7 +493,7 @@ def test_a_task_with_only_literal_env_values_reads_nothing_from_harbors_environm
     assert config.host_variables(tasks) == ()
 
 
-def test_the_regrade_gets_each_variable_the_tasks_read_that_env_sets_and_no_empty_one(
+def test_the_grading_job_gets_each_variable_the_tasks_read_that_env_sets_and_no_empty_one(
     tmp_path: Path,
 ):
     settings = with_env(
@@ -508,101 +508,112 @@ def test_the_regrade_gets_each_variable_the_tasks_read_that_env_sets_and_no_empt
     }
 
 
-def test_the_judges_default_models_need_the_anthropic_key(tmp_path: Path):
-    settings = with_env(tmp_path, "OPENAI_API_KEY=sk-1\n")
+
+
+# The senior lane's judge
+
+JUDGE = '[lanes.senior.judge]\ncredit_budget = 2000\n'
+
+
+def senior(tmp_path: Path, lanes_text: str, dotenv: str = "COPILOT_GITHUB_TOKEN=gh-1\n") -> config.Config:
+    path = write_config(tmp_path, TOP + lanes_text + '[arms.a]\nharness = "h"\n')
+    (tmp_path / ".env").write_text(dotenv)
+    return config.load(path, "a", "senior")
+
+
+def test_the_senior_lanes_judge_is_read_with_its_defaults_left_to_the_verifier(tmp_path: Path):
+    settings = senior(tmp_path, JUDGE)
+
+    assert settings.judge == config.Judge(credit_budget=2000)
+    config.check_judge(settings, "senior")
+
+
+def test_the_senior_lanes_judge_names_its_model_and_effort(tmp_path: Path):
+    settings = senior(tmp_path, JUDGE + 'model = "gpt-6.1-sol"\neffort = ""\n')
+
+    assert settings.judge == config.Judge(credit_budget=2000, model="gpt-6.1-sol", effort="")
+
+
+def test_another_lanes_run_takes_no_judge(tmp_path: Path):
+    path = write_config(tmp_path, TOP + JUDGE + '[arms.a]\nharness = "h"\n')
+
+    settings = config.load(path, "a", "rebench")
+
+    assert settings.judge is None
+    config.check_judge(settings, "rebench")
+
+
+def test_a_senior_run_with_no_judge_is_refused_naming_the_table(tmp_path: Path):
+    settings = senior(tmp_path, "")
 
     with pytest.raises(config.ConfigError) as error:
-        config.check_grading_keys(settings, "senior")
+        config.check_judge(settings, "senior")
 
     assert str(error.value) == (
-        f"{tmp_path / '.env'} sets no ANTHROPIC_API_KEY, which the verifier of the tasks in "
-        "senior needs for anthropic/claude-sonnet-4-6 and anthropic/claude-haiku-4-5-20251001, "
-        "or its judges cannot run; set it, or set PORTKEY_API_KEY to reach every model through "
-        "Portkey"
+        f"{settings.path}: no [lanes.senior.judge], which suss judges senior with; set its"
+        " credit_budget, the AI credits every judge session of a job may spend together"
     )
 
 
-def test_an_empty_key_in_env_counts_as_missing(tmp_path: Path):
-    settings = with_env(tmp_path, "ANTHROPIC_API_KEY=\n")
-
-    with pytest.raises(config.ConfigError, match="sets no ANTHROPIC_API_KEY"):
-        config.check_grading_keys(settings, "senior")
-
-
-def test_the_anthropic_key_alone_grades_with_the_default_judges(tmp_path: Path):
-    settings = with_env(tmp_path, "ANTHROPIC_API_KEY=sk-ant-1\n")
-
-    config.check_grading_keys(settings, "senior")
-
-
-def test_a_portkey_key_reaches_every_model_whatever_they_are(tmp_path: Path):
-    settings = with_env(
-        tmp_path, "PORTKEY_API_KEY=pk-1\nSSB_OVERRIDE_ALL_JUDGE_MODEL=@vertex/gemini-3-pro\n"
-    )
-
-    config.check_grading_keys(settings, "senior")
-
-
-def test_an_override_to_an_openai_model_needs_the_openai_key_and_names_the_model_once(
-    tmp_path: Path,
-):
-    settings = with_env(
-        tmp_path,
-        "ANTHROPIC_API_KEY=sk-ant-1\nSSB_OVERRIDE_ALL_JUDGE_MODEL=openai/gpt-5.5\n"
-        "SSB_OVERRIDE_VA_MODEL=openai/gpt-5.5\n",
-    )
+@pytest.mark.parametrize("dotenv", ["", "COPILOT_GITHUB_TOKEN=\n"], ids=["unset", "empty"])
+def test_a_senior_run_with_no_copilot_token_is_refused_naming_it(tmp_path: Path, dotenv: str):
+    settings = senior(tmp_path, JUDGE, dotenv)
 
     with pytest.raises(config.ConfigError) as error:
-        config.check_grading_keys(settings, "senior")
-
-    assert (
-        "sets no OPENAI_API_KEY, which the verifier of the tasks in senior needs for "
-        "openai/gpt-5.5, or its judges"
-    ) in str(error.value)
-
-
-def test_both_missing_keys_are_named_at_once(tmp_path: Path):
-    settings = with_env(tmp_path, "SSB_OVERRIDE_ALL_JUDGE_MODEL=openai/gpt-5.5\n")
-
-    with pytest.raises(config.ConfigError) as error:
-        config.check_grading_keys(settings, "senior")
-
-    assert "sets no ANTHROPIC_API_KEY or OPENAI_API_KEY, which" in str(error.value)
-
-
-def test_the_validation_agents_older_override_counts_when_the_new_one_is_unset(tmp_path: Path):
-    settings = with_env(tmp_path, "ANTHROPIC_API_KEY=sk-ant-1\nFORCE_VA_MODEL=openai/gpt-5.5\n")
-
-    with pytest.raises(config.ConfigError, match="sets no OPENAI_API_KEY"):
-        config.check_grading_keys(settings, "senior")
-
-
-def test_a_model_of_a_provider_the_verifier_has_no_key_for_is_an_error_naming_its_setting(
-    tmp_path: Path,
-):
-    settings = with_env(
-        tmp_path, "ANTHROPIC_API_KEY=sk-ant-1\nSSB_OVERRIDE_CLASSIFIER_MODEL=gemini/gemini-3-pro\n"
-    )
-
-    with pytest.raises(config.ConfigError) as error:
-        config.check_grading_keys(settings, "senior")
+        config.check_judge(settings, "senior")
 
     assert str(error.value) == (
-        f"{tmp_path / '.env'} sets SSB_OVERRIDE_CLASSIFIER_MODEL to gemini/gemini-3-pro, but the "
-        "verifier of the tasks in senior is given a key only for anthropic/ and openai/ models; "
-        "name one of those, or set PORTKEY_API_KEY"
+        f"{tmp_path / '.env'} sets no COPILOT_GITHUB_TOKEN, which suss judges the trials of senior with"
     )
 
 
-def test_the_rebench_lane_needs_no_grading_key(tmp_path: Path):
-    settings = with_env(tmp_path, "")
+def test_a_senior_run_needs_no_key_for_seniors_own_judges(tmp_path: Path):
+    settings = senior(tmp_path, JUDGE)
 
-    config.check_grading_keys(settings, "rebench")
+    assert not set(config.GRADING_KEYS) & set(settings.env)
+    config.check_judge(settings, "senior")
 
 
-def test_the_senior_lane_needs_its_judges_key_whatever_its_tasks_name(tmp_path: Path):
-    settings = with_env(tmp_path, "OPENAI_API_KEY=sk-1\n")
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[lanes.senior.judge]\nmodel = \"x\"\n",
+        "[lanes.senior.judge]\ncredit_budget = 0\n",
+        "[lanes.senior.judge]\ncredit_budget = \"lots\"\n",
+        "[lanes.senior.judge]\ncredit_budget = true\n",
+        "[lanes.senior.judge]\ncredit_budget = nan\n",
+        "[lanes.senior.judge]\ncredit_budget = inf\n",
+    ],
+    ids=["missing", "zero", "string", "bool", "nan", "infinity"],
+)
+def test_a_judge_with_no_positive_credit_budget_is_an_error(tmp_path: Path, text: str):
+    with pytest.raises(config.ConfigError, match=r"\[lanes.senior.judge\] must set credit_budget"):
+        senior(tmp_path, text)
 
-    # The lane by name decides, so a task that renames the judges' setting changes nothing.
-    with pytest.raises(config.ConfigError, match="sets no ANTHROPIC_API_KEY"):
-        config.check_grading_keys(settings, "senior")
+
+def test_a_judge_key_suss_does_not_read_is_an_error_naming_it(tmp_path: Path):
+    with pytest.raises(config.ConfigError) as error:
+        senior(tmp_path, JUDGE + "classifier = 1\n")
+
+    assert str(error.value) == (
+        f"{tmp_path / 'suss.toml'}: [lanes.senior.judge] sets classifier, but suss reads only"
+        " credit_budget, model and effort there"
+    )
+
+
+def test_a_judge_model_that_is_not_a_string_is_an_error(tmp_path: Path):
+    with pytest.raises(config.ConfigError, match="sets model to 5, which must be a string"):
+        senior(tmp_path, JUDGE + "model = 5\n")
+
+
+def test_a_judge_on_another_lane_is_an_error(tmp_path: Path):
+    path = write_config(
+        tmp_path, TOP + '[lanes.rebench.judge]\ncredit_budget = 1\n[arms.a]\nharness = "h"\n'
+    )
+
+    with pytest.raises(config.ConfigError) as error:
+        config.load(path, "a", "rebench")
+
+    assert str(error.value) == (
+        f"{path}: [lanes.rebench] sets judge, but suss reads only max_seconds there"
+    )

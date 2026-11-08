@@ -1,11 +1,11 @@
 """
-suss compare: reading an arm's trials under `results/`, each with its regrade's
-result, the difference between two arms' resolved shares, with an interval, and
-the tables the command prints.
+suss compare: reading an arm's trials under `results/`, each graded by its own
+verifier, the difference between two arms' resolved shares, with an interval,
+and the tables the command prints.
 
 Reading never raises on what a trial left or failed to leave. A trial with no
-readable record is `harness-failed`. One whose regrade has no readable reward
-is unresolved, unless its verifier judged it invalid.
+readable record is `harness-failed`. One whose verifier left no readable reward
+is unresolved, unless the verifier judged it invalid.
 """
 
 import json
@@ -19,15 +19,13 @@ from pathlib import Path
 
 from suss import config, judge, lanes
 
-REGRADE = "-regrade"
-
 # The keys of parsed_counts in a rebench verifier's report.
 TEST_OUTCOMES = ("PASSED", "FAILED", "SKIPPED", "ERROR")
 
 
 @dataclass(frozen=True)
 class Trial:
-    """One trial of an agent job, with what its regrade made of it."""
+    """One trial of an agent job, with what its verifier made of it."""
 
     # The agent job's name, `<stamp>-<i>`.
     job: str
@@ -37,26 +35,25 @@ class Trial:
     grader: dict | None
     patch_bytes: int
     resolved: bool
-    # False when the regrade's replay.json has `"patch": null`, or when it has
-    # no replay.json and raised. None when nothing says either way, as when
-    # there is no regrade trial.
-    regrade_applied: bool | None
-    # True when the regrade had a patch and its replay.json does not show git
+    # False when the verifier's replay.json has `"patch": null`, or when it has
+    # no replay.json and raised. None when nothing says either way.
+    verifier_applied: bool | None
+    # True when the verifier had a patch and its replay.json does not show git
     # applied it.
-    regrade_refused: bool
-    # The type of the exception the regrade raised, when it wrote no replay.json.
-    regrade_raised: str | None
-    # Whether the regrade's verifier recorded a test result. When it records
-    # none, a 0 cannot tell a wrong patch from grading that broke.
-    regrade_tested: bool
-    # True when the regrade's verifier judged the trial invalid by writing an
+    verifier_refused: bool
+    # The type of the exception the verifier raised, when it wrote no replay.json.
+    verifier_raised: str | None
+    # Whether the verifier recorded a test result. When it records none, a 0
+    # cannot tell a wrong patch from grading that broke.
+    verifier_tested: bool
+    # True when the verifier judged the trial invalid by writing an
     # empty reward, which Harbor records as RewardFileEmptyError. A timeout or
     # a crash also leaves no reward, and is not this.
     invalid: bool
     # The agent trial's directory.
     path: Path
     # The judges' scores and flags, in the shape of the verifier's rewards:
-    # the regrade's agent/judge.json when it has one, and on senior its
+    # the trial's verifier/judge.json when it has one, and on senior its
     # `verifier_result.rewards` otherwise. None when it has neither.
     rewards: Mapping | None = None
     # The rubric judge's status, from the same place as `rewards`, or None.
@@ -78,47 +75,37 @@ def read_trials(directory: Path, lane: str, arm: str) -> list[Trial]:
     arm_directory = Path(directory) / "results" / lane / arm
     if not arm_directory.is_dir():
         return []
-    separate = lane in lanes.SEPARATE_VERIFIER
     trials = []
     for job in sorted(_directories(arm_directory)):
-        if job.name.endswith(REGRADE):
-            continue
-        regrades = {} if separate else _by_task(arm_directory / f"{job.name}{REGRADE}")
         for trial in _directories(job):
             task = _task(trial)
-            # A trial that names no task cannot be paired or compared.
+            # A trial that names no task cannot be compared.
             if task is None:
                 continue
-            grading = trial if separate else regrades.get(task)
-            trials.append(_trial(lane, job.name, task, trial, grading))
+            trials.append(_trial(lane, job.name, task, trial))
     return sorted(trials, key=lambda trial: (trial.job, trial.task))
 
 
-def _trial(lane: str, job: str, task: str, trial: Path, regrade: Path | None) -> Trial:
-    """
-    The trial, graded by `regrade`: the regrade's trial of its task, or on a
-    lane in `lanes.SEPARATE_VERIFIER` the trial itself.
-    """
-    separate = lane in lanes.SEPARATE_VERIFIER
+def _trial(lane: str, job: str, task: str, trial: Path) -> Trial:
+    """The trial, as its own verifier graded it, and on senior judged it."""
     record = _json(trial / "agent" / "suss.json")
     if not isinstance(record, dict):
         record = {"status": "harness-failed"}
     patch_bytes = record.get("patch_bytes")
-    replayed_by = "verifier" if separate else "agent"
-    replay_path = regrade / replayed_by / "replay.json" if regrade else None
-    replay = _json(replay_path) if replay_path else None
-    # ReplayAgent writes replay.json last, so a regrade that raised before
-    # writing it counts as applying nothing.
-    raised = _exception(regrade) if replay_path and not replay_path.exists() else None
+    replay_path = trial / "verifier" / "replay.json"
+    replay = _json(replay_path)
+    # The verifier writes replay.json before any test, so one that raised
+    # before writing it counts as applying nothing.
+    raised = _exception(trial) if not replay_path.exists() else None
     if isinstance(replay, dict) and "patch" in replay:
         applied = replay["patch"] is not None
     else:
         applied = False if raised is not None else None
-    judged = _json(regrade / "agent" / judge.RECORD_NAME) if regrade else None
+    judged = _json(trial / "verifier" / judge.RECORD_NAME)
     if isinstance(judged, dict):
         rewards, rubric_status, judged_by = _judge_scores(judged)
-    elif regrade and lane == lanes.SENIOR:
-        rewards, rubric_status, judged_by = _rewards(regrade), _rubric_status(regrade), None
+    elif lane == lanes.SENIOR:
+        rewards, rubric_status, judged_by = _rewards(trial), _rubric_status(trial), None
     else:
         rewards, rubric_status, judged_by = None, None, None
     return Trial(
@@ -127,18 +114,17 @@ def _trial(lane: str, job: str, task: str, trial: Path, regrade: Path | None) ->
         status=record.get("status", "harness-failed"),
         grader=record.get("grader"),
         patch_bytes=patch_bytes if isinstance(patch_bytes, int) else 0,
-        resolved=regrade is not None and _reward(regrade) == 1,
-        regrade_applied=applied,
-        regrade_refused=applied is True and not _applied_whole(replay),
-        regrade_raised=raised,
-        regrade_tested=regrade is not None
-        and (_senior_tested(regrade) if lane == lanes.SENIOR else _tested(regrade)),
-        invalid=regrade is not None and _exception(regrade) == "RewardFileEmptyError",
+        resolved=_reward(trial) == 1,
+        verifier_applied=applied,
+        verifier_refused=applied is True and not _applied_whole(replay),
+        verifier_raised=raised,
+        verifier_tested=_senior_tested(trial) if lane == lanes.SENIOR else _tested(trial),
+        invalid=_exception(trial) == "RewardFileEmptyError",
         path=trial,
         rewards=rewards,
         rubric_status=rubric_status,
         judge=judged_by,
-        grading=f"verifier in {job}" if separate else f"regrade in {job}{REGRADE}",
+        grading=f"verifier in {job}",
     )
 
 
@@ -165,23 +151,11 @@ def _judge_scores(record: dict) -> tuple[dict, str | None, str]:
 
 def _applied_whole(replay: dict) -> bool:
     """
-    Whether the replay.json of a regrade that applied a patch shows that all of
+    Whether the replay.json of a verifier that applied a patch shows that all of
     it applied, which `git apply` does exactly when it exits 0.
     """
     code = replay.get("apply_rc")
     return type(code) is int and code == 0
-
-
-def _by_task(job: Path) -> dict[str, Path]:
-    """The job's trial directories by task, or none when the job is missing."""
-    if not job.is_dir():
-        return {}
-    trials = {}
-    for trial in _directories(job):
-        task = _task(trial)
-        if task is not None:
-            trials[task] = trial
-    return trials
 
 
 def _directories(parent: Path) -> list[Path]:
@@ -198,8 +172,7 @@ def _task(trial: Path) -> str | None:
     """
     The trial's task, as the last part of `task_name` in its result.json.
 
-    A trial and its regrade's trial run the same task, so both read the same
-    name here, and this is what pairs them. A trial Harbor stopped before writing result.json still names its task in
+    A trial Harbor stopped before writing result.json still names its task in
     config.json. None when neither does.
     """
     result = _json(trial / "result.json")
@@ -373,7 +346,7 @@ class Mean:
 
 @dataclass(frozen=True)
 class Means:
-    """An arm's mean score from each of a regrade's judges."""
+    """An arm's mean score from each of its trials' judges."""
 
     rubric: Mean
     practice: Mean
@@ -384,7 +357,7 @@ class Means:
     judges: Mapping[str, int] = field(default_factory=dict)
 
 
-# Each mean's field, the score's key in a regrade's rewards, and the judge's
+# Each mean's field, the score's key in a trial's rewards, and the judge's
 # flag there. The patch bloat is under the taste judge's flag because, when that
 # judge fails, the bloat is measured without the classifier it relies on.
 SCORES = (
@@ -413,10 +386,10 @@ def report(directory: Path, lane: str, arms: Sequence[str]) -> str:
     Every table leaves out every invalid trial, and counts only the tasks every
     arm has a valid trial of. The second has a row for each arm whose baseline
     is among `arms`, in the order given, and is left out when no arm has one.
-    After them come the counted trials whose regrade recorded no test result,
+    After them come the counted trials whose verifier recorded no test result,
     then the invalid trials of tasks every arm has a trial of, valid or not.
     Each list goes by arm in the order given, then by job and task.
-    On the senior lane, and on any lane where a regrade wrote judge.json, a
+    On the senior lane, and on any lane where a verifier wrote judge.json, a
     third table gives each arm's mean judges' scores over the counted trials,
     and a last list names the counted trials whose judges failed or were
     skipped, in the same order. The table names the judges when judge.json
@@ -424,7 +397,7 @@ def report(directory: Path, lane: str, arms: Sequence[str]) -> str:
 
     Raises ConfigError when suss.toml does not define every arm, and
     CompareError when an arm has no trials or only invalid ones, a trial's
-    regrade applied none of its patch or could not apply it, two trials carry
+    verifier applied none of its patch or could not apply it, two trials carry
     different graders, or the arms share no task.
     """
     baselines = config.baselines(Path(directory) / "suss.toml", list(arms))
@@ -446,7 +419,7 @@ def report(directory: Path, lane: str, arms: Sequence[str]) -> str:
         if baselines[arm] in arms
     ]
     untested = [
-        (arm, trial.job, trial.task) for arm in arms for trial in kept[arm] if not trial.regrade_tested
+        (arm, trial.job, trial.task) for arm in arms for trial in kept[arm] if not trial.verifier_tested
     ]
     shared = set.intersection(*({trial.task for trial in found} for found in trials.values()))
     invalid = [
@@ -486,7 +459,7 @@ def _verifier_judge(trials: Mapping[str, Sequence[Trial]]) -> str:
 
 def _means(trials: Sequence[Trial], verifier: str) -> Means:
     """
-    Each score's mean over the trials whose regrade has it under a flag of 1,
+    Each score's mean over the trials that have it under a flag of 1,
     when one judge scored them all. `verifier` names senior's verifier as a judge.
 
     A trial whose judge failed, was skipped, or never ran has no score, and
@@ -516,10 +489,10 @@ def _means(trials: Sequence[Trial], verifier: str) -> Means:
 
 def _unjudged(trial: Trial) -> list[str]:
     """
-    The judges of the trial's regrade that failed or were skipped: `rubric`,
+    The trial's judges that failed or were skipped: `rubric`,
     `taste`, both or neither.
 
-    A regrade with no rewards graded nothing, so none of its judges is named.
+    A verifier with no rewards graded nothing, so none of its judges is named.
     """
     if trial.rewards is None:
         return []
@@ -534,7 +507,7 @@ def _unjudged(trial: Trial) -> list[str]:
 def _read(directory: Path, lane: str, arms: Sequence[str]) -> dict[str, list[Trial]]:
     """
     Every trial of each arm, raising CompareError for an arm with none or with
-    only invalid ones, and for the first trial with a patch whose regrade applied none of it or
+    only invalid ones, and for the first trial with a patch whose verifier applied none of it or
     could not apply it, so that nothing is compared that cannot be.
     """
     trials = {}
@@ -543,15 +516,15 @@ def _read(directory: Path, lane: str, arms: Sequence[str]) -> dict[str, list[Tri
         if not trials[arm]:
             raise CompareError(f"no results for arm {arm} under results/{lane}/")
         for trial in trials[arm]:
-            # That regrade did not grade the patch, so its 0 is not the trial's result.
-            if trial.patch_bytes > 0 and trial.regrade_applied is False:
-                raised = f"raised {trial.regrade_raised} and " if trial.regrade_raised else ""
+            # That verifier did not grade the patch, so its 0 is not the trial's result.
+            if trial.patch_bytes > 0 and trial.verifier_applied is False:
+                raised = f"raised {trial.verifier_raised} and " if trial.verifier_raised else ""
                 raise CompareError(
                     f"the trial of {trial.task} in results/{lane}/{arm}/{trial.job} made a "
                     f"{trial.patch_bytes}-byte patch, but its {trial.grading} {raised}applied none"
                 )
             # Its result is the grade of a change the harness did not make.
-            if trial.regrade_refused:
+            if trial.verifier_refused:
                 raise CompareError(
                     f"the trial of {trial.task} in results/{lane}/{arm}/{trial.job} made a "
                     f"patch, but its {trial.grading} could not apply it"
@@ -560,7 +533,7 @@ def _read(directory: Path, lane: str, arms: Sequence[str]) -> dict[str, list[Tri
         if all(trial.invalid for trial in trials[arm]):
             raise CompareError(
                 f"every trial of arm {arm} under results/{lane}/ is invalid: "
-                "its regrade wrote an empty reward"
+                "its verifier wrote an empty reward"
             )
     return trials
 
@@ -675,9 +648,9 @@ def render(
     if means is not None:
         lines += ["", *render_means(means, name_judges)]
     lines += _named(
-        "These trials' regrades recorded no test result, so their grading may have broken:", untested
+        "These trials' verifiers recorded no test result, so their grading may have broken:", untested
     )
-    lines += _named("These trials' regrades judged them invalid, so no table counts them:", invalid)
+    lines += _named("These trials' verifiers judged them invalid, so no table counts them:", invalid)
     task_width = max((len(task) for _, _, task, _ in unjudged), default=0)
     lines += _named(
         "These trials' judges failed or were skipped, so the means leave out their scores:",
