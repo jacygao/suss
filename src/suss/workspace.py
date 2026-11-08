@@ -25,7 +25,7 @@ async def find_workspace(env: BaseEnvironment) -> str:
 
     It must be the top level of a git repository. A directory inside one is
     refused as well, because `git apply` there skips every path outside it,
-    so a regrade would drop part of the patch. Raises WorkspaceError naming
+    so the verifier would grade part of the patch. Raises WorkspaceError naming
     the directory when it is not.
     """
     # Only the newline pwd ends with, since a directory's name can end in whitespace.

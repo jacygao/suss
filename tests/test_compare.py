@@ -195,7 +195,7 @@ def by_job(trials: list[Trial]) -> dict[tuple[str, str], Trial]:
     return {(trial.job, trial.task): trial for trial in trials}
 
 
-def test_a_trial_carries_its_record_and_its_regrades_result(tmp_path, arm):
+def test_a_trial_carries_its_record_and_its_verifiers_result(tmp_path, arm):
     write_agent_trial(arm / "20261101T005320Z-1", FLIPT, "kY8wt23", status="timed-out", patch_bytes=6490)
     write_regrade_trial(arm / "20261101T005320Z-1-regrade", FLIPT, "NfDX2zK")
 
@@ -285,7 +285,7 @@ def test_a_trial_with_no_record_is_harness_failed_with_no_grader(tmp_path, arm):
     [None, {}, {"rewards": None}, {"rewards": {}}, {"rewards": {"other": 1.0}}],
     ids=["null", "empty", "null-rewards", "no-reward", "other-reward"],
 )
-def test_a_regrade_with_no_reward_is_unresolved(tmp_path, arm, verifier_result):
+def test_a_verifier_with_no_reward_is_unresolved(tmp_path, arm, verifier_result):
     write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
     write_agent_trial(arm / "S-1", NAVIDROME, "Qp3rT9a")
     write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK", verifier_result)
@@ -297,7 +297,7 @@ def test_a_regrade_with_no_reward_is_unresolved(tmp_path, arm, verifier_result):
     assert trials["S-1", NAVIDROME].resolved is True
 
 
-def test_a_regrade_trial_with_no_verifier_result_key_is_unresolved(tmp_path, arm):
+def test_a_verifier_with_no_verifier_result_key_is_unresolved(tmp_path, arm):
     write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
     regrade = write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK")
     write_json(regrade / "result.json", {"task_name": f"swebench-pro/{FLIPT}"})
@@ -324,7 +324,7 @@ def test_a_trial_whose_verifier_never_ran_is_unresolved(tmp_path, arm):
     assert trials["S-1", FLIPT].verifier_applied is None
 
 
-def test_a_regrade_trial_with_no_replay_json_says_nothing_of_its_patch(tmp_path, arm):
+def test_a_verifier_with_no_replay_json_says_nothing_of_its_patch(tmp_path, arm):
     write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
     regrade = write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK", UNRESOLVED)
     (regrade / "verifier" / "replay.json").unlink()
@@ -353,7 +353,7 @@ def test_a_reward_short_of_one_is_unresolved(tmp_path, arm):
     assert (trial.task, trial.resolved) == (FLIPT, False)
 
 
-def test_a_regrade_that_applied_no_patch_says_so(tmp_path, arm):
+def test_a_verifier_that_applied_no_patch_says_so(tmp_path, arm):
     write_agent_trial(arm / "S-1", FLIPT, "kY8wt23", patch_bytes=6490)
     write_agent_trial(arm / "S-1", NAVIDROME, "Qp3rT9a")
     write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK", UNRESOLVED, applied=False)
@@ -366,7 +366,7 @@ def test_a_regrade_that_applied_no_patch_says_so(tmp_path, arm):
     assert trials["S-1", NAVIDROME].verifier_applied is True
 
 
-def test_a_regrade_that_raised_before_writing_replay_json_applied_no_patch(tmp_path, arm):
+def test_a_verifier_that_raised_before_writing_replay_json_applied_no_patch(tmp_path, arm):
     write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
     verifier_raised(write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK"))
 
@@ -375,7 +375,7 @@ def test_a_regrade_that_raised_before_writing_replay_json_applied_no_patch(tmp_p
     assert (trial.resolved, trial.verifier_applied) == (False, False)
 
 
-def test_a_regrade_whose_verifier_timed_out_after_replay_json_applied_its_patch(tmp_path, arm):
+def test_a_verifier_that_timed_out_after_replay_json_applied_its_patch(tmp_path, arm):
     write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
     regrade = write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK")
     record_exception(regrade, VerifierTimeoutError("Verifier execution timed out after 3000.0 seconds"))
@@ -409,7 +409,7 @@ def regrade_wrote_an_empty_reward(trial: Path) -> None:
     ],
     ids=["graded", "empty-reward", "verifier-timed-out", "verifier-crashed"],
 )
-def test_only_a_regrade_that_wrote_an_empty_reward_makes_its_trial_invalid(
+def test_only_a_verifier_that_wrote_an_empty_reward_makes_its_trial_invalid(
     tmp_path, arm, error, invalid
 ):
     write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
@@ -465,7 +465,7 @@ def applied_part(trial: Path, applying: dict) -> None:
     [SKIPPED_A_HUNK, {}, {"apply_rc": None, "apply_out": ""}],
     ids=["skipped-a-hunk", "no-exit-code", "null-exit-code"],
 )
-def test_a_regrade_that_does_not_show_it_applied_all_of_its_patch_applied_part(
+def test_a_verifier_that_does_not_show_it_applied_all_of_its_patch_applied_part(
     tmp_path, arm, applying
 ):
     write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
@@ -530,7 +530,7 @@ def counts(**given) -> dict:
         "report-not-an-object",
     ],
 )
-def test_a_regrade_records_a_test_result_only_when_parsed_counts_counts_a_test(
+def test_a_verifier_records_a_test_result_only_when_parsed_counts_counts_a_test(
     tmp_path, arm, report, tested
 ):
     write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
@@ -541,7 +541,7 @@ def test_a_regrade_records_a_test_result_only_when_parsed_counts_counts_a_test(
     assert trial.verifier_tested is tested
 
 
-def test_a_trial_with_no_regrade_trial_records_no_test_result(tmp_path, arm):
+def test_a_trial_with_no_verifier_records_no_test_result(tmp_path, arm):
     write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
 
     [trial] = read_trials(tmp_path, LANE, ARM)
@@ -607,7 +607,7 @@ NO_TESTS = verifier_results(passed=0, total=0)
         "not-an-object",
     ],
 )
-def test_a_senior_regrade_records_a_test_result_from_verifier_results_json(
+def test_a_senior_verifier_records_a_test_result_from_verifier_results_json(
     tmp_path, results, tested
 ):
     arm = tmp_path / "results" / "senior" / ARM
@@ -622,7 +622,7 @@ def test_a_senior_regrade_records_a_test_result_from_verifier_results_json(
     assert trial.verifier_tested is tested
 
 
-def test_a_senior_regrade_whose_verifier_results_json_is_not_json_records_no_test_result(tmp_path):
+def test_a_senior_verifier_whose_verifier_results_json_is_not_json_records_no_test_result(tmp_path):
     arm = tmp_path / "results" / "senior" / ARM
     write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
     regrade = write_regrade_trial(arm / "S-1-regrade", FLIPT, "NfDX2zK", UNRESOLVED)
@@ -634,7 +634,7 @@ def test_a_senior_regrade_whose_verifier_results_json_is_not_json_records_no_tes
 
 
 @pytest.mark.parametrize("report, tested", [(None, False), (TESTED, True)], ids=["no-report", "report"])
-def test_a_rebench_regrade_takes_no_test_result_from_verifier_results_json(
+def test_a_rebench_verifier_takes_no_test_result_from_verifier_results_json(
     tmp_path, arm, report, tested
 ):
     write_agent_trial(arm / "S-1", FLIPT, "kY8wt23")
@@ -1010,7 +1010,7 @@ def regrade_applies_nothing(root: Path, arm: str, task: str, i: int) -> Path:
 
 
 @pytest.mark.parametrize("task", ["t2", "t5"], ids=["shared", "alphas-own"])
-def test_a_regrade_that_applied_none_of_a_trials_patch_is_an_error_naming_both(
+def test_a_verifier_that_applied_none_of_a_trials_patch_is_an_error_naming_both(
     results, capsys, task
 ):
     # Every trial read counts, including one of a task the other arms lack.
@@ -1049,7 +1049,7 @@ def test_an_empty_patch_whose_verifier_applied_nothing_counts_as_unresolved(resu
 
 
 @pytest.mark.parametrize("how", ["no-replay-json", "no-patch-in-it", "no-verifier"])
-def test_a_patch_whose_regrade_says_nothing_of_it_counts_as_unresolved(results, capsys, how):
+def test_a_patch_whose_verifier_says_nothing_of_it_counts_as_unresolved(results, capsys, how):
     replay = regrade_applies_nothing(results, "beta", "t1", 1)
     if how == "no-replay-json":
         replay.unlink()
@@ -1070,7 +1070,7 @@ def regrade_of(root: Path, arm: str, task: str, i: int) -> Path:
 
 
 @pytest.mark.parametrize("task", ["t2", "t5"], ids=["shared", "alphas-own"])
-def test_a_regrade_that_raised_before_applying_a_trials_patch_is_an_error_naming_both(
+def test_a_verifier_that_raised_before_applying_a_trials_patch_is_an_error_naming_both(
     results, capsys, task
 ):
     verifier_raised(regrade_of(results, "alpha", task, 1))
@@ -1090,7 +1090,7 @@ def test_a_regrade_that_raised_before_applying_a_trials_patch_is_an_error_naming
     [("alpha", "t2"), ("alpha", "t5"), ("alpha", "t1"), ("base", "t3")],
     ids=["shared", "alphas-own", "no-record", "baseline"],
 )
-def test_a_regrade_that_applied_part_of_a_trials_patch_is_an_error_naming_both(
+def test_a_verifier_that_applied_part_of_a_trials_patch_is_an_error_naming_both(
     results, capsys, arm, task
 ):
     # alpha's first trial of t1 has no suss.json, and its patch still counts.
@@ -1106,7 +1106,7 @@ def test_a_regrade_that_applied_part_of_a_trials_patch_is_an_error_naming_both(
     )
 
 
-def test_the_first_regrade_that_applied_part_of_a_patch_is_the_one_named(results, capsys):
+def test_the_first_verifier_that_applied_part_of_a_patch_is_the_one_named(results, capsys):
     applied_part(regrade_of(results, "alpha", "t3", 2), SKIPPED_A_HUNK)
     applied_part(regrade_of(results, "alpha", "t4", 1), SKIPPED_A_HUNK)
     applied_part(regrade_of(results, "base", "t4", 3), SKIPPED_A_HUNK)
@@ -1122,7 +1122,7 @@ def test_the_first_regrade_that_applied_part_of_a_patch_is_the_one_named(results
     )
 
 
-def test_a_regrade_whose_verifier_timed_out_counts_as_unresolved(results, capsys):
+def test_a_verifier_that_timed_out_counts_as_unresolved(results, capsys):
     regrade = regrade_of(results, "beta", "t1", 1)
     record_exception(regrade, VerifierTimeoutError("Verifier execution timed out after 3000.0 seconds"))
 
@@ -1285,7 +1285,7 @@ def report_records_no_test_result(root: Path, arm: str, task: str, i: int) -> No
     write_json(regrade_of(root, arm, task, i) / "verifier" / "report.json", NO_TEST_RESULT)
 
 
-def test_compare_names_each_trial_whose_regrade_recorded_no_test_result(results, capsys):
+def test_compare_names_each_trial_whose_verifier_recorded_no_test_result(results, capsys):
     _, before, _ = run_compare(results, capsys, LANE, "base", "gamma", "beta", "alpha")
     # beta's trial resolved and base's did not; base's regrade has no report at all.
     report_records_no_test_result(results, "beta", "t2", 3)
@@ -1597,7 +1597,7 @@ def test_a_judge_with_no_status_to_say_it_had_no_criteria_is_named(senior, capsy
     assert out.endswith(JUDGES_NAMED + "  base  S-1  s2  rubric, taste\n  beta  S-1  s3  rubric\n")
 
 
-def test_a_regrade_with_a_reward_and_no_judges_flags_is_named(senior, capsys):
+def test_a_verifier_with_a_reward_and_no_judges_flags_is_named(senior, capsys):
     # As when the verifier wrote reward.txt, and its aggregate step no reward.json.
     regrade = regrade_of_senior(senior, "beta", "s1", 1)
     result = json.loads((regrade / "result.json").read_text())
@@ -1610,7 +1610,7 @@ def test_a_regrade_with_a_reward_and_no_judges_flags_is_named(senior, capsys):
     assert out.endswith("  base  S-1  s2  rubric, taste\n  beta  S-1  s1  rubric, taste\n")
 
 
-def test_a_regrade_with_no_reward_has_no_scores_and_is_not_named_for_its_judges(senior, capsys):
+def test_a_verifier_with_no_reward_has_no_scores_and_is_not_named_for_its_judges(senior, capsys):
     record_exception(regrade_of_senior(senior, "beta", "s1", 1), RuntimeError("Reward file is empty"))
 
     code, out, err = run_compare(senior, capsys, SENIOR, "base", "beta")

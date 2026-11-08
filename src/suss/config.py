@@ -265,7 +265,7 @@ def host_variables(
 
 def verifier_env(settings: Config, variables: Iterable[str]) -> dict[str, str]:
     """
-    The value .env gives each of `variables`, for the regrade's Harbor.
+    The value .env gives each of `variables`, for the agent job's Harbor.
 
     A variable .env leaves empty is left out, so the task's own default applies,
     as it does for one .env does not set.
@@ -297,7 +297,7 @@ def grading_choices(env: Mapping[str, str]) -> dict[str, str]:
     What the senior verifier, given `env`, grades with: each of GRADING_MODELS,
     and the validation agent's harness as `validation_harness`.
 
-    `env` is what the regrade's Harbor holds, as `verifier_env` gives it.
+    `env` is what the agent job's Harbor holds, as `verifier_env` gives it.
     """
     choices = {**GRADING_MODELS, "validation_harness": VALIDATION_HARNESS}
     order = ("judge_model", "classifier_model", "validation_harness", "validation_model")

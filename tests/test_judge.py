@@ -607,6 +607,24 @@ def test_test_sh_sees_what_it_would_after_replayverifier_and_gives_its_reward_wh
         assert "failed:" in record["rubric_status"] + record["taste_status"]
 
 
+def test_a_judge_that_raises_fails_both_judges_and_test_sh_still_gives_the_reward(
+    box, workspace, local_environment, tested
+):
+    patch = a_patch(workspace)
+    expected = replayed_input(box, workspace, patch, local_environment, tested)
+    run_judge = box / "lanes" / "senior" / TASK / "tests" / "run_judge.py"
+    run_judge.write_text("raise SystemExit(3)\n" + run_judge.read_text())
+
+    verifier = judge_verifier(box, local_environment, patch)
+
+    result = verify(verifier)
+
+    assert result.rewards == {"reward": 1.0}, "a judge that raised changed the test reward"
+    assert tested[-1]["workspace"] == expected
+    record = recorded(verifier)
+    assert (record["rubric_status"], record["taste_status"]) == ("failed:error", "failed:error")
+
+
 def test_a_session_timing_out_fails_its_judge_alone(box, workspace, local_environment, tested):
     write_scenario(box, taste={"sleep": 30})
 
