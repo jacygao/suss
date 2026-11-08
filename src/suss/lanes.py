@@ -225,7 +225,7 @@ def build(lane: str, download: Path, lanes: Path, check: bool = False) -> Path:
     task.toml adds `[agent] network_mode = "no-network"` unless its agent's
     network is already closed. On a lane in SEPARATE_VERIFIER, the task.toml
     also sets `[verifier] environment_mode = "separate"`, as `_separate` gives
-    it, and tests/ gains the files `_verifier_build` gives. On senior, each
+    it. On senior, each
     copy's verifier timeout gains JUDGE_MARGIN_SECONDS, as `_judge_room` gives
     it, and its tests/test.sh pins litellm, as `_pinned` gives it.
 
@@ -234,9 +234,8 @@ def build(lane: str, download: Path, lanes: Path, check: bool = False) -> Path:
     Whatever an earlier build left is removed. Raises LaneError as
     `lane_tasks` does, naming a task.toml whose agent network `_without_network`
     refuses or that a key cannot be added to, naming what `_separate`,
-    `_judge_room`, `_verifier_build` and `_pinned` refuse, naming a tests/ that
-    is a link, and
-    when the lane's path is a link or anything else but a
+    `_judge_room` and `_pinned` refuse, naming a senior tests/ that is a link,
+    and when the lane's path is a link or anything else but a
     directory. Every file it rewrites is read before the lane is touched, so
     an error leaves an earlier build as it was.
     """
@@ -261,27 +260,19 @@ def build(lane: str, download: Path, lanes: Path, check: bool = False) -> Path:
 
 def _write(copy: Path, name: str, content: bytes, source: Path) -> None:
     """
-    Write `content` at `name` in the task's copy, with the mode of `source`,
-    making the directories it lacks.
+    Write `content` at `name` in the task's copy, with the mode of `source`.
 
     A directory copied read-only from the download is made writable for the
     write alone, and keeps its own mode.
     """
-    restore = []
-    directory = copy
+    directory = (copy / name).parent
+    mode = directory.stat().st_mode
+    directory.chmod(mode | stat.S_IWUSR)
     try:
-        for part in Path(name).parent.parts:
-            restore.append((directory, directory.stat().st_mode))
-            directory.chmod(restore[-1][1] | stat.S_IWUSR)
-            directory = directory / part
-            directory.mkdir(exist_ok=True)
-        restore.append((directory, directory.stat().st_mode))
-        directory.chmod(restore[-1][1] | stat.S_IWUSR)
         (copy / name).write_bytes(content)
         shutil.copymode(source, copy / name)
     finally:
-        for path, mode in reversed(restore):
-            path.chmod(mode)
+        directory.chmod(mode)
 
 
 def _plan_build(
@@ -313,53 +304,13 @@ def _plan_build(
         if lane == SENIOR:
             toml = _judge_room(task / "task.toml", toml)
         rewritten[task] = {"task.toml": (toml, task / "task.toml")}
-        # The copy keeps the link, so a file written into tests/ would be written through it.
-        tests = (task / TEST_SH).parent
-        if tests.is_symlink():
-            raise LaneError(f"{tests}: a link, so the lane cannot write into a copy of it")
         if lane == SENIOR:
+            # The copy keeps the link, so a file written into tests/ would be written through it.
+            tests = (task / TEST_SH).parent
+            if tests.is_symlink():
+                raise LaneError(f"{tests}: a link, so the lane cannot write into a copy of it")
             rewritten[task][TEST_SH] = (_pinned(task / TEST_SH), task / TEST_SH)
-        if lane in SEPARATE_VERIFIER:
-            rewritten[task] |= _verifier_build(task)
     return directory, rewritten
-
-
-def _verifier_build(task: Path) -> dict[str, tuple[bytes, Path]]:
-    """
-    The files the task's tests/ gains, so that Harbor builds the separate
-    verifier's image as it builds the agent's: every file of environment/,
-    under the same path in tests/, with its Dockerfile.
-
-    Harbor builds that image with tests/ as its context. Raises LaneError
-    naming a file of tests/ one would replace, or an entry of environment/
-    that is neither a file nor a directory.
-    """
-    environment = task / "environment"
-    found = {}
-    for path in sorted(environment.rglob("*")):
-        if path.is_dir() and not path.is_symlink():
-            continue
-        if path.is_symlink() or not path.is_file():
-            raise LaneError(
-                f"{path}: not a file, so the lane cannot copy it to build the task's verifier"
-            )
-        name = f"tests/{path.relative_to(environment).as_posix()}"
-        # The copy keeps a link, so a file written beneath one would land where it points.
-        for parent in reversed((task / name).relative_to(task).parents[:-1]):
-            if (task / parent).is_symlink() or (
-                (task / parent).exists() and not (task / parent).is_dir()
-            ):
-                raise LaneError(
-                    f"{task / parent}: not a directory, so the lane cannot put {path} in it"
-                    " to build the task's verifier"
-                )
-        if (task / name).exists() or (task / name).is_symlink():
-            raise LaneError(
-                f"{task / name}: the task's verifier is built from tests/, where the lane"
-                f" would put {path} in its place"
-            )
-        found[name] = (path.read_bytes(), path)
-    return found
 
 
 TEST_SH = "tests/test.sh"
