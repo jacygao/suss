@@ -13,10 +13,11 @@ from pathlib import Path
 import pytest
 import typer.main
 from harbor.cli.main import app as harbor_app
-from harbor.models.task.config import NetworkMode, TaskConfig
+from harbor.models.task.config import NetworkMode, TaskConfig, VerifierEnvironmentMode
 from harbor.models.trial.config import AgentConfig as TrialAgentConfig
 from harbor.models.trial.config import EnvironmentConfig as TrialEnvironmentConfig
-from harbor.trial.network_policy import resolve_agent_env_baseline, resolve_agent_phase_policy
+from harbor.models.trial.config import VerifierConfig as TrialVerifierConfig
+from harbor.trial.network_policy import resolve_trial_network_plan
 
 from suss import cli, lanes
 from test_agents import SussScripted
@@ -253,7 +254,7 @@ def test_the_lane_holds_a_copy_of_each_downloaded_task_with_the_agents_network_o
 
 def agent_phase_hosts(task: Path, agent_argv: list[str]) -> list[str]:
     """
-    The hosts Harbor 0.22.0 opens in the agent phase of a trial of `task`, a
+    The hosts Harbor opens in the agent phase of a trial of `task`, a
     task directory, in the agent job run as `agent_argv`, by Harbor's own code.
 
     Fails the test when that phase's network is not an allowlist.
@@ -263,8 +264,14 @@ def agent_phase_hosts(task: Path, agent_argv: list[str]) -> list[str]:
     given, _, _ = parser.parse_args(agent_argv[1:])
     task_config = TaskConfig.model_validate_toml((task / "task.toml").read_text())
     agent = TrialAgentConfig(extra_allowed_hosts=list(given.get("allow_agent_hosts") or []))
-    baseline = resolve_agent_env_baseline(task_config, TrialEnvironmentConfig())
-    policy = resolve_agent_phase_policy(task_config, agent, baseline)
+    policy = resolve_trial_network_plan(
+        task_config,
+        agent,
+        TrialEnvironmentConfig(),
+        TrialVerifierConfig(),
+        None,
+        verifier_mode=VerifierEnvironmentMode.SHARED,
+    ).agent_phase
     assert policy.network_mode == NetworkMode.ALLOWLIST, f"{task.name}: {policy}"
     return policy.allowed_hosts
 
@@ -1018,6 +1025,18 @@ def test_an_override_below_the_tasks_own_need_still_counts_the_tasks_own_need(
     assert code != 0
     assert "needs 1 CPU and 4096 MiB" in capfd.readouterr().err
     assert_refused_before_any_lane(project)
+
+
+def test_a_dotenv_local_harbor_would_load_is_an_error_before_anything_runs(project, capfd):
+    (project.directory / ".env.local").write_text("ANTHROPIC_API_KEY=sk-ant-not-for-harbor\n")
+
+    code = project.run("peer-review", "rebench")
+
+    err = capfd.readouterr().err
+    assert code != 0
+    assert err.startswith("error: ") and ".env.local exists" in err, err
+    assert project.records() == []
+    assert not (project.directory / "lanes").exists()
 
 
 def test_an_override_that_is_not_a_whole_number_is_an_error_before_anything_runs(project, capfd):

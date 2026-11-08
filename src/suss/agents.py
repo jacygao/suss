@@ -111,10 +111,28 @@ class SussMixin:
         self.installed_version: str | None = None
         super().__init__(**kwargs)
 
+    @classmethod
+    def parse_options(cls, kwargs=None, env=None):
+        """
+        Harbor's parse of the kwargs its agent's options name, with no fallback
+        from the host's environment.
+
+        Harbor refuses any other kwarg, in the job's preflight and in the
+        constructor, so suss's own and the arm's own are left out. An option
+        not given takes its default, since Harbor fills an absent one from
+        Harbor's own environment.
+        """
+        fields = cls.options_model.model_fields if cls.options_model is not None else {}
+        own = (*SUSS_KWARGS, *cls.KWARGS)
+        kept = {key: value for key, value in (kwargs or {}).items() if key in fields or key not in own}
+        for name, info in fields.items():
+            if name not in kept and not info.is_required():
+                kept[name] = info.get_default(call_default_factory=True)
+        return super().parse_options(kept, env)
+
     def _env_sources(self):
         """Leave out Harbor's own environment, so no variable of the host's reaches the agent."""
-        # Harbor's constructor reads its flags' fallbacks before it sets either.
-        return (getattr(self, "_resolved_env_vars", {}), getattr(self, "_extra_env", {}))
+        return (self._resolved_env_vars, self._extra_env)
 
     async def setup(self, environment: BaseEnvironment) -> None:
         """Record the workspace, the base and the starting tree, then let the agent install."""
@@ -323,9 +341,9 @@ def check_arm(cls: type[SussMixin], settings: config.Config) -> None:
     """
     Refuse an arm whose kwargs or model its agent class cannot take.
 
-    Harbor gives an agent every `--ak` and ignores those it has no use for, so
-    a misspelt or retired kwarg would run unnoticed. Raises ConfigError naming
-    the file, the arm, and what the class takes.
+    Harbor refuses a kwarg its agent's options do not name only once `harbor
+    run` has started, and an agent with no options takes any. Raises
+    ConfigError naming the file, the arm, and what the class takes.
     """
     arm = settings.arm
     where = f"{settings.path}: [arms.{arm.name}]"
@@ -372,8 +390,21 @@ class SussCopilotCli(SussMixin, CopilotCli):
     )
 
     def __init__(self, **kwargs: Any):
-        """Raises ConfigError, before a sandbox starts, when .env gives no COPILOT_GITHUB_TOKEN."""
+        """
+        Raises ConfigError, before a sandbox starts, when .env gives no
+        COPILOT_GITHUB_TOKEN, or the model names a provider.
+
+        Harbor runs a model that names a provider, as `anthropic/<model>`,
+        against that provider's own API, with a key it takes from its own
+        environment.
+        """
         super().__init__(**kwargs)
+        if "/" in (self.model_name or ""):
+            raise ConfigError(
+                f"{self.settings.path}: [arms.{self.settings.arm.name}] model ="
+                f" {self.model_name!r} names a provider, and {type(self).__name__} runs"
+                " only Copilot's own models, by the names Copilot CLI's --model takes"
+            )
         self._copilot_token = self.settings.env.get(self.TOKEN, "")
         if not self._copilot_token:
             raise ConfigError(
