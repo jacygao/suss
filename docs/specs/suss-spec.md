@@ -33,7 +33,7 @@ peer-review - claude-code   +8% [+1%, +15%]
 |---|---|---|
 | Harbor | 0.25.0, exactly | Runs each task in a sandbox, runs each arm's agent in it, and grades the result with the task's own verifier. Suss's agents and verifiers subclass Harbor's classes, so upgrading Harbor is a change of its own, and it is taken only when `uv run pytest`, `SUSS_MODAL_TESTS=1 uv run pytest tests/test_modal_sandbox.py`, a `rebench` check and a `senior` check, both on Modal, pass on the new version, and each check gives the reward it gave on the old one. |
 | Docker | Docker Desktop 4.86.0 or later on macOS. On Linux and Windows, a Docker engine whose kernel has `CONFIG_NFT_FIB_INET`. | The sandboxes, with `environment = "docker"` in `suss.toml`. Without `CONFIG_NFT_FIB_INET`, Harbor refuses every task, because the agent phase has no network. |
-| Modal | 1.5.1 or later, and the account Harbor's `modal` environment uses. `uv sync --extra modal` installs its client into suss's environment, through Harbor's own `modal` extra at the Harbor version above. A plain `uv sync` leaves it out. | The sandboxes and the egress proxy, when `environment` is `modal`. Versions before 1.5.1 cannot take a network policy per phase. |
+| Modal | 1.5.1 or later, and the account Harbor's `modal` environment uses. `uv sync --extra modal` installs its client into suss's environment, through Harbor's own `modal` extra at the Harbor version above. A plain `uv sync` leaves it out. | The sandboxes, when `environment` is `modal`. Versions before 1.5.1 cannot take a network policy per phase. |
 | SWE-rebench | `ibragim-badertdinov/swe-rebench-07-2026` from Harbor Hub, as `harbor download` writes it | The `rebench` lane's tasks. |
 | Senior SWE-Bench | `snorkel-ai/senior-swe-bench-v2026.06` from Harbor Hub, as `harbor download` writes it | The `senior` lane's tasks. |
 | Python | 3.12 | Suss itself, whose agents and verifier Harbor imports. |
@@ -66,9 +66,9 @@ docker run --rm alpine:3.19 sh -c 'zcat /proc/config.gz | grep NFT_FIB_INET'
 
 Every arm runs on a Harbor agent class with `suss.agents.SussMixin` applied
 before it, such as `suss.agents:SussCopilotCli`. Harbor runs it once per trial,
-in two phases. The setup phase has network access. In the agent phase, every
-request goes through suss's egress proxy, which passes what the agent class's
-`EGRESS_RULES` and the task's own hosts allow, and refuses the rest.
+in two phases. The setup phase has network access. The agent phase reaches only
+the hosts the agent class lists in `ALLOWED_HOSTS`, and those its task lists in
+`[agent] allowed_hosts`.
 
 In the setup phase, suss:
 
@@ -86,8 +86,7 @@ In the agent phase, suss:
    command the agent runs carries `SUSS_START_TOKEN`, set to a new token;
 4. **stops every process carrying that token**, however the run ended;
 5. **captures the patch**, the whole change from the starting tree;
-6. **fetches the trial's egress log** from the proxy;
-7. **writes the trial record**, `suss.json`.
+6. **writes the trial record**, `suss.json`.
 
 The trial's result comes from Harbor's separate verifier, a fresh sandbox
 Harbor starts in the same agent job once the agent's sandbox has stopped. On
@@ -325,7 +324,6 @@ The agent's own files go there too, such as Copilot CLI's stream,
 |---|---|
 | `suss.json` | the trial record, below |
 | `model.patch` | the patch, the whole change from the starting tree |
-| `egress.jsonl` | the host, method, path, decision and rule of each request the agent phase sent through the egress proxy |
 
 ```json
 {
@@ -338,8 +336,7 @@ The agent's own files go there too, such as Copilot CLI's stream,
   "status": "ok",
   "run_seconds": 1290.4,
   "patch_bytes": 4182,
-  "usage": { "ai_credits": 18.4395, "reported_models": ["gpt-6.1-sol"], "reported_efforts": ["high"] },
-  "egress": { "task_hosts": true, "requests": 214, "refused": 2 }
+  "usage": { "ai_credits": 18.4395, "reported_models": ["gpt-6.1-sol"], "reported_efforts": ["high"] }
 }
 ```
 
@@ -386,10 +383,6 @@ The agent's own files go there too, such as Copilot CLI's stream,
   not graded, whatever the agent did.
 - `usage` is what the agent reports it spent, or `null` for an agent whose
   reports suss does not read.
-- `egress` gives the lane's `task_hosts`, which it always holds. `requests`
-  counts the lines of `egress.jsonl`, and `refused` the lines whose decision is
-  `refused`. Both are `null` when the mixin could not fetch the log, and the
-  trial is graded all the same.
 
 ## 4. Agents
 
@@ -417,20 +410,16 @@ output into `trajectory.json`, and records its tokens in `result.json`.
   bad config fails before a sandbox starts.
 - It gives the agent nothing from Harbor's own environment, so no variable of
   the machine running suss sets one of the agent's flags.
-- In setup, it writes the CA bundle the egress proxy's clients trust. In the
-  agent phase, it sets the proxy's variables, with the trial's own credential,
-  on every command the agent runs. When the run ends, it fetches the trial's
-  egress log.
 
-A class names, as class attributes, the egress proxy's rules for its agent
-phase in `EGRESS_RULES`, the arm kwargs it takes in `KWARGS`, those it needs in
+A class names, as class attributes, the hosts its agent phase reaches in
+`ALLOWED_HOSTS`, the arm kwargs it takes in `KWARGS`, those it needs in
 `REQUIRED_KWARGS`, and whether it needs a model in `REQUIRES_MODEL`.
 
 ### Agents in this repository
 
-| Agent | Model and kwargs | Egress rules | What it does |
+| Agent | Model and kwargs | Hosts | What it does |
 |---|---|---|---|
-| `suss.agents:SussCopilotCli` | a model, required; `version`, required; `reasoning_effort` | Copilot CLI's own `GET`s to `api.github.com`, and its model calls to `api.enterprise.githubcopilot.com`, each with `COPILOT_GITHUB_TOKEN` from `.env` put in. A model call asking for a server-side tool is refused. | Harbor's `copilot-cli` agent. It installs Copilot CLI at `version` with `https://gh.io/copilot-install`, and runs `copilot --prompt=<instruction> --yolo --deny-tool web_fetch --deny-tool web_search --model=<model> --effort <reasoning_effort> --output-format=json`. Suss adds `--disable-builtin-mcps`, `--no-auto-update`, `--disable-client-telemetry`, `--no-ask-user` and `--excluded-tools web_fetch web_search`. The model is one of Copilot's own, by the name `--model` takes, and Harbor constructs no agent for one that names a provider, as `anthropic/<model>` does, which Harbor would run against that provider's API. Copilot CLI's commands in the agent phase get `COPILOT_GITHUB_TOKEN` set to `github_pat_suss_placeholder`, which the proxy replaces, and no other token: never `GH_TOKEN` or `GITHUB_TOKEN`, and none from Harbor's environment. Harbor constructs it only when `.env` sets that token. |
+| `suss.agents:SussCopilotCli` | a model, required; `version`, required; `reasoning_effort` | `api.github.com`, `api.enterprise.githubcopilot.com` | Harbor's `copilot-cli` agent. It installs Copilot CLI at `version` with `https://gh.io/copilot-install`, and runs `copilot --prompt=<instruction> --yolo --deny-tool web_fetch --deny-tool web_search --model=<model> --effort <reasoning_effort> --output-format=json`, denying the web tools because the agent phase's network is an allowlist. Suss adds `--disable-builtin-mcps`, `--no-auto-update`, `--disable-client-telemetry`, `--no-ask-user` and `--excluded-tools web_fetch web_search`. The model is one of Copilot's own, by the name `--model` takes, and Harbor constructs no agent for one that names a provider, as `anthropic/<model>` does, which Harbor would run against that provider's API. Copilot CLI's commands in the agent phase get `COPILOT_GITHUB_TOKEN` from `.env` and no other token: never `GH_TOKEN` or `GITHUB_TOKEN`, and none from Harbor's environment. Harbor constructs it only when `.env` sets that token. |
 | `suss.agents:SussCopilotCliHve` | as `SussCopilotCli`, and `hve_core_commit`, required | as `SussCopilotCli` | `SussCopilotCli` as Microsoft's hve-core RPI Agent. Its install also downloads hve-core at `hve_core_commit`, a full 40-digit commit, from `https://codeload.github.com/microsoft/hve-core/tar.gz/<commit>` to `$HOME/.local/share/hve-core/<commit>/`, and fails when the archive holds no `plugin.json`, or that commit's `rpi-agent.agent.md` has no "Full Auto" handoff prompt. It adds `--plugin-dir` with that directory and `--agent hve-core:rpi-agent`, and gives as the prompt the Full Auto prompt, a blank line, then the instruction. `model` and `reasoning_effort` apply to the RPI Agent, and its subagents' own files name theirs. RPI keeps its state in the workspace's `.copilot-tracking/`, which suss makes a link to `/logs/agent/copilot-tracking/` and adds to `.git/info/exclude`, so it is kept as it is written and stays out of the patch. The trial is `harness-failed`, with Copilot CLI never started, when the workspace already has `.copilot-tracking`, or its own ignore rules keep git from ignoring it. |
 
 Both record Copilot CLI's usage from its stream, which Harbor's agent does not
@@ -534,178 +523,35 @@ exit with an error naming it before it builds any lane or runs any job.
 
 ### Network
 
-In the agent phase, every request a trial makes goes through suss's egress
-proxy, a server suss starts for each run. The proxy holds
-every credential the agent's requests need, and decides each request by the
-run's rules: it tunnels it unread, passes it with a credential put in, or
-refuses it. No sandbox holds a real token.
+In the agent phase, a trial reaches the hosts in its agent class's
+`ALLOWED_HOSTS` and the hosts in its own task's `[agent] allowed_hosts`, and no
+other host. A
+`rebench` task names no hosts of its own, so its trials reach the agent's
+alone. Every `senior`
+task names 32, such as `pypi.org` and `registry.npmjs.org`, and 19 of them name
+a few more for their repository.
 
-The proxy is mitmproxy, with suss's rules, credentials and log as a mitmproxy
-addon in `src/suss/`.
-
-Harbor's allowlist is the fence around the proxy. In the agent phase it holds
-the proxy's host alone, so a request that does not go through the proxy is
-refused there. The setup phase has the whole network, and the verifier keeps
-the task's own network, which it uses to download a Python on an image that
-has none. Neither goes through the proxy. A `senior` task's verifier has a
-public network, through which the judge reaches Copilot.
-
-#### Rules
-
-A rule set names the hosts the proxy tunnels, and the rules for each host it
-inspects. These are `SussCopilotCli`'s:
-
-```json
-{
-  "tunnel": [],
-  "inspect": {
-    "api.github.com": [
-      { "match": { "path": { "startsWith": "/copilot_internal/user" }, "method": ["GET"] }, "transform": [{ "headers": { "Authorization": "Bearer ${ COPILOT_GITHUB_TOKEN }" } }] },
-      { "match": { "path": { "startsWith": "/copilot_internal/managed_settings" }, "method": ["GET"] }, "transform": [{ "headers": { "Authorization": "Bearer ${ COPILOT_GITHUB_TOKEN }" } }] },
-      { "match": { "path": { "startsWith": "/copilot_internal/team_customizations" }, "method": ["GET"] }, "transform": [{ "headers": { "Authorization": "Bearer ${ COPILOT_GITHUB_TOKEN }" } }] },
-      { "match": { "path": { "startsWith": "/copilot/mcp_registry" }, "method": ["GET"] }, "transform": [{ "headers": { "Authorization": "Bearer ${ COPILOT_GITHUB_TOKEN }" } }] }
-    ],
-    "api.enterprise.githubcopilot.com": [
-      { "match": { "method": ["POST"], "body": { "anyOf": [
-          { "at": "tools[].type", "notIn": ["function", "custom"] },
-          { "has": "web_search_options" }, { "has": "mcp_servers" }, { "has": "container" }
-        ] } }, "refuse": "server-side tool" },
-      { "match": { "path": { "startsWith": "/models" }, "method": ["GET"] }, "transform": [{ "headers": { "Authorization": "Bearer ${ COPILOT_GITHUB_TOKEN }" } }] },
-      { "match": { "path": { "startsWith": "/v1/messages" }, "method": ["POST"] }, "transform": [{ "headers": { "Authorization": "Bearer ${ COPILOT_GITHUB_TOKEN }" } }] },
-      { "match": { "path": { "startsWith": "/chat/completions" }, "method": ["POST"] }, "transform": [{ "headers": { "Authorization": "Bearer ${ COPILOT_GITHUB_TOKEN }" } }] },
-      { "match": { "path": { "startsWith": "/responses" }, "method": ["POST"] }, "transform": [{ "headers": { "Authorization": "Bearer ${ COPILOT_GITHUB_TOKEN }" } }] }
-    ]
-  }
-}
-```
-
-- **A `tunnel` host** is passed through unread: the proxy opens the connection
-  the client asks for and copies bytes both ways. It closes a tunnel whose TLS
-  handshake names another host. A `*.` wildcard matches as it does in Harbor's
-  `allowed_hosts`.
-- **An `inspect` host** has its TLS ended at the proxy, with a certificate the
-  run's own CA signs for that host. The proxy reads each request, and the first
-  rule whose `match` holds decides it. A request no rule matches is refused.
-- **A host in neither** is refused with 403 when the client asks the proxy
-  for it.
-
-`inspect` has the shape of Harbor's `CredentialProxyConfig`, the rules of its
-hosted credential proxy: a list of rules for each host, a rule's `match` by
-`path.startsWith` and by `method`, and its `transform` setting headers in place
-of any the client sent, where `${ NAME }` is a value from the `.env` beside
-`suss.toml`. A rule that uses
-neither `body` nor `refuse` is one Harbor reads unchanged. Suss adds:
-
-- **`match.body`**, which holds when any condition in its `anyOf` holds of the
-  request's JSON body. `{ "has": "<key>" }` holds when the body has that key.
-  `{ "at": "<path>", "notIn": [...] }` holds when the path reaches a value that
-  is not in the list. A path's `.` steps into an object's key and its `[]` into
-  every element of an array, and a key that is missing reaches nothing. Every
-  condition holds of a body that is not a JSON object, so a rule that refuses by
-  the body refuses one the proxy cannot read.
-- **`refuse`**, a reason. A rule with one refuses the request with 403 and the
-  reason. Every other rule passes it, after its `transform`.
-
-The proxy refuses a WebSocket upgrade on an inspected host, whose messages the
-body rules cannot read. It offers an inspected host's client HTTP/1.1 alone. It
-removes `Proxy-Authorization` from every request it passes. A plain `http://`
-request is decided as a request to its host over TLS would be.
-
-#### Where the rules come from
-
-The rules a trial runs under are its agent class's `EGRESS_RULES`, with each
-host its task names in `[agent] allowed_hosts` added to `tunnel`, as Harbor
-reads it, wildcards included. A host the agent class inspects stays inspected
-when the task names it too. A host that one task names stays closed to every
-other task's trials. So a `senior` task allowing `pypi.org` and
-`clickhouse.com`, under `SussCopilotCli`, has an agent phase that tunnels to
-`pypi.org` and `clickhouse.com`, passes Copilot CLI's own requests to
-`api.github.com` and its model host, and refuses everything else.
-
-A `rebench` task names no hosts of its own, so its trials reach what the agent
-class passes alone. Every `senior` task names 32, such as `pypi.org` and
-`registry.npmjs.org`, and 19 of them name a few more for their repository.
-
-`task_hosts = false` in a lane's `[lanes.<lane>]` leaves out every task's
-hosts, which turns the web off for the lane's trials but for what their
-harness needs.
-
-#### Where the proxy runs
-
-| `environment` | The proxy runs as | A sandbox reaches it at | Harbor's allowlist |
-|---|---|---|---|
-| `docker`, on Docker Desktop | a process suss starts on this machine, listening on `127.0.0.1` | `https://host.docker.internal:<port>` | `host.docker.internal` |
-| `docker`, on a Linux engine | a process suss starts on this machine, listening on the gateway address of Docker's `bridge` network, as `docker network inspect bridge` gives it | `https://<gateway>:<port>` | `<gateway>` |
-| `modal` | a Modal Sandbox suss starts, its port behind an encrypted Modal tunnel | `https://<tunnel host>`, the `*.modal.host` name Modal gives the tunnel | `<tunnel host>` |
-
-A sandbox reaches the proxy over TLS, so Harbor's fence sees the proxy's host
-in the handshake, or its address where the client names it by one. Under
-`docker`, the run's CA signs the listener's certificate for
-`host.docker.internal`, `127.0.0.1` and the gateway's address. Under `modal`,
-the tunnel's TLS is Modal's.
-
-Every command of the agent phase gets these variables, which make the proxy its
-forward proxy:
-
-| Variable | Value |
-|---|---|
-| `HTTPS_PROXY`, `HTTP_PROXY`, `https_proxy`, `http_proxy` | `https://<user>:<password>@<address>`, the trial's own credential |
-| `NO_PROXY`, `no_proxy` | `localhost,127.0.0.1,::1` |
-| `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO` | a bundle of the image's own CA certificates and the run's CA certificate, which suss writes in setup |
-
-A trial's credential names its task and its trial in `<user>`, and its
-`<password>` is the HMAC-SHA256 of `<user>` under the run's proxy secret. The
-proxy answers a request with no credential, or a wrong one, with 407. So it
-decides each request by the rules of the trial that sent it, and logs it as
-that trial's. No sandbox holds the CA's private key, the proxy secret, or a
-value from `.env`.
-
-#### The proxy's life
-
-`suss run` starts the proxy after it builds the lanes and before the first
-agent job. It gives the proxy the arm's rules, each task's hosts, the values
-from `.env` the rules name, and a new CA and proxy secret, which last as long
-as the run. Under `modal` these reach the proxy as a Modal Secret. It gives
-each agent job's Harbor the proxy's address and the proxy secret, in
-`SUSS_EGRESS_URL` and `SUSS_EGRESS_SECRET`. The mixin reads both, and a
-mixin constructed without them raises before a sandbox starts.
-
-A proxy that does not answer within 60 seconds of starting makes `suss run`
-exit with an error before any agent job, and suss checks that it answers again
-before every later one. Suss stops the proxy after the last agent job, and when
-the run is interrupted or fails. `DRY_RUN=1` starts none.
-
-#### The log
-
-The proxy records one line per request it decides, under the trial that sent
-it. At the end of the agent phase, after stopping the agent's processes, the
-mixin fetches its trial's lines from the proxy and writes them to the trial's
-`agent/egress.jsonl`:
-
-```json
-{"time": "2026-11-08T10:42:07.412Z", "host": "api.enterprise.githubcopilot.com", "method": "POST", "path": "/responses", "decision": "refused", "rule": "api.enterprise.githubcopilot.com#0", "reason": "server-side tool"}
-{"time": "2026-11-08T10:42:09.003Z", "host": "pypi.org", "method": "CONNECT", "path": null, "decision": "tunnelled", "rule": "tunnel"}
-{"time": "2026-11-08T10:42:11.570Z", "host": "api.github.com", "method": "GET", "path": "/repos/pydantic/pydantic-ai/pulls/5580", "decision": "refused", "rule": "default"}
-```
-
-- `decision` is `passed`, `tunnelled` or `refused`.
-- `rule` is the host and the index of the rule that decided it, `tunnel`, or
-  `default` for a request that no rule passed.
-- `path` leaves out the query string. A line never holds a header, a body, a
-  query string or a value from `.env`.
-
-#### The tasks' own network
+Suss passes each host in the agent class's `ALLOWED_HOSTS` to Harbor as
+`--allow-agent-host`, and nothing else. Harbor adds them, trial by trial, to the
+hosts of that trial's own task. A host that one task names stays closed to
+every other task's trials in the same job, and a host the agent and the task
+both name is opened once. A task allowing `pypi.org`
+and `clickhouse.com`, under an agent allowing `api.anthropic.com` and
+`pypi.org`, has an agent phase that reaches `pypi.org`, `clickhouse.com` and
+`api.anthropic.com`.
 
 Harbor ignores `--allow-agent-host` when the agent's network is public, which
 it is when a task's `[agent]` sets no `network_mode` and the task gives the
 network to the whole trial, with `[environment] network_mode = "public"` or with
-`allow_internet = true`. Every `rebench` task does. So every copy's `task.toml`
-sets `[agent] network_mode = "no-network"` and drops `[agent] allowed_hosts`,
-whose hosts the proxy takes, and suss passes the proxy's host to Harbor as
-`--allow-agent-host`, and nothing else. A `task.toml` whose `[agent]` sets a
-`network_mode` other than `no-network` or `allowlist`, or sets `allowed_hosts`
-with no `network_mode`, makes `suss run` exit with an error naming it before it
-builds any lane or runs any job.
+`allow_internet = true`. Every `rebench` task does. So the copy's `task.toml`
+adds `[agent] network_mode = "no-network"` where `[agent]` sets no
+`network_mode`. A `task.toml` whose `[agent]` sets `no-network` or `allowlist`,
+as every `senior` task's does, is copied unchanged. One whose `[agent]` sets any
+other `network_mode`, or sets `allowed_hosts` with no `network_mode`, makes
+`suss run` exit with an error naming it before it builds any lane or runs any
+job. The verifier keeps the task's own network, which it uses to download a
+Python on an image that has none. A `senior` task's verifier has a public
+network, through which the judge reaches Copilot.
 
 ## 6. Commands
 
@@ -719,23 +565,22 @@ suss run copilot-gpt rebench
 It reads the arm from `suss.toml` in the current directory. For each lane, it
 builds `lanes/<lane>/`, a directory of copies of the lane's task directories
 from the directory its key names: `swe_rebench` for `rebench`, and
-`senior_swe_bench` for `senior`. Each copy's `task.toml` sets
-`[agent] network_mode = "no-network"` with no `[agent] allowed_hosts`, and has
-the separate verifier its lane describes.
+`senior_swe_bench` for `senior`. Each copy has
+`[agent] network_mode = "no-network"` added to its `task.toml` where its
+`[agent]` sets no `network_mode`, and the separate verifier its lane describes.
 On `senior` it also has `litellm>=1.0,<1.106` in place of `litellm>=1.0,<2.0`
 in its `tests/test.sh`. A build removes what an
 earlier build of the lane left. Harbor builds each task's image from its
 `Dockerfile` when its trial starts.
 
-Then it starts the egress proxy, and K times runs an agent job, which grades
-its own trials:
+Then, K times, it runs an agent job, which grades its own trials:
 
 ```bash
 <env>/bin/harbor run -p lanes/rebench -e docker -n 16 -k 1 \
   -a suss.agents:SussCopilotCli -m gpt-6.1-sol \
   --ak version=1.0.105 --ak reasoning_effort=high \
   --ak arm=copilot-gpt --ak suss_config=suss.toml --ak lane=rebench \
-  --allow-agent-host host.docker.internal \
+  --allow-agent-host api.github.com --allow-agent-host api.enterprise.githubcopilot.com \
   --verifier suss.replay:ReplayVerifier \
   --jobs-dir results/rebench/copilot-gpt --job-name <stamp>-1
 ```
@@ -747,7 +592,7 @@ On `senior` it judges them too, with the lane's judge from `suss.toml`:
   -a suss.agents:SussCopilotCli -m gpt-6.1-sol \
   --ak version=1.0.105 --ak reasoning_effort=high \
   --ak arm=copilot-gpt --ak suss_config=suss.toml --ak lane=senior \
-  --allow-agent-host host.docker.internal \
+  --allow-agent-host api.github.com --allow-agent-host api.enterprise.githubcopilot.com \
   --verifier suss.judge:JudgeVerifier --verifier-kwarg credit_budget=2000 \
   --jobs-dir results/senior/copilot-gpt --job-name <stamp>-1
 ```
@@ -756,19 +601,14 @@ On `senior` it judges them too, with the lane's judge from `suss.toml`:
 job of the run shares it, and `-1` to `-K` tell its agent jobs apart. `<env>`
 is the Python environment suss is installed in, an absolute path suss forms
 itself. Its `harbor` is the one that can import `suss.agents` and suss's
-verifiers, which a `harbor` elsewhere on `PATH` may not be. The
-`--allow-agent-host` is the proxy's host: `host.docker.internal` under
-Docker Desktop, the bridge's gateway under a Linux engine, and the tunnel's
-host under `modal`. Suss stops the proxy after the
-last agent job.
+verifiers, which a `harbor` elsewhere on `PATH` may not be.
 
 When a task in the lane has Harbor fill a variable from Harbor's environment,
 as every `senior` task does, every job of the lane takes `-y`, right after
 `run`. Harbor asks before such a job whether its tasks may load those
 variables, and without a terminal it reads no answer and exits 1 with
 `Aborted.`. Answering yes is safe because Harbor holds only the values suss
-gives it: those `.env` sets for the verifier alone, and the proxy's address
-and secret, which no task names. `-y` also agrees, without asking, to share an uploaded
+gives it: those `.env` sets for the verifier alone. `-y` also agrees, without asking, to share an uploaded
 job with an organization you are not a member of.
 
 A run of `senior` exits with an error before it builds any lane or runs any
@@ -780,15 +620,6 @@ an empty value counts as missing:
 $ suss run copilot-gpt senior
 error: /home/me/evals/.env sets no COPILOT_GITHUB_TOKEN, which suss judges the
 trials of senior with
-```
-
-Every run exits the same way when `.env` sets no value, or an empty one, for a
-`${ NAME }` the arm's `EGRESS_RULES` name:
-
-```
-$ suss run copilot-gpt rebench
-error: /home/me/evals/.env sets no COPILOT_GITHUB_TOKEN, which the egress rules
-of suss.agents:SussCopilotCli put into requests
 ```
 
 Options after `--` go to every agent job. Passing any of these, under any name
@@ -822,23 +653,20 @@ error: -k/--n-attempts can't be passed after --: suss runs one trial per agent
 job, and k in suss.toml sets how many jobs
 ```
 
-`DRY_RUN=1` prints the `harbor run` commands instead of running them, and
-starts no proxy, so under `modal` the commands name `<tunnel host>`. Before an
+`DRY_RUN=1` prints the `harbor run` commands instead of running them. Before an
 agent job whose Harbor holds values from `.env`, it prints their names, and
 never a value:
 
 ```
 # from .env: SSB_OVERRIDE_ALL_JUDGE_MODEL
-/home/me/evals/.venv/bin/harbor run -y -p lanes/senior -e docker -n 16 -k 1 -a suss.agents:SussCopilotCli -m gpt-6.1-sol --ak version=1.0.105 --ak reasoning_effort=high --ak arm=copilot-gpt --ak suss_config=suss.toml --ak lane=senior --allow-agent-host host.docker.internal --verifier suss.judge:JudgeVerifier --verifier-kwarg credit_budget=2000 --jobs-dir results/senior/copilot-gpt --job-name 20261031T142500Z-1
+/home/me/evals/.venv/bin/harbor run -y -p lanes/senior -e docker -n 16 -k 1 -a suss.agents:SussCopilotCli -m gpt-6.1-sol --ak version=1.0.105 --ak reasoning_effort=high --ak arm=copilot-gpt --ak suss_config=suss.toml --ak lane=senior --allow-agent-host api.github.com --allow-agent-host api.enterprise.githubcopilot.com --verifier suss.judge:JudgeVerifier --verifier-kwarg credit_budget=2000 --jobs-dir results/senior/copilot-gpt --job-name 20261031T142500Z-1
 ```
 
 Each agent job runs whatever the one before it did and whatever Harbor's exit
-code was, and `suss run` exits 0. It runs nothing more and exits non-zero in two
-cases:
-
-- An agent job leaves no trial in its job directory, as when Harbor cannot
-  start at all. `suss run` prints the job's name and Harbor's output.
-- The proxy does not answer before an agent job. `suss run` says so.
+code was, and `suss run` exits 0. The one exception is an agent job that leaves
+no trial in its job directory, as when Harbor cannot start at all: `suss run`
+then prints the job's name and Harbor's output, runs nothing more, and exits
+non-zero.
 
 It gives Harbor `results/<lane>/<arm>/` as its jobs directory, so each agent job
 is written there. Results stay there across runs, so an arm
@@ -958,8 +786,8 @@ credit_budget = 2000
   ```
 
   A `[lanes.<lane>]` table for a lane suss does not have, or one that sets
-  anything but `max_seconds`, `task_hosts`, and `judge` on `senior`, makes
-  `suss run` exit with an error before it builds any lane or runs any job:
+  anything else, but `judge` on `senior`, makes `suss run` exit with an error
+  before it builds any lane or runs any job:
 
   ```
   $ suss run copilot-gpt rebench
@@ -979,12 +807,6 @@ credit_budget = 2000
   error: arm copilot-gpt sets max_seconds = 3000, which must be under the
   3000-second agent timeout of the tasks in rebench
   ```
-- `task_hosts` in a lane's own table, `true` or `false`, says whether the
-  lane's trials reach their tasks' own hosts through the proxy. It defaults to
-  `true`. With `false`, an agent phase reaches what the arm's agent class
-  passes and nothing else. A value that is not a boolean makes `suss run` exit
-  with an error before it builds any lane or runs any job. A `--check` takes the
-  value of the lane it checks.
 - `[lanes.senior.judge]` gives the judge a `senior` run is judged with:
   `credit_budget`, which it requires, and `model` and `effort`, which take the
   judge's defaults where it leaves them out. They are the `--verifier-kwarg`s
@@ -1026,8 +848,7 @@ It compares the arms over the tasks every one of them has a valid trial of. It
 prints two tables. The first gives each arm's trials and its resolved, failed
 and timed-out shares. The second gives each arm's resolved difference from its
 baseline, with an interval. After the tables, it names each trial whose verifier
-recorded no test result, then each invalid trial, then each counted trial the
-egress proxy refused a request of, by arm, job and task:
+recorded no test result, then each invalid trial, by arm, job and task:
 
 ```
 These trials' verifiers recorded no test result, so their grading may have broken:
@@ -1035,9 +856,6 @@ These trials' verifiers recorded no test result, so their grading may have broke
 
 These trials' verifiers judged them invalid, so no table counts them:
   claude-code  20261103T204423Z-1  paperless-ngx-perf-workflow-queries
-
-These trials sent requests the egress proxy refused, and still count:
-  copilot-gpt  20261108T091500Z-1  ArcadeData__arcadedb-4281  2 refused
 ```
 
 - Every valid trial counts as its verifier graded it, `harness-failed` and
@@ -1080,7 +898,7 @@ claude-code    0.71 (34)           3.62 (47)       3.04 (47)    1.48 (47)  copil
 self-review    0.78 (33)           3.81 (46)       3.17 (46)    1.31 (46)  copilot-cli gemini-4-argon high
 ```
 
-After the list of refused requests, it names each counted trial whose judges
+After the list of invalid trials, it names each counted trial whose judges
 failed or were skipped, by arm, job and task, then the judges:
 
 ```
@@ -1150,9 +968,6 @@ It exits with an error, and prints nothing else, when:
   in results/senior/claude-code/20261031T142500Z-1, judge_model "openai/gpt-5.5"
   in results/senior/self-review/20261103T090000Z-1
   ```
-- The arms' trials that have an `egress` do not all give the same
-  `task_hosts`, since a trial that reached its task's hosts and one that did
-  not had different work to do.
 - A trial whose `suss.json` has `patch_bytes` above 0 has a verifier that
   applied no patch: its `replay.json` has `"patch": null`, or it has no
   `replay.json` and its `result.json` records an exception.
@@ -1169,8 +984,7 @@ Python 3.12, managed with `uv`.
 
 ```
 src/suss/
-  agents.py       SussMixin, and the agent classes arms run on, with their egress rules
-  egress.py       the egress proxy: its rules, its log, and starting and stopping it
+  agents.py       SussMixin, and the agent classes arms run on
   sandbox.py      commands in the sandbox, and stopping what they started
   workspace.py    finding the workspace, and capturing the patch
   lanes.py        building a lane's directory from the downloaded tasks
