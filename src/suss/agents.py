@@ -298,18 +298,17 @@ class SussMixin:
 
 def grader(settings: config.Config, lane: str) -> dict[str, str]:
     """
-    What grades a trial of `lane`, a lane in DATASETS: its dataset, and the
-    digest of the download it is built from.
+    What grades a trial of `lane`, a lane in DATASETS: its dataset.
 
     On senior it adds the litellm requirement the lane's test.sh installs, and
     the models and validation harness the regrade's verifier will use. Those
     follow from the variables `suss run` gives the regrade's Harbor, which only
-    the settings the lane's tasks read can reach. Raises LaneError when the
-    download cannot be digested or a task.toml in it cannot be read.
+    the settings the lane's tasks read can reach. Raises LaneError when a
+    task.toml in the download cannot be read.
     """
-    download = settings.download(lane)
-    found = {"dataset": DATASETS[lane], "digest": lanes.digest(download)}
+    found = {"dataset": DATASETS[lane]}
     if lane == lanes.SENIOR:
+        download = settings.download(lane)
         reads = config.host_variables(lanes.read_tasks(lanes.lane_tasks(lane, download)))
         found["litellm"] = lanes.PINNED_LITELLM.decode()
         found |= config.grading_choices(config.verifier_env(settings, reads))
