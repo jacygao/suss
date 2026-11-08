@@ -31,7 +31,7 @@ INSTRUCTION = "Fix the bug.\n"
 COMMIT = "55352bb8e9f0622ff40f5c6afa80363adaf6b07f"
 FULL_AUTO = "Run every phase in full auto mode."
 # The real install, taken before the box fixture stubs it out.
-INSTALL = SussCopilotCli.install
+INSTALL = NpmCopilotCli.install
 AGENT_FILE = f"""---
 name: RPI Agent
 handoffs:
@@ -164,6 +164,7 @@ def logs(box: Path) -> Path:
 
 def agent(box: Path, cls=SussCopilotCli, **kwargs):
     kwargs.setdefault("version", "1.0.105")
+    kwargs.setdefault("model_name", "gpt-6.1-sol")
     found = cls(
         arm="copilot-gpt",
         lane="rebench",
@@ -171,7 +172,6 @@ def agent(box: Path, cls=SussCopilotCli, **kwargs):
         logs=str(logs(box)),
         artifacts=str(box / "sandbox" / "logs" / "artifacts"),
         logs_dir=logs(box),
-        model_name="gpt-6.1-sol",
         **kwargs,
     )
     found._TRAJECTORY_PATH = logs(box) / found._TRAJECTORY_FILENAME
@@ -355,6 +355,20 @@ def test_copilot_cli_is_installed_from_npms_registry_not_githubs_releases(box, l
 def test_a_copilot_version_that_is_not_exact_is_refused_before_a_sandbox_starts(box, version):
     with pytest.raises(ValueError, match="exact version"):
         agent(box, version=version)
+
+
+def test_a_fusion_tier_is_written_to_copilots_settings_before_it_runs(box, local_environment):
+    run(box, local_environment, agent(box, model_name="fusion", fusion_tier="high"))
+
+    settings = box / "sandbox" / "home" / ".copilot" / "settings.json"
+    assert json.loads(settings.read_text()) == {"fusionTier": "high"}
+    assert record(box)["kwargs"]["fusion_tier"] == "high", "suss.json does not say which tier ran"
+
+
+@pytest.mark.parametrize(("model", "tier"), [("fusion", "turbo"), ("gpt-6.1-sol", "high")])
+def test_a_fusion_tier_copilot_would_not_use_is_refused(box, model, tier):
+    with pytest.raises(ConfigError, match="fusion_tier"):
+        agent(box, model_name=model, fusion_tier=tier)
 
 
 def plugin_dir(box: Path) -> Path:

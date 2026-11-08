@@ -366,9 +366,11 @@ class SussCopilotCli(SussMixin, judge.NpmCopilotCli):
     """
 
     ALLOWED_HOSTS = ("api.github.com", "api.enterprise.githubcopilot.com")
-    KWARGS = ("version", "reasoning_effort")
+    KWARGS = ("version", "reasoning_effort", "fusion_tier")
     REQUIRED_KWARGS = ("version",)
     REQUIRES_MODEL = True
+    FUSION = "fusion"
+    FUSION_TIERS = ("standard", "high", "max")
     TOKEN = "COPILOT_GITHUB_TOKEN"
     # Every token Copilot CLI or Harbor's agent would take in its place.
     TOKENS = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
@@ -382,15 +384,18 @@ class SussCopilotCli(SussMixin, judge.NpmCopilotCli):
         "web_search",
     )
 
-    def __init__(self, **kwargs: Any):
+    def __init__(self, *, fusion_tier: Any = None, **kwargs: Any):
         """
         Raises ConfigError, before a sandbox starts, when .env gives no
-        COPILOT_GITHUB_TOKEN, or the model names a provider.
+        COPILOT_GITHUB_TOKEN, the model names a provider, or `fusion_tier` is
+        not a tier of Fusion's, or is set for another model, which ignores it.
 
         Harbor runs a model that names a provider, as `anthropic/<model>`,
         against that provider's own API, with a key it takes from its own
         environment.
         """
+        if fusion_tier is not None:
+            kwargs["fusion_tier"] = fusion_tier
         super().__init__(**kwargs)
         if "/" in (self.model_name or ""):
             raise ConfigError(
@@ -398,6 +403,13 @@ class SussCopilotCli(SussMixin, judge.NpmCopilotCli):
                 f" {self.model_name!r} names a provider, and {type(self).__name__} runs"
                 " only Copilot's own models, by the names Copilot CLI's --model takes"
             )
+        if fusion_tier is not None and (self.model_name != self.FUSION or fusion_tier not in self.FUSION_TIERS):
+            raise ConfigError(
+                f"{self.settings.path}: [arms.{self.settings.arm.name}] kwargs fusion_tier ="
+                f" {fusion_tier!r} is not one of {', '.join(self.FUSION_TIERS)} with model"
+                f" {self.FUSION!r}, and Copilot CLI uses it nowhere else"
+            )
+        self.fusion_tier = fusion_tier
         self._copilot_token = self.settings.env.get(self.TOKEN, "")
         if not self._copilot_token:
             raise ConfigError(
@@ -407,6 +419,18 @@ class SussCopilotCli(SussMixin, judge.NpmCopilotCli):
 
     def build_cli_flags(self) -> str:
         return " ".join([super().build_cli_flags(), *self.FLAGS]).strip()
+
+    async def install(self, environment: BaseEnvironment) -> None:
+        """
+        Install Copilot CLI, and write the arm's `fusion_tier` to its
+        settings, the one place Copilot CLI reads it from.
+        """
+        await super().install(environment)
+        if self.fusion_tier is not None:
+            settings = shlex.quote(json.dumps({"fusionTier": self.fusion_tier}))
+            await self.exec_as_agent(
+                environment, f"mkdir -p ~/.copilot && printf %s {settings} > ~/.copilot/settings.json"
+            )
 
     async def exec_as_agent(self, environment, command, env=None, cwd=None, timeout_sec=None):
         """Give the command no token but the arm's, and that one only in the agent phase."""

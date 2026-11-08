@@ -1484,7 +1484,7 @@ def test_a_kwarg_the_agent_does_not_take_is_refused_as_the_spec_shows(project, c
     _, err = capfd.readouterr()
     assert err == (
         f"error: {project.directory / 'suss.toml'}: [arms.peer-review] sets kwargs max_ai_credits,"
-        " which suss.agents:SussCopilotCli does not take; it takes version, reasoning_effort\n"
+        " which suss.agents:SussCopilotCli does not take; it takes version, reasoning_effort, fusion_tier\n"
     )
     assert_nothing_ran(project)
 
