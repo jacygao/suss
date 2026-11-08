@@ -46,10 +46,14 @@ def checkpoint(nano: int, model: str = "gpt-6.1-sol", effort: str = "high") -> d
         "type": "session.usage_checkpoint",
         "data": {
             "totalNanoAiu": nano,
-            "inputTokens": 440002,
-            "outputTokens": 4489,
-            "cacheReadTokens": 395564,
             "promptCacheBreakState": [{"models": {model: {"reasoning_effort": effort}}}],
+            # As Copilot CLI 1.0.105 reports a session's tokens, per model.
+            "providerModelMetrics": [
+                {"modelId": model, "metrics": {"usage": {
+                    "inputTokens": 400002, "outputTokens": 4489, "cacheReadTokens": 395564}}},
+                {"modelId": "claude-haiku-4.5", "metrics": {"usage": {
+                    "inputTokens": 40000, "outputTokens": 11, "cacheReadTokens": 0}}},
+            ],
         },
     }
 

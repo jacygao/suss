@@ -374,7 +374,7 @@ class SussCopilotCli(SussMixin, CopilotCli):
             return
         text = stream.read_text(errors="replace")
         context.metadata = {**(context.metadata or {}), **_usage_of(text)}
-        checkpoint = _last_checkpoint(text)
+        checkpoint = _checkpoint_tokens(text)
         for field, key in (
             ("n_input_tokens", "inputTokens"),
             ("n_cache_tokens", "cacheReadTokens"),
@@ -394,9 +394,12 @@ def _usage_of(text: str) -> dict[str, Any]:
     }
 
 
-def _last_checkpoint(text: str) -> dict[str, Any]:
-    """The data of the stream's last `session.usage_checkpoint`, or {} where it has none."""
-    found: dict[str, Any] = {}
+def _checkpoint_tokens(text: str) -> dict[str, int]:
+    """
+    The token counts of the stream's last `session.usage_checkpoint`, summed
+    over its models, by the names its `usage` gives them, or {} where it has none.
+    """
+    found: dict[str, int] = {}
     for line in text.splitlines():
         if "session.usage_checkpoint" not in line:
             continue
@@ -404,8 +407,14 @@ def _last_checkpoint(text: str) -> dict[str, Any]:
             event = json.loads(line)
         except ValueError:
             continue
-        if isinstance(event, dict) and event.get("type") == "session.usage_checkpoint":
-            found = event.get("data") or {}
+        if not isinstance(event, dict) or event.get("type") != "session.usage_checkpoint":
+            continue
+        found = {}
+        for entry in (event.get("data") or {}).get("providerModelMetrics") or []:
+            usage = ((entry or {}).get("metrics") or {}).get("usage") or {}
+            for key, value in usage.items():
+                if isinstance(value, int):
+                    found[key] = found.get(key, 0) + value
     return found
 
 
