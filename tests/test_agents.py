@@ -181,17 +181,13 @@ def assert_patch_carries_the_known_change(trial: Trial, tmp_path: Path) -> None:
 # The mixin
 
 
-# The spec's record keys that the egress proxy adds, which #231 builds.
-UNBUILT_KEYS = {"egress"}
-
-
 def test_a_whole_trial_leaves_the_patch_and_a_record_with_the_specs_fields(
     local_environment, trial, tmp_path
 ):
     record = trial.run(local_environment)
 
     assert_patch_carries_the_known_change(trial, tmp_path)
-    assert set(record) == set(spec_trial_record()) - UNBUILT_KEYS, "suss.json's keys are not the spec's"
+    assert set(record) == set(spec_trial_record()), "suss.json's keys are not the spec's"
     assert record["arm"] == "fake"
     assert record["agent"] == {
         "class": "test_agents:SussScripted", "name": "scripted", "version": "scripted 0.0.7",
@@ -203,16 +199,6 @@ def test_a_whole_trial_leaves_the_patch_and_a_record_with_the_specs_fields(
     assert record["run_seconds"] >= 0
     assert record["patch_bytes"] == len((trial.logs / "model.patch").read_bytes()) > 0
     assert record["usage"] is None
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="#231 adds the egress proxy's keys; then drop UNBUILT_KEYS and this marker.",
-)
-def test_a_trial_record_has_the_egress_proxys_keys_the_spec_gives_it(local_environment, trial):
-    record = trial.run(local_environment)
-
-    assert UNBUILT_KEYS <= set(record), "suss.json lacks the spec's egress keys"
 
 
 def test_the_record_keeps_the_arms_kwargs_and_model_as_harbor_gave_them(local_environment, trial):
