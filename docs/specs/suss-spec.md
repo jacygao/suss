@@ -665,7 +665,7 @@ never a value:
 Each agent job runs whatever the one before it did and whatever Harbor's exit
 code was, and `suss run` exits 0. The one exception is an agent job that leaves
 no trial in its job directory, as when Harbor cannot start at all: `suss run`
-then prints the job's name and Harbor's output, runs nothing more, and exits
+then prints the job's name and Harbor's exit code, runs nothing more, and exits
 non-zero.
 
 It gives Harbor `results/<lane>/<arm>/` as its jobs directory, so each agent job

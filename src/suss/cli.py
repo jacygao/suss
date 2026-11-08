@@ -1,18 +1,13 @@
 """The suss command, and the `harbor run` command lines it runs."""
 
 import argparse
-import codecs
-import fcntl
 import functools
 import importlib.util
-import io
 import json
 import os
-import pty
 import shlex
 import subprocess
 import sys
-import termios
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -467,12 +462,12 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
         # Harbor builds each task's image when its trial starts, so suss pulls none.
         lanes.build(lane.name, lane.download, root / "lanes", args.check)
         for agent in lane.jobs:
-            code, output = _stream(agent, root)
+            code = _harbor(agent, root)
             job = root / _option(agent.argv, "--jobs-dir") / _option(agent.argv, "--job-name")
             if not _has_trial(job):
                 raise _Stop(
                     f"agent job {job.name} on {lane.name} left no trial in {job}, so suss "
-                    f"runs nothing more. Harbor exited {code}, and printed:\n{output.rstrip()}"
+                    f"runs nothing more. Harbor exited {code}; its output is above."
                 )
     # Whatever each agent job's exit code, which is not its trials' result.
     return 0
@@ -588,68 +583,19 @@ def _docker_info(docker: str, root: Path, format: str) -> str:
     return result.stdout.strip()
 
 
-def _stream(command: Command, cwd: Path, terminal: bool | None = None) -> tuple[int, str]:
-    """
-    Run the command, passing its output on as it comes, and return its exit
-    code and that output.
-
-    Its stderr is merged into its stdout, and both go to suss's stdout. When
-    that is a terminal, or `terminal` is true, the command writes to a
-    terminal of its own, so that what draws itself only on a terminal, such
-    as Harbor's progress, still shows while the command runs.
-    """
-    if terminal is None:
-        terminal = sys.stdout.isatty()
-    if terminal:
-        reader, writer = pty.openpty()
-        _copy_size(sys.stdout, writer)
-    else:
-        reader, writer = os.pipe()
+def _harbor(command: Command, cwd: Path) -> int:
+    """Run the command on suss's own stdout and stderr, and return its exit code."""
+    sys.stdout.flush()
     try:
-        process = subprocess.Popen(
-            command.argv,
-            cwd=cwd,
-            env=_environment(command),
-            stdout=writer,
-            stderr=writer,
-        )
+        return subprocess.run(command.argv, cwd=cwd, env=_environment(command)).returncode
     except FileNotFoundError:
-        os.close(reader)
         raise _Stop(f"{command.argv[0]}: no such program") from None
-    finally:
-        os.close(writer)
-    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-    kept = []
-    while True:
-        try:
-            chunk = os.read(reader, 65536)
-        # A terminal's reader fails, rather than reading nothing, once every
-        # process writing to it has exited.
-        except OSError:
-            chunk = b""
-        kept.append(decoder.decode(chunk, final=not chunk))
-        sys.stdout.write(kept[-1])
-        sys.stdout.flush()
-        if not chunk:
-            break
-    os.close(reader)
-    return process.wait(), "".join(kept)
 
 
 def _environment(command: Command) -> dict[str, str]:
     """suss's own environment, less what the command withholds, with what it is given."""
     env = {name: value for name, value in os.environ.items() if name not in command.withheld}
     return {**env, **command.given}
-
-
-def _copy_size(source, terminal: int) -> None:
-    """Give the terminal the size of `source`, so that the command lays its output out to fit."""
-    try:
-        size = fcntl.ioctl(source.fileno(), termios.TIOCGWINSZ, b"\0" * 8)
-        fcntl.ioctl(terminal, termios.TIOCSWINSZ, size)
-    # Not a terminal, so the command keeps the default size.
-    except (OSError, ValueError, io.UnsupportedOperation):
-        pass
 
 
 def _option(argv: list[str], name: str) -> str:

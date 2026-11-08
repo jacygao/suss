@@ -419,18 +419,6 @@ def test_harbors_output_is_shown_as_it_runs(project, capfd):
     assert f"stand-in harbor complained about {STAMP}-1\n" in out + err
 
 
-def test_on_a_terminal_harbor_writes_to_one_so_its_live_progress_shows(tmp_path, capfd):
-    # Harbor's progress is a rich Live display, which shows nothing until the
-    # job ends when it writes to anything but a terminal.
-    script = "import sys; print(sys.stdout.isatty(), sys.stderr.isatty())"
-
-    code, output = cli._stream(cli.Command([sys.executable, "-c", script]), tmp_path, terminal=True)
-
-    assert code == 0
-    assert output.split() == ["True", "True"]
-    assert capfd.readouterr().out.split() == ["True", "True"]
-
-
 # When a job fails
 
 
@@ -465,8 +453,11 @@ def test_an_agent_job_that_leaves_no_trial_stops_the_run(project, capfd, job):
     assert project.job_names() == [f"{STAMP}-1", f"{STAMP}-2"]
     message = err[err.index("error: "):]
     assert f"{STAMP}-2" in message.splitlines()[0]
-    assert f"stand-in harbor ran {STAMP}-2" in message
-    assert f"stand-in harbor complained about {STAMP}-2" in message
+    assert f"Harbor exited {job['exit']}" in message
+    # Harbor's own output reached the screen before the error, so the message names it rather than repeating it.
+    shown = out + err[:err.index("error: ")]
+    assert f"stand-in harbor ran {STAMP}-2" in shown
+    assert f"stand-in harbor complained about {STAMP}-2" in shown
 
 
 # Refused before anything runs
