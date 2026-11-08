@@ -1,7 +1,0 @@
-[harness]
-name = "copilot-cli-hve"
-version = "0.1.0"
-install = "install.sh"
-run = "run.sh"
-allowed_hosts = ["api.github.com", "api.enterprise.githubcopilot.com"]
-env = ["COPILOT_GITHUB_TOKEN"]

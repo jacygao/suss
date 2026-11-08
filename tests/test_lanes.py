@@ -72,7 +72,7 @@ def timed_tasks(tmp_path: Path, *timeouts: object) -> dict[Path, dict]:
 
 
 def test_max_seconds_equal_to_the_timeout_is_the_error_the_spec_shows(tmp_path: Path):
-    peer_review = arm(tmp_path, TOP + '[arms.peer-review]\nharness = "h"\nmax_seconds = 3000\n')
+    peer_review = arm(tmp_path, TOP + '[arms.copilot-gpt]\nagent = "m:A"\nmax_seconds = 3000\n', 'copilot-gpt')
 
     with pytest.raises(LaneError) as error:
         lanes.check_max_seconds(peer_review, "rebench", timed_tasks(tmp_path, "3000.0", "3000.0"))
@@ -81,13 +81,13 @@ def test_max_seconds_equal_to_the_timeout_is_the_error_the_spec_shows(tmp_path: 
 
 
 def test_max_seconds_one_under_the_timeout_passes(tmp_path: Path):
-    peer_review = arm(tmp_path, TOP + '[arms.peer-review]\nharness = "h"\nmax_seconds = 2999\n')
+    peer_review = arm(tmp_path, TOP + '[arms.peer-review]\nagent = "m:A"\nmax_seconds = 2999\n')
 
     lanes.check_max_seconds(peer_review, "rebench", timed_tasks(tmp_path, "3000.0", "3000.0"))
 
 
 def test_max_seconds_is_checked_against_the_shortest_timeout_in_the_lane(tmp_path: Path):
-    peer_review = arm(tmp_path, TOP + '[arms.peer-review]\nharness = "h"\nmax_seconds = 2000\n')
+    peer_review = arm(tmp_path, TOP + '[arms.peer-review]\nagent = "m:A"\nmax_seconds = 2000\n')
     lane = timed_tasks(tmp_path, "3000.0", "1800.0", "2400.0")
 
     with pytest.raises(LaneError) as error:
@@ -97,7 +97,7 @@ def test_max_seconds_is_checked_against_the_shortest_timeout_in_the_lane(tmp_pat
 
 
 def test_the_top_level_max_seconds_applies_to_an_arm_that_sets_none(tmp_path: Path):
-    peer_review = arm(tmp_path, TOP + 'max_seconds = 3000\n[arms.peer-review]\nharness = "h"\n')
+    peer_review = arm(tmp_path, TOP + 'max_seconds = 3000\n[arms.peer-review]\nagent = "m:A"\n')
 
     with pytest.raises(LaneError) as error:
         lanes.check_max_seconds(peer_review, "rebench", timed_tasks(tmp_path, "3000.0"))
@@ -106,7 +106,7 @@ def test_the_top_level_max_seconds_applies_to_an_arm_that_sets_none(tmp_path: Pa
 
 
 def test_an_arm_max_seconds_is_checked_in_place_of_the_top_level_one(tmp_path: Path):
-    toml = TOP + 'max_seconds = 2700\n[arms.peer-review]\nharness = "h"\nmax_seconds = 3000\n'
+    toml = TOP + 'max_seconds = 2700\n[arms.peer-review]\nagent = "m:A"\nmax_seconds = 3000\n'
     peer_review = arm(tmp_path, toml)
 
     with pytest.raises(LaneError) as error:
@@ -116,13 +116,13 @@ def test_an_arm_max_seconds_is_checked_in_place_of_the_top_level_one(tmp_path: P
 
 
 def test_an_arm_with_no_max_seconds_anywhere_passes(tmp_path: Path):
-    peer_review = arm(tmp_path, TOP + '[arms.peer-review]\nharness = "h"\n')
+    peer_review = arm(tmp_path, TOP + '[arms.peer-review]\nagent = "m:A"\n')
 
     lanes.check_max_seconds(peer_review, "rebench", timed_tasks(tmp_path, "3000.0"))
 
 
 def test_whole_floats_print_as_integers_and_fractions_as_they_are(tmp_path: Path):
-    peer_review = arm(tmp_path, TOP + '[arms.peer-review]\nharness = "h"\nmax_seconds = 3000.0\n')
+    peer_review = arm(tmp_path, TOP + '[arms.peer-review]\nagent = "m:A"\nmax_seconds = 3000.0\n')
 
     with pytest.raises(LaneError) as error:
         lanes.check_max_seconds(peer_review, "rebench", timed_tasks(tmp_path, "2999.5"))
@@ -133,7 +133,7 @@ def test_whole_floats_print_as_integers_and_fractions_as_they_are(tmp_path: Path
 
 
 def test_a_task_with_no_timeout_is_an_error_naming_the_task(tmp_path: Path):
-    peer_review = arm(tmp_path, TOP + '[arms.peer-review]\nharness = "h"\nmax_seconds = 10\n')
+    peer_review = arm(tmp_path, TOP + '[arms.peer-review]\nagent = "m:A"\nmax_seconds = 10\n')
     lane = timed_tasks(tmp_path, "3000.0", None)
 
     with pytest.raises(LaneError) as error:
@@ -593,7 +593,7 @@ def test_the_lane_checks_are_made_on_the_rebench_lane(tmp_path: Path):
     make_rebench(source, ["owner__repo-2"], toml)
     built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
     read = lanes.read_tasks(sorted(built.iterdir()))
-    peer_review = arm(tmp_path, TOP + '[arms.peer-review]\nharness = "h"\nmax_seconds = 1800\n')
+    peer_review = arm(tmp_path, TOP + '[arms.peer-review]\nagent = "m:A"\nmax_seconds = 1800\n')
 
     assert lanes.needs(read) == (2, 4096)
     with pytest.raises(LaneError, match="under the 1800-second agent timeout"):

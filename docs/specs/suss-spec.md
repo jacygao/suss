@@ -31,12 +31,12 @@ peer-review - claude-code   +8% [+1%, +15%]
 
 | Dependency | Version | Needed for |
 |---|---|---|
-| Harbor | 0.22.0 | Runs each task in a sandbox, runs suss in it, and grades the result with the task's own verifier. |
+| Harbor | 0.22.0, exactly | Runs each task in a sandbox, runs each arm's agent in it, and grades the result with the task's own verifier. Suss's agents subclass Harbor's agent classes, so each Harbor upgrade is checked against them before it is taken. |
 | Docker | Docker Desktop 4.86.0 or later on macOS. On Linux and Windows, a Docker engine whose kernel has `CONFIG_NFT_FIB_INET`. | The sandboxes, with `environment = "docker"` in `suss.toml`. Without `CONFIG_NFT_FIB_INET`, Harbor refuses every task, because the agent phase has no network. |
 | Modal | 1.5.1 or later, and the account Harbor's `modal` environment uses. `uv sync --extra modal` installs its client into suss's environment, through Harbor's own `modal` extra at the Harbor version above. A plain `uv sync` leaves it out. | The sandboxes, when `environment` is `modal`. Versions before 1.5.1 cannot take a network policy per phase. |
 | SWE-rebench | `ibragim-badertdinov/swe-rebench-07-2026` from Harbor Hub, as `harbor download` writes it | The `rebench` lane's tasks. |
 | Senior SWE-Bench | `snorkel-ai/senior-swe-bench-v2026.06` from Harbor Hub, as `harbor download` writes it | The `senior` lane's tasks. |
-| Python | 3.12 | Suss itself, which Harbor loads as a custom agent. |
+| Python | 3.12 | Suss itself, whose agents and verifier Harbor imports. |
 | `uv` | any | Installs suss and Harbor. |
 
 A Docker engine's kernel has the option when this prints `CONFIG_NFT_FIB_INET=y`
@@ -54,9 +54,9 @@ docker run --rm alpine:3.19 sh -c 'zcat /proc/config.gz | grep NFT_FIB_INET'
 |---|---|
 | **Task** | One benchmark task: a repository in a sandbox image, an instruction, and hidden tests. |
 | **Lane** | A set of tasks that suss runs and reports as one, such as `rebench`. |
-| **Harness** | What is being measured, reached through its adapter. |
-| **Adapter** | The directory that lets suss run a harness: a manifest, `suss-harness.toml`, and the commands it names. |
-| **Arm** | A harness and the parameters it runs with, such as a model and a reasoning effort. |
+| **Harness** | What is being measured: a coding agent, with whatever plugins and settings it runs with. |
+| **Agent** | The Harbor agent class an arm runs on: one of Harbor's own, with suss's mixin applied. |
+| **Arm** | An agent and what it runs with: a model, and kwargs such as a version and a reasoning effort. |
 | **Baseline** | The arm another arm is measured against, named by that arm's `baseline` in `suss.toml`. Any arm can be one. |
 | **Trial** | Harbor's unit of work: one attempt at one task by one arm, in a fresh sandbox. |
 | **Base** | The commit the workspace's `HEAD` names when the trial starts. |
@@ -64,10 +64,11 @@ docker run --rm alpine:3.19 sh -c 'zcat /proc/config.gz | grep NFT_FIB_INET'
 
 ### What a trial does
 
-Suss is a Harbor custom agent, `suss.agent:SussAgent`. Harbor runs it once per
-trial, in two phases. The setup phase has network access. The agent phase
-reaches only the hosts the harness's manifest lists in `allowed_hosts`, and
-those its task lists in `[agent] allowed_hosts`.
+Every arm runs on a Harbor agent class with `suss.agents.SussMixin` applied
+before it, such as `suss.agents:SussCopilotCli`. Harbor runs it once per trial,
+in two phases. The setup phase has network access. The agent phase reaches only
+the hosts the agent class lists in `ALLOWED_HOSTS`, and those its task lists in
+`[agent] allowed_hosts`.
 
 In the setup phase, suss:
 
@@ -77,14 +78,15 @@ In the setup phase, suss:
    or the trial fails naming it. The base is `git rev-parse HEAD`. Recording the
    starting tree leaves the index, `HEAD`, the refs and `git status` as the
    image left them.
-2. **uploads the harness's adapter** to `/opt/suss/adapter/`.
-3. **installs the harness**, if the adapter's manifest names an `install` command.
+2. **lets the agent install itself**, as its Harbor class does.
 
 In the agent phase, suss:
 
-4. **runs the harness's `run` command** on the task's instruction, unchanged;
+3. **runs the agent** on the task's instruction, as its Harbor class does. Every
+   command the agent runs carries `SUSS_START_TOKEN`, set to a new token;
+4. **stops every process carrying that token**, however the run ended;
 5. **captures the patch**, the whole change from the starting tree;
-6. **writes the trial record**, `suss.json`, and returns.
+6. **writes the trial record**, `suss.json`.
 
 The trial's result comes from Harbor's separate verifier, a fresh sandbox
 Harbor starts in the same agent job once the agent's sandbox has stopped. On
@@ -98,10 +100,10 @@ git diff --cached --binary <starting tree> > /logs/agent/model.patch
 cp /logs/agent/model.patch /logs/artifacts/model.patch
 ```
 
-The diff runs from the starting tree, so it holds the whole change the harness
+The diff runs from the starting tree, so it holds the whole change the agent
 made, whether it committed it or not, and none of the changes the image already
 had. The verifier's sandbox starts from the same image, so the patch applies
-there with `git apply`. A file of the starting tree that the harness made git ignore, but
+there with `git apply`. A file of the starting tree that the agent made git ignore, but
 left in place, stays out of the patch. The copy in `/logs/artifacts/` is the one
 Harbor carries to a verifier in a sandbox of its own, and suss writes it however
 the run ends.
@@ -196,8 +198,7 @@ way in `[verifier.env]` alone that the `.env` beside `suss.toml` sets, with its
 value there, since Harbor gives `[verifier.env]` to the command that runs
 `test.sh` and to no sandbox. It never passes one as an argument. No job's
 Harbor takes these variables from suss's own environment. So a variable `.env`
-leaves out or leaves empty takes the task's default, and the agent phase gets
-one only when the harness's manifest names it in `env`.
+leaves out or leaves empty takes the task's default, and the agent phase gets one only when the arm's agent class gives it to its commands.
 
 Every `senior` task has Senior SWE-Bench's verifier, which runs LLM judges and,
 on a design task, a validation agent. They call their models with
@@ -267,8 +268,8 @@ before it applies anything when the task's verifier timeout is no more than
 | Key | Default | |
 |---|---|---|
 | `classifier_model` | `claude-haiku-4.5` | the model of senior's patch classifier, which the taste judge needs |
-| `copilot_version` | `1.0.105` | the Copilot CLI release it installs |
-| `adapter` | suss's `adapters/copilot-cli/` | the adapter whose `install` installs it |
+| `copilot_version` | `1.0.105` | the Copilot CLI release it installs, as Harbor's `copilot-cli` agent installs it |
+
 | `dotenv` | `.env` | the file that sets `COPILOT_GITHUB_TOKEN` |
 | `session_seconds` | 1200 | when a session is stopped |
 | `judge_seconds` | 1800 | when the judge is stopped |
@@ -313,28 +314,32 @@ and the AI credits the trial's sessions spent:
 Suss writes these files to `/logs/agent/` in the sandbox. Harbor keeps that
 directory as `agent/` in the trial's directory under `results/`, and the copy of
 `model.patch` in `/logs/artifacts/` as `artifacts/logs/artifacts/model.patch`.
+The agent's own files go there too, such as Copilot CLI's stream,
+`copilot-cli.jsonl`, and Harbor's `trajectory.json`.
 
 | File | Holds |
 |---|---|
 | `suss.json` | the trial record, below |
-| `install.log` | the stdout and stderr of `install`, when the manifest names one |
-| `run.log` | the stdout and stderr of `run` |
 | `model.patch` | the patch, the whole change from the starting tree |
 
 ```json
 {
-  "arm": "peer-review",
-  "harness": { "name": "peer-review", "version": "0.1.0" },
-  "params": { "model": "claude-opus-4-6", "effort": "high", "rounds": 3 },
+  "arm": "copilot-gpt",
+  "agent": { "class": "suss.agents:SussCopilotCli", "name": "copilot-cli", "version": "1.0.105" },
+  "model": "gpt-6.1-sol",
+  "kwargs": { "version": "1.0.105", "reasoning_effort": "high" },
   "grader": { "dataset": "swe-rebench-07-2026", "digest": "9c2f04b1…" },
   "base": "5568b2e0a686cc4d838bddc095b831379143e61b",
   "status": "ok",
-  "exit_codes": { "install": 0, "run": 0 },
   "run_seconds": 1290.4,
-  "patch_bytes": 4182
+  "patch_bytes": 4182,
+  "usage": { "ai_credits": 18.4395, "reported_models": ["gpt-6.1-sol"], "reported_efforts": ["high"] }
 }
 ```
 
+- `agent` names the arm's agent class, Harbor's name for it, and the version
+  the installed agent reports, which `kwargs` may ask for and not get. `model`
+  and `kwargs` are what the arm passed Harbor.
 - `grader` names the dataset the trial's task came from, and a sha256 digest of
   every file of every task in the lane's download, the directory `swe_rebench`
   or `senior_swe_bench` names, by path and content. A link inside a task counts
@@ -366,94 +371,62 @@ directory as `agent/` in the trial's directory under `results/`, and the copy of
 - `base` is the commit. `model.patch` applies to the starting tree, which is
   the base only when the image left no change in the workspace.
 - `status` is `ok`, `harness-failed` or `timed-out`. A trial is `timed-out`
-  when suss stops `run` at `max_seconds`, and when Harbor's agent timeout stops
-  the trial while `run` is going. Either way, suss stops the harness inside the
-  sandbox, then captures the patch and writes the record.
-- `exit_codes` holds the exit code of `install` and of `run`. A command suss
-  skipped or stopped has `null`.
+  when suss stops the agent at `max_seconds`, and when Harbor's agent timeout
+  stops the trial while the agent runs. It is `harness-failed` when the agent
+  raises, as Harbor's agents do when their coding agent exits non-zero. Either
+  way, suss stops the agent's processes, then captures the patch and writes the
+  record, and the verifier grades it.
+- A trial whose patch cannot be written fails with the capture's error, and is
+  not graded, whatever the agent did.
+- `usage` is what the agent reports it spent, or `null` for an agent whose
+  reports suss does not read.
 
-## 4. The harness contract
+## 4. Agents
 
-Suss runs a harness through its adapter, a directory the harness's own repository
-ships. The adapter holds a manifest, `suss-harness.toml`:
+An arm names its agent class in `suss.toml` as `module:Class`. Suss runs only a
+class that applies `suss.agents.SussMixin` before a Harbor agent class, since
+only such a class leaves the patch its trial is graded by. Harbor's own agent
+then does everything else: it installs the coding agent, runs it, parses its
+output into `trajectory.json`, and records its tokens in `result.json`.
 
-```toml
-[harness]
-name = "peer-review"
-version = "0.1.0"
+### The mixin
 
-# Run once, in the setup phase. Optional.
-install = "install.sh"
+`SussMixin` adds to a Harbor agent class what a trial needs:
 
-# Run once, in the agent phase, on the task's instruction.
-run = "run.sh"
+- It records the base and the starting tree before the agent installs.
+- It sets `SUSS_START_TOKEN` on every command the agent runs in the agent phase,
+  and when the run ends it kills every process in the sandbox whose environment
+  holds it, as the agent's user, by reading `/proc`. That finds each one
+  whatever session or process group it moved to.
+- It stops the agent after the arm's `max_seconds`. That is the only cap on a
+  trial: suss gives no arm a spending limit, and no agent in this repository
+  has a credit cap.
+- It captures the patch and writes `suss.json` however the run ends.
+- It takes `arm`, `lane` and `suss_config` as `--ak`, and reads the arm's
+  settings and the `.env` from that `suss.toml` when Harbor constructs it, so a
+  bad config fails before a sandbox starts.
+- It gives the agent nothing from Harbor's own environment, so no variable of
+  the machine running suss sets one of the agent's flags.
 
-# Hostnames the harness calls in the agent phase, which suss allows.
-allowed_hosts = ["api.anthropic.com", "api.deepseek.com"]
+A class names, as class attributes, the hosts its agent phase reaches in
+`ALLOWED_HOSTS`, the arm kwargs it takes in `KWARGS`, those it needs in
+`REQUIRED_KWARGS`, and whether it needs a model in `REQUIRES_MODEL`.
 
-# Environment variables the harness reads, passed through from the run's .env.
-env = ["ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY"]
-```
+### Agents in this repository
 
-Suss runs both commands as the agent's user, with the workspace as the current
-directory. Their environment holds the variables named in `env`, taken from the
-`.env` file beside `suss.toml`, and `SUSS_START_TOKEN`, by which suss finds every
-process the command started when it stops it. A harness leaves it in place.
-
-Suss writes the two files the commands are given to `/opt/suss/`, outside the
-workspace, so neither becomes part of the patch:
-
-| Argument | File | Holds |
-|---|---|---|
-| `--instruction` | `/opt/suss/instruction.md` | the task's instruction, unchanged |
-| `--params` | `/opt/suss/params.json` | the arm's `params` table from `suss.toml`, as JSON |
-
-### Installing
-
-```
-install --workspace <path> --params <file>
-```
-
-The installer sets the harness up while the sandbox still has network access:
-it installs the coding agent, its plugins and any packages `run` needs. It
-writes nothing inside the workspace.
-
-A non-zero exit marks the trial `harness-failed`, and suss skips `run`. The
-patch is then empty, and the trial resolves nothing.
-
-### Running
-
-```
-run --workspace <path> --instruction <file> --params <file>
-```
-
-The harness does the task however it does it, and leaves its change in the
-workspace, committed or not. Anything it writes inside the workspace is part of
-the patch.
-
-Suss stops `run` after the arm's `max_seconds`, marks the trial `timed-out`, and
-captures the patch as the harness left it. Suss gives the harness no spending
-limit. A harness that takes one reads it from its params, under the name and in
-the unit its adapter chooses.
-
-A non-zero exit marks the trial `harness-failed`. Either way, suss captures the
-patch, and the verifier grades it.
-
-### Adapters in this repository
-
-The repository publishes adapters under `adapters/`. An arm names one by its
-path, as it names any other adapter, and suss runs it the same way.
-
-Each takes flat params: `version` and `model` are required, `effort` and the
-spending limit optional, and `hve_core_commit` required where the table lists
-it. `run` exits 1 naming any param it cannot take, before the coding agent
-starts.
-
-| Adapter | Params | Spending limit | What it does |
+| Agent | Model and kwargs | Hosts | What it does |
 |---|---|---|---|
-| `adapters/claude-code/` | `version`, `model`, `effort`, `max_budget_usd` | `max_budget_usd`, in dollars, as `--max-budget-usd`. One model call can pass it. `run` exits 0 at the limit. | `install` installs Claude Code at `version` with its native installer. `run` runs it headless, with the instruction as its prompt, `model` as `--model`, `effort` as `--effort`, and every tool allowed except `WebSearch` and `WebFetch`. It prints Claude Code's messages as they arrive, so `run.log` holds the token usage of every model call that finished, even when suss stops `run` at `max_seconds`. When Claude Code exits by itself, the last line is its result, which gives its cost in dollars. |
-| `adapters/copilot-cli/` | `version`, `model`, `effort`, `max_ai_credits` | `max_ai_credits`, in AI credits, as `--max-ai-credits`, at least 30. One model call can pass it. `run` exits 0 at the limit, and the model sees the limit. | `install` downloads the standalone binary of GitHub Copilot CLI's release `version`, with `curl`, else `wget`, else Python, so the image needs no Node. It takes the musl build where `/lib/ld-musl-*` exists, and the glibc build otherwise. It fails when the download does not match the release's `SHA256SUMS.txt`. `run` runs `copilot -p` with the instruction as its prompt, `model` as `--model`, `effort` as `--reasoning-effort`, every tool allowed except `web_fetch` and `web_search`, and no built-in MCP servers, auto-update or client telemetry. `run` prints Copilot CLI's `--output-format json` lines as they arrive. It exits 1 naming `COPILOT_GITHUB_TOKEN` when that variable is empty. Copilot CLI sees no other token, no stored login and no `gh` login. |
-| `adapters/copilot-cli-hve/` | `version`, `model`, `effort`, `max_ai_credits`, `hve_core_commit` | As `adapters/copilot-cli/`. | It runs Copilot CLI as `adapters/copilot-cli/` does, with Microsoft's hve-core plugin and its RPI Agent. `install` also downloads hve-core at `hve_core_commit`, a full 40-digit commit, to `$HOME/.local/share/hve-core/<commit>/`, and fails when that commit's `rpi-agent.agent.md` has no "Full Auto" handoff prompt. `run` adds `--plugin-dir` with that directory and `--agent hve-core:rpi-agent`, and gives as the prompt the Full Auto prompt, a blank line, then the instruction. `model` and `effort` apply to the RPI Agent. `run` sets no model for its subagents, whose own files name theirs. RPI keeps its state and documents in the workspace's `.copilot-tracking/`, which `run` makes a link to `/logs/agent/copilot-tracking/` and adds to `.git/info/exclude`, so they are kept in the trial's `agent/` as they are written, even when suss stops `run`, and stay out of the patch. `run` exits 1 before Copilot CLI starts when the workspace already has `.copilot-tracking`, or when its own ignore rules keep git from ignoring it. |
+| `suss.agents:SussCopilotCli` | a model, required; `version`, required; `reasoning_effort` | `api.github.com`, `api.enterprise.githubcopilot.com` | Harbor's `copilot-cli` agent. It installs Copilot CLI at `version` with `https://gh.io/copilot-install`, and runs `copilot --prompt=<instruction> --yolo --model=<model> --effort <reasoning_effort> --output-format=json`. Suss adds `--disable-builtin-mcps`, `--no-auto-update`, `--disable-client-telemetry`, `--no-ask-user` and `--excluded-tools web_fetch web_search`. Copilot CLI's commands in the agent phase get `COPILOT_GITHUB_TOKEN` from `.env` and no other token: never `GH_TOKEN` or `GITHUB_TOKEN`, and none from Harbor's environment. Harbor constructs it only when `.env` sets that token. |
+| `suss.agents:SussCopilotCliHve` | as `SussCopilotCli`, and `hve_core_commit`, required | as `SussCopilotCli` | `SussCopilotCli` as Microsoft's hve-core RPI Agent. Its install also downloads hve-core at `hve_core_commit`, a full 40-digit commit, from `https://codeload.github.com/microsoft/hve-core/tar.gz/<commit>` to `$HOME/.local/share/hve-core/<commit>/`, and fails when the archive holds no `plugin.json`, or that commit's `rpi-agent.agent.md` has no "Full Auto" handoff prompt. It adds `--plugin-dir` with that directory and `--agent hve-core:rpi-agent`, and gives as the prompt the Full Auto prompt, a blank line, then the instruction. `model` and `reasoning_effort` apply to the RPI Agent, and its subagents' own files name theirs. RPI keeps its state in the workspace's `.copilot-tracking/`, which suss makes a link to `/logs/agent/copilot-tracking/` and adds to `.git/info/exclude`, so it is kept as it is written and stays out of the patch. The trial is `harness-failed`, with Copilot CLI never started, when the workspace already has `.copilot-tracking`, or its own ignore rules keep git from ignoring it. |
+
+Both record Copilot CLI's usage from its stream, which Harbor's agent does not
+parse: in `suss.json`'s `usage`, and in Harbor's `agent_result.metadata` for
+the trial. `ai_credits` is the largest `totalNanoAiu` of its
+`session.usage_checkpoint` events over 1e9. `reported_models` are the models
+its `model.call_start` events name, and `reported_efforts` the efforts its
+checkpoints name, so a run on a model or effort other than the one asked for
+shows there. Where Harbor's parse found no token counts, as for a GPT model,
+`agent_result` takes the last checkpoint's input, cache-read and output tokens.
 
 ## 5. Lanes
 
@@ -547,19 +520,20 @@ exit with an error naming it before it builds any lane or runs any job.
 
 ### Network
 
-In the agent phase, a trial reaches the hosts in the harness's `allowed_hosts`
-and the hosts in its own task's `[agent] allowed_hosts`, and no other host, so a
-harness cannot fetch a task's real change from the web. A `rebench` task names
-no hosts of its own, so its trials reach the harness's alone. Every `senior`
+In the agent phase, a trial reaches the hosts in its agent class's
+`ALLOWED_HOSTS` and the hosts in its own task's `[agent] allowed_hosts`, and no
+other host, so an agent cannot fetch a task's real change from the web. A
+`rebench` task names no hosts of its own, so its trials reach the agent's
+alone. Every `senior`
 task names 32, such as `pypi.org` and `registry.npmjs.org`, and 19 of them name
 a few more for their repository.
 
-Suss passes each host in the harness's `allowed_hosts` to Harbor as
+Suss passes each host in the agent class's `ALLOWED_HOSTS` to Harbor as
 `--allow-agent-host`, and nothing else. Harbor adds them, trial by trial, to the
 hosts of that trial's own task. A host that one task names stays closed to
-every other task's trials in the same job, and a host the harness and the task
+every other task's trials in the same job, and a host the agent and the task
 both name is opened once. A task allowing `pypi.org`
-and `clickhouse.com`, under a harness allowing `api.anthropic.com` and
+and `clickhouse.com`, under an agent allowing `api.anthropic.com` and
 `pypi.org`, has an agent phase that reaches `pypi.org`, `clickhouse.com` and
 `api.anthropic.com`.
 
@@ -582,7 +556,7 @@ network, through which the judge reaches Copilot.
 
 ```bash
 suss run <arm> <lane>... [--check] [-- <harbor args>]
-suss run peer-review rebench
+suss run copilot-gpt rebench
 ```
 
 It reads the arm from `suss.toml` in the current directory. For each lane, it
@@ -600,28 +574,30 @@ Then, K times, it runs an agent job, which grades its own trials:
 
 ```bash
 <env>/bin/harbor run -p lanes/rebench -e docker -n 16 -k 1 \
-  -a suss.agent:SussAgent --ak arm=peer-review --ak config=suss.toml \
-  --ak lane=rebench \
-  --allow-agent-host api.anthropic.com --allow-agent-host api.deepseek.com \
+  -a suss.agents:SussCopilotCli -m gpt-6.1-sol \
+  --ak version=1.0.105 --ak reasoning_effort=high \
+  --ak arm=copilot-gpt --ak suss_config=suss.toml --ak lane=rebench \
+  --allow-agent-host api.github.com --allow-agent-host api.enterprise.githubcopilot.com \
   --verifier suss.replay:ReplayVerifier \
-  --jobs-dir results/rebench/peer-review --job-name <stamp>-1
+  --jobs-dir results/rebench/copilot-gpt --job-name <stamp>-1
 ```
 
 On `senior` it judges them too, with the lane's judge from `suss.toml`:
 
 ```bash
 <env>/bin/harbor run -y -p lanes/senior -e docker -n 16 -k 1 \
-  -a suss.agent:SussAgent --ak arm=peer-review --ak config=suss.toml \
-  --ak lane=senior \
-  --allow-agent-host api.anthropic.com --allow-agent-host api.deepseek.com \
+  -a suss.agents:SussCopilotCli -m gpt-6.1-sol \
+  --ak version=1.0.105 --ak reasoning_effort=high \
+  --ak arm=copilot-gpt --ak suss_config=suss.toml --ak lane=senior \
+  --allow-agent-host api.github.com --allow-agent-host api.enterprise.githubcopilot.com \
   --verifier suss.judge:JudgeVerifier --verifier-kwarg credit_budget=2000 \
-  --jobs-dir results/senior/peer-review --job-name <stamp>-1
+  --jobs-dir results/senior/copilot-gpt --job-name <stamp>-1
 ```
 
 `<stamp>` is the time `suss run` started, in UTC, as `20261031T142500Z`. Every
 job of the run shares it, and `-1` to `-K` tell its agent jobs apart. `<env>`
 is the Python environment suss is installed in, an absolute path suss forms
-itself. Its `harbor` is the one that can import `suss.agent` and suss's
+itself. Its `harbor` is the one that can import `suss.agents` and suss's
 verifiers, which a `harbor` elsewhere on `PATH` may not be.
 
 When a task in the lane has Harbor fill a variable from Harbor's environment,
@@ -638,7 +614,7 @@ job, with `DRY_RUN=1` and `--check` too, when `suss.toml` has no
 an empty value counts as missing:
 
 ```
-$ suss run peer-review senior
+$ suss run copilot-gpt senior
 error: /home/me/evals/.env sets no COPILOT_GITHUB_TOKEN, which suss judges the
 trials of senior with
 ```
@@ -650,10 +626,11 @@ nothing:
 - An option suss sets on the agent job, even with suss's own value: `-p`,
   `-e`, `-n`, `-k`, `-a`, `--ak`, `--allow-agent-host`, `--verifier`,
   `--verifier-kwarg`, `--jobs-dir`, `--job-name` and `-y`. Also `-m`, which
-  the arm's params set, and `--disable-verification` and its opposite
+  the arm's `model` sets, and `--disable-verification` and its opposite
   `--enable-verification`, since the agent job grades its own trials.
-- `--env-file`, which would load the file into the agent job's environment, and
-  `--share-org` where the jobs take `-y`.
+- `--env-file`, which would load the file into the agent job's environment,
+  `--ae`, which would reach every command the agent runs, and `--share-org`
+  where the jobs take `-y`.
 - An option that changes the tasks or the agent the agent job runs, or keeps it
   from leaving a trial on this machine for its verifier: `-c`, `-d`, `-t`, `-i`,
   `-x`, `-l`, `--registry-url`, `--registry-path`, `--repo`, `--task-git-url`,
@@ -665,7 +642,7 @@ nothing:
 - A positional argument, which `harbor run` does not take.
 
 ```
-$ suss run peer-review rebench -- -k 2
+$ suss run copilot-gpt rebench -- -k 2
 error: -k/--n-attempts can't be passed after --: suss runs one trial per agent
 job, and k in suss.toml sets how many jobs
 ```
@@ -676,7 +653,7 @@ never a value:
 
 ```
 # from .env: SSB_OVERRIDE_ALL_JUDGE_MODEL
-/home/me/evals/.venv/bin/harbor run -y -p lanes/senior -e docker -n 16 -k 1 -a suss.agent:SussAgent --ak arm=peer-review --ak config=suss.toml --ak lane=senior --allow-agent-host api.anthropic.com --allow-agent-host api.deepseek.com --verifier suss.judge:JudgeVerifier --verifier-kwarg credit_budget=2000 --jobs-dir results/senior/peer-review --job-name 20261031T142500Z-1
+/home/me/evals/.venv/bin/harbor run -y -p lanes/senior -e docker -n 16 -k 1 -a suss.agents:SussCopilotCli -m gpt-6.1-sol --ak version=1.0.105 --ak reasoning_effort=high --ak arm=copilot-gpt --ak suss_config=suss.toml --ak lane=senior --allow-agent-host api.github.com --allow-agent-host api.enterprise.githubcopilot.com --verifier suss.judge:JudgeVerifier --verifier-kwarg credit_budget=2000 --jobs-dir results/senior/copilot-gpt --job-name 20261031T142500Z-1
 ```
 
 Each agent job runs whatever the one before it did and whatever Harbor's exit
@@ -696,7 +673,7 @@ and gives that to its jobs in place of `lanes/<lane>/`, which a full run of the
 lane may be using. It runs one agent job, whatever `k` is, and writes them to `checks/<lane>/<arm>/` instead of `results/`:
 
 ```bash
-suss run peer-review rebench --check
+suss run copilot-gpt rebench --check
 ```
 
 `suss.toml` names where the tasks are, where the sandboxes run, the cap on each
@@ -710,19 +687,22 @@ k = 1
 concurrency = 16
 max_seconds = 2700
 
-[arms.claude-code]
-harness = "adapters/claude-code"
-params = { version = "2.1.293", model = "claude-opus-4-6", effort = "high", max_budget_usd = 20 }
+[arms.copilot-sonnet]
+agent = "suss.agents:SussCopilotCli"
+model = "claude-sonnet-5.5"
+kwargs = { version = "1.0.105", reasoning_effort = "high" }
 
-[arms.self-review]
-harness = "../self-review"
-baseline = "claude-code"
-params = { model = "claude-opus-4-6", effort = "high", rounds = 3 }
+[arms.copilot-gpt]
+agent = "suss.agents:SussCopilotCli"
+model = "gpt-6.1-sol"
+baseline = "copilot-sonnet"
+kwargs = { version = "1.0.105", reasoning_effort = "high" }
 
-[arms.peer-review]
-harness = "../peer-review"
-baseline = "claude-code"
-params = { model = "claude-opus-4-6", effort = "high", rounds = 3, reviewer = "deepseek/deepseek-v3.2" }
+[arms.hve-sol]
+agent = "suss.agents:SussCopilotCliHve"
+model = "gpt-6.1-sol"
+baseline = "copilot-gpt"
+kwargs = { version = "1.0.105", reasoning_effort = "high", hve_core_commit = "55352bb8e9f0622ff40f5c6afa80363adaf6b07f" }
 
 [lanes.senior.judge]
 credit_budget = 2000
@@ -737,18 +717,29 @@ credit_budget = 2000
   required only by a run of its lane, `rebench` or `senior`. A run of a lane
   whose key is missing exits with an error naming it before it builds any lane
   or runs any job.
-- `harness` is the path to an adapter, relative to the directory holding
-  `suss.toml`.
-- `params` is passed to the harness as it stands, as the JSON file `--params`
-  names. Suss reads none of it. An arm's spending limit goes here, under the
-  name its adapter takes, such as `max_budget_usd` for `adapters/claude-code/`.
+- `agent` names the arm's agent class, as `module:Class`. `model` is passed as
+  `-m`, and each of `kwargs` as `--ak`, of its own type. A class that is not
+  built on `SussMixin`, a kwarg it does not take, or a model or kwarg it needs
+  and the arm leaves out, makes `suss run` exit with an error before it builds
+  any lane or runs any job, since Harbor gives an agent every `--ak` and ignores
+  those it has no use for:
+
+  ```
+  $ suss run copilot-gpt rebench
+  error: /home/me/evals/suss.toml: [arms.copilot-gpt] sets kwargs max_ai_credits,
+  which suss.agents:SussCopilotCli does not take; it takes version,
+  reasoning_effort
+  ```
+
+  An arm that sets `harness` or `params` makes `suss run` exit with an error
+  saying to use `agent`, `model` and `kwargs`.
 - `environment` is passed to `harbor run` as `-e`: `docker` runs the sandboxes
   on this machine, and `modal` runs them on Modal. With `modal`, when Modal's
   client is not installed in suss's environment, `suss run` exits with an error
   before it builds a lane or runs any job, with `DRY_RUN=1` and `--check` too:
 
   ```
-  $ suss run peer-review rebench
+  $ suss run copilot-gpt rebench
   error: environment is modal, but Modal's client is not installed: run uv sync
   --extra modal
   ```
@@ -767,7 +758,7 @@ credit_budget = 2000
   names it. A `--check` counts only its one task, and one trial at a time.
 
   ```
-  $ suss run peer-review rebench
+  $ suss run copilot-gpt rebench
   error: concurrency = 16 needs 16 CPUs and 65536 MiB for the tasks in rebench,
   but Docker has 10 CPUs and 7934 MiB; set concurrency to 1 or less, or give
   Docker more
@@ -775,7 +766,7 @@ credit_budget = 2000
 
   When a single trial does not fit, the error says so and offers no
   `concurrency`.
-- `max_seconds` caps each trial: suss stops `run` after it. It can be set at
+- `max_seconds` caps each trial: suss stops the agent after it. It can be set at
   the top, in a lane's own table, and on an arm. On each lane, an arm's trials
   take the arm's own value, else the lane's, else the top's. A `--check` takes
   the value of the lane it checks. Here, every arm without its own value gets
@@ -793,7 +784,7 @@ credit_budget = 2000
   before it builds any lane or runs any job:
 
   ```
-  $ suss run peer-review rebench
+  $ suss run copilot-gpt rebench
   error: /home/me/evals/suss.toml: sets [lanes.rebnech], but suss has no lane
   named rebnech; its lanes are rebench, senior
   ```
@@ -806,8 +797,8 @@ credit_budget = 2000
   job:
 
   ```
-  $ suss run peer-review rebench
-  error: arm peer-review sets max_seconds = 3000, which must be under the
+  $ suss run copilot-gpt rebench
+  error: arm copilot-gpt sets max_seconds = 3000, which must be under the
   3000-second agent timeout of the tasks in rebench
   ```
 - `[lanes.senior.judge]` gives the judge a `senior` run is judged with:
@@ -827,10 +818,9 @@ credit_budget = 2000
   before it builds any lane or runs any job, with `DRY_RUN=1` and `--check` too:
 
   ```
-  $ suss run peer-review rebench
-  error: /home/me/evals/suss.toml: [arms.peer-review] sets max_cost_usd, but suss
-  does not read it; set the arm's spending limit in its params, under the name
-  its adapter takes, such as max_budget_usd for adapters/claude-code
+  $ suss run copilot-gpt rebench
+  error: /home/me/evals/suss.toml: [arms.copilot-gpt] sets max_cost_usd, but suss
+  does not read it, and caps an arm's trials by max_seconds alone
   ```
 
 ### `suss compare`
@@ -988,19 +978,15 @@ Python 3.12, managed with `uv`.
 
 ```
 src/suss/
-  agent.py        SussAgent, the Harbor custom agent
+  agents.py       SussMixin, and the agent classes arms run on
+  sandbox.py      commands in the sandbox, and stopping what they started
   workspace.py    finding the workspace, and capturing the patch
-  harness.py      reading a manifest, installing, and running a harness
   lanes.py        building a lane's directory from the downloaded tasks
   config.py       suss.toml
   replay.py       ReplayVerifier, which grades a trial in Harbor's separate verifier
   judge.py        JudgeVerifier, which judges a senior trial there, then grades it
   compare.py      suss compare
   cli.py          the suss command
-adapters/
-  claude-code/
-  copilot-cli/
-  copilot-cli-hve/
 tests/
 docs/specs/
 ```

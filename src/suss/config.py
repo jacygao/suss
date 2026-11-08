@@ -19,10 +19,13 @@ class ConfigError(Exception):
 @dataclass(frozen=True)
 class Arm:
     name: str
-    harness: Path
+    # The import path of the Harbor agent class the arm runs on.
+    agent: str
     baseline: str | None
-    # Passed to the harness as it stands; suss reads none of it.
-    params: dict[str, Any]
+    # Harbor's -m; None where the arm sets none.
+    model: str | None
+    # Each is passed to the agent class as an --ak.
+    kwargs: dict[str, Any]
     # The arm's own, else its lane's, else the top's; None where none sets one.
     max_seconds: float | None
 
@@ -64,7 +67,11 @@ DOWNLOADS = {lanes.REBENCH: "swe_rebench", lanes.SENIOR: "senior_swe_bench"}
 REQUIRED = ("environment", "k", "concurrency")
 # Ignored, they would leave a run going on what its author believes they still set.
 RETIRED = ("swe_bench_pro", "dataset")
-REQUIRED_IN_ARM = ("harness",)
+REQUIRED_IN_ARM = ("agent",)
+# Each would leave a run going on what its author believes it still sets.
+RETIRED_IN_ARM = ("harness", "params")
+# Set by suss on every agent, so an arm's own kwargs cannot take them.
+RESERVED_KWARGS = ("arm", "lane", "suss_config")
 LANE_KEYS = ("max_seconds", "judge")
 JUDGE_KEYS = ("credit_budget", "model", "effort")
 
@@ -79,10 +86,12 @@ def load(path: Path, arm: str, lane: str) -> Config:
     missing or is not TOML, when it sets `swe_bench_pro` or `dataset`, when a
     required key is missing, when `k` is
     not a whole number of at least 1, when the file does not define `arm`, when
-    the top or `arm` sets `max_cost_usd`, when a `[lanes.<lane>]` table names a
-    lane suss does not have or sets a key other than `max_seconds`, and on
-    senior `judge`, when `[lanes.senior.judge]` is not as `_judge` takes it,
-    or when a .env line is not NAME=VALUE.
+    the arm sets `harness` or `params`, has no `agent`, or has a `model` or
+    `kwargs` it cannot pass to Harbor, when the top or `arm` sets
+    `max_cost_usd`, when a `[lanes.<lane>]` table names a lane suss does not
+    have or sets a key other than `max_seconds`, and on senior `judge`, when
+    `[lanes.senior.judge]` is not as `_judge` takes it, or when a .env line is
+    not NAME=VALUE.
     """
     path, data = _read(path)
     directory = path.parent
@@ -103,9 +112,17 @@ def load(path: Path, arm: str, lane: str) -> Config:
     if arm not in arms:
         raise ConfigError(f"arm {arm} is not defined in {path}")
     table = arms[arm]
+    retired = [key for key in RETIRED_IN_ARM if key in table]
+    if retired:
+        raise ConfigError(
+            f"{path}: [arms.{arm}] sets {' and '.join(retired)}, which suss no longer reads; "
+            "name the arm's Harbor agent class with agent, its model with model, and its "
+            "settings with kwargs"
+        )
     for key in REQUIRED_IN_ARM:
         if key not in table:
             raise ConfigError(f"{path}: [arms.{arm}] has no {key!r}")
+    _check_agent(path, arm, table)
     # Ignored, it would leave a run its author believes is capped running uncapped.
     for where, keys in (
         ("max_cost_usd is set at the top", data),
@@ -113,9 +130,8 @@ def load(path: Path, arm: str, lane: str) -> Config:
     ):
         if "max_cost_usd" in keys:
             raise ConfigError(
-                f"{path}: {where}, but suss does not read it; set the arm's spending limit in "
-                "its params, under the name its adapter takes, such as max_budget_usd for "
-                "adapters/claude-code"
+                f"{path}: {where}, but suss does not read it, and caps an arm's trials by "
+                "max_seconds alone"
             )
     lane_tables = _lanes(path, data)
     return Config(
@@ -127,14 +143,42 @@ def load(path: Path, arm: str, lane: str) -> Config:
         concurrency=data["concurrency"],
         arm=Arm(
             name=arm,
-            harness=(directory / table["harness"]).resolve(),
+            agent=table["agent"],
             baseline=table.get("baseline"),
-            params=table.get("params", {}),
+            model=table.get("model"),
+            kwargs=table.get("kwargs", {}),
             max_seconds=_cap("max_seconds", table, lane_tables.get(lane, {}), data),
         ),
         env=_read_env(directory / ".env"),
         judge=_judge(path, judge) if (judge := lane_tables.get(lane, {}).get("judge")) is not None else None,
     )
+
+
+def _check_agent(path: Path, arm: str, table: dict[str, Any]) -> None:
+    """
+    Raise ConfigError, naming the file and the arm, for an `agent` that is not
+    an import path, a `model` that is not a string, or `kwargs` that are not a
+    table of strings, numbers and booleans, or that take a name suss sets.
+    """
+    where = f"{path}: [arms.{arm}]"
+    agent = table["agent"]
+    if not isinstance(agent, str) or ":" not in agent:
+        raise ConfigError(
+            f"{where}: agent must name a Harbor agent class as module:Class, not {agent!r}"
+        )
+    if "model" in table and not isinstance(table["model"], str):
+        raise ConfigError(f"{where}: model must be a string, not {table['model']!r}")
+    kwargs = table.get("kwargs", {})
+    if not isinstance(kwargs, dict):
+        raise ConfigError(f"{where}: kwargs must be a table, as [arms.{arm}.kwargs]")
+    for key, value in kwargs.items():
+        if key in RESERVED_KWARGS:
+            raise ConfigError(f"{where}: kwargs sets {key}, which suss sets on every agent")
+        if not isinstance(value, (str, int, float, bool)):
+            raise ConfigError(
+                f"{where}: kwargs {key} must be a string, a number or a boolean, which Harbor "
+                f"takes as an --ak, not {value!r}"
+            )
 
 
 def _path(directory: Path, value: str | None) -> Path | None:

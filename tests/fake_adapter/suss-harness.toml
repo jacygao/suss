@@ -1,6 +1,0 @@
-[harness]
-name = "fake"
-version = "0.0.1"
-install = "install.sh"
-run = "run.sh"
-env = ["SUSS_FAKE_KEY", "SUSS_FAKE_MISSING"]

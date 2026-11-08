@@ -38,7 +38,6 @@ from test_replay import edit_line, git, go, patch_of
 
 HERE = Path(__file__).resolve().parent
 FAKE_TASK = HERE / "fake_senior_task"
-FAKE_ADAPTER = HERE / "fake_adapter"
 TASK = "fake-senior-task"
 TRIAL = "fake-senior-task__AbCdEfG"
 TOKEN = "github_pat_stand_in_judge_token"
@@ -104,12 +103,22 @@ def found(monkeypatch, workspace):
 def box(tmp_path, monkeypatch, found) -> Path:
     """
     The test's directory, which Harbor would start in: the task, the .env,
-    a copy of the fake adapter, and the stand-in copilot with its scenario.
+    the stand-in copilot with its scenario, and a stand-in for Harbor's install
+    of Copilot CLI, which records each call and raises where install-fails holds
+    a message.
     """
     monkeypatch.chdir(tmp_path)
     shutil.copytree(FAKE_TASK, tmp_path / "lanes" / "senior" / TASK)
     (tmp_path / ".env").write_text(f"COPILOT_GITHUB_TOKEN={TOKEN}\nOTHER_KEY=not-for-copilot\n")
-    shutil.copytree(FAKE_ADAPTER, tmp_path / "adapter")
+
+    async def install_copilot(environment, copilot_version, logs_dir):
+        with open(tmp_path / "installs.jsonl", "a") as f:
+            f.write(json.dumps({"version": copilot_version, "logs_dir": str(logs_dir)}) + "\n")
+        failure = tmp_path / "install-fails"
+        if failure.exists():
+            raise RuntimeError(failure.read_text())
+
+    monkeypatch.setattr(suss.judge, "install_copilot", install_copilot)
     scenario = tmp_path / "copilot"
     scenario.mkdir()
     (scenario / "version").write_text("1.0.105")
@@ -177,7 +186,6 @@ def judge_verifier(
         environment=environment,
         skip_tests_upload=True,
         artifacts=str(artifacts),
-        adapter=str(box / "adapter"),
         paths=JudgePaths(
             root=str(sandbox / "opt" / trial),
             logs=str(sandbox / "logs" / trial / "verifier" / "judge"),
@@ -560,7 +568,7 @@ def test_a_trial_that_left_no_patch_skips_both_judges_and_runs_no_test(
 def test_an_install_that_fails_fails_both_judges_and_the_trial_is_still_graded(
     box, workspace, local_environment, tested
 ):
-    (box / "adapter" / "install.then").write_text("exit 3\n")
+    (box / "install-fails").write_text("Command failed (exit 3): curl -fsSL https://gh.io/copilot-install")
 
     record = judge(judge_verifier(box, local_environment, a_patch(workspace)))
 
@@ -954,8 +962,10 @@ def test_a_dotenv_with_no_token_leaves_the_judges_files_alone(box, workspace, lo
 
     judge(verifier)
 
-    assert (Path(verifier.paths.logs) / "install.log").exists()
-    assert (Path(verifier.paths.adapter) / "install.sh").exists()
+    assert [json.loads(line)["version"] for line in (box / "installs.jsonl").read_text().splitlines()] == [
+        "1.0.105"
+    ]
+    assert Path(verifier.paths.session).exists()
 
 
 # Retrying an answer that fails the schema

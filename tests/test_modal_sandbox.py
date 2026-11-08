@@ -12,20 +12,14 @@ import asyncio
 import importlib.util
 import os
 import shlex
-from pathlib import Path
 
 import pytest
 from harbor.models.task.config import EnvironmentConfig
 from harbor.models.trial.paths import TrialPaths
 
-from suss import harness
-from suss.config import Arm
-from suss.harness import SandboxPaths, load_manifest
+from suss import sandbox as sandbox_commands
 
-FAKE_ADAPTER = Path(__file__).resolve().parent / "fake_adapter"
-ADAPTER = "/opt/suss/adapter"
 WORKSPACE = "/app"
-PATHS = SandboxPaths()
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("SUSS_MODAL_TESTS") != "1" or importlib.util.find_spec("modal") is None,
@@ -95,46 +89,42 @@ def test_exec_at_timeout_returns_minus_one_and_kills_only_the_shell(loop, sandbo
     )
 
 
-def start_run(loop, env, script: str, max_seconds: int) -> harness.HarnessResult:
-    loop.run_until_complete(env.exec(f"rm -rf {ADAPTER} /logs/agent; mkdir -p {WORKSPACE}"))
-    loop.run_until_complete(env.upload_dir(FAKE_ADAPTER, ADAPTER))
-    then = shlex.quote(f"{ADAPTER}/run.then")
+SCRIPT = "/opt/suss-test/run.sh"
+LOG = "/opt/suss-test/run.log"
+
+
+def start_run(loop, env, script: str, max_seconds: int) -> int | None:
+    loop.run_until_complete(env.exec(f"rm -rf /opt/suss-test; mkdir -p /opt/suss-test {WORKSPACE}"))
     loop.run_until_complete(
-        env.exec(f"chmod +x {ADAPTER}/*.sh && printf '%s\\n' {shlex.quote(script)} > {then}")
-    )
-    the_arm = Arm(
-        name="fake", harness=FAKE_ADAPTER, baseline=None, params={}, max_seconds=max_seconds
+        env.exec(f"printf '%s\\n' {shlex.quote('#!/bin/sh')} {shlex.quote(script)} > {SCRIPT} && chmod +x {SCRIPT}")
     )
     return loop.run_until_complete(
-        harness.run(env, load_manifest(FAKE_ADAPTER), the_arm, WORKSPACE, {}, 0, PATHS)
+        sandbox_commands.run_limited(env, [SCRIPT], cwd=WORKSPACE, env_vars={}, log_path=LOG,
+                                     timeout_sec=max_seconds)
     )
 
 
-# A child in run's process group, and one in a session of its own.
+# A child in the command's process group, and one in a session of its own.
 ESCAPES = 'sleep 301 &\necho $! > /tmp/run.pids\nsetsid sleep 302 &\necho $! >> /tmp/run.pids\n'
 
 
-def test_a_run_past_max_seconds_is_stopped_and_timed_out(loop, sandbox):
-    result = start_run(
-        loop, sandbox, f"echo before the limit\necho on stderr >&2\n{ESCAPES}sleep 300", 3
-    )
+def test_a_command_past_its_limit_is_stopped(loop, sandbox):
+    code = start_run(loop, sandbox, f"echo before the limit\necho on stderr >&2\n{ESCAPES}sleep 300", 3)
 
-    assert result.status == "timed-out"
-    assert result.exit_codes["run"] is None
-    log = loop.run_until_complete(sandbox.exec("cat /logs/agent/run.log")).stdout
+    assert code is None
+    log = loop.run_until_complete(sandbox.exec(f"cat {LOG}")).stdout
     assert log == "before the limit\non stderr\n"
     pids = loop.run_until_complete(sandbox.exec("cat /tmp/run.pids")).stdout.split()
     assert alive(loop, sandbox, list(map(int, pids))) == []
 
 
-def test_a_run_that_only_execs_own_timeout_stops_is_timed_out(loop, sandbox, monkeypatch):
-    # exec's timeout at 3s, long before max_seconds, so that Modal's fires first.
-    monkeypatch.setattr(harness, "EXEC_TIMEOUT_GRACE_SECONDS", 3 - 60)
+def test_a_command_that_only_execs_own_timeout_stops_is_stopped(loop, sandbox, monkeypatch):
+    # exec's timeout at 3s, long before the limit, so that Modal's fires first.
+    monkeypatch.setattr(sandbox_commands, "EXEC_TIMEOUT_GRACE_SECONDS", 3 - 60)
 
-    result = start_run(loop, sandbox, f"{ESCAPES}sleep 300", 60)
+    code = start_run(loop, sandbox, f"{ESCAPES}sleep 300", 60)
 
-    assert result.status == "timed-out"
-    assert result.exit_codes["run"] is None
+    assert code is None
     pids = loop.run_until_complete(sandbox.exec("cat /tmp/run.pids")).stdout.split()
     assert alive(loop, sandbox, list(map(int, pids))) == []
     assert not sleeping(loop, sandbox, 60), "the wrapper's timer outlived the stop"

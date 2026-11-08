@@ -15,7 +15,7 @@ from harbor.trial.errors import VerifierTimeoutError
 from harbor.verifier.factory import VerifierFactory
 from harbor.verifier.verifier import RewardFileEmptyError
 
-from suss import agent, cli, compare, config, replay
+from suss import agents, cli, compare, config, replay
 from suss.compare import Difference, Trial, read_trials, resolved_difference
 
 LANE = "pro-go"
@@ -1705,7 +1705,7 @@ def test_senior_graders_that_differ_in_two_fields_name_both(tmp_path, capsys):
     )
 
 
-# A suss.json SussAgent wrote before senior trials had a grader, over a download
+# A suss.json suss wrote before senior trials had a grader, over a download
 # holding one task, owner__repo-1, whose task.toml is OLD_TASK_TOML.
 OLD_REBENCH_RECORD = Path(__file__).resolve().parent / "old_records" / "rebench-suss.json"
 OLD_TASK_TOML = '[environment]\nnetwork_mode = "public"\n'
@@ -1719,14 +1719,14 @@ def test_a_rebench_trial_recorded_before_senior_graders_compares_with_one_record
     (download / "owner__repo-1" / "task.toml").write_text(OLD_TASK_TOML)
     (tmp_path / "suss.toml").write_text(
         'swe_rebench = "tasks/swe-rebench-07-2026"\nenvironment = "docker"\nk = 1\n'
-        'concurrency = 1\n\n[arms.base]\nharness = "."\n\n'
-        '[arms.beta]\nharness = "."\nbaseline = "base"\n'
+        'concurrency = 1\n\n[arms.base]\nagent = "suss.agents:SussCopilotCli"\n\n'
+        '[arms.beta]\nagent = "suss.agents:SussCopilotCli"\nbaseline = "base"\n'
     )
     settings = config.load(tmp_path / "suss.toml", "beta", "rebench")
     jobs = tmp_path / "results" / "rebench"
     old = write_agent_trial(jobs / "base" / "S-1", "t1", "agent1")
     shutil.copy(OLD_REBENCH_RECORD, old / "agent" / "suss.json")
-    write_agent_trial(jobs / "beta" / "S-1", "t1", "agent1", grader=agent.grader(settings, "rebench"))
+    write_agent_trial(jobs / "beta" / "S-1", "t1", "agent1", grader=agents.grader(settings, "rebench"))
     for arm in ("base", "beta"):
         write_regrade_trial(jobs / arm / f"S-1{REGRADE}", "t1", "regrd1")
 

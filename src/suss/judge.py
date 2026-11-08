@@ -30,24 +30,22 @@ import time
 import tomllib
 import uuid
 from dataclasses import dataclass
-from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
+from harbor.agents.installed.copilot_cli import CopilotCli
 from harbor.environments.base import BaseEnvironment
 from harbor.models.verifier.result import VerifierResult
 from harbor.verifier.verifier import Verifier
 
-from suss import harness, lanes
-from suss.agent import _as_root, _upload, _upload_bytes
+from suss import lanes, sandbox
 from suss.config import TOKEN_NAME, _read_env
-from suss.harness import SandboxPaths
 from suss.replay import ReplayVerifier
+from suss.sandbox import as_root as _as_root, upload_bytes as _upload_bytes
 from suss.workspace import read_start_tree
 
 RECORD_NAME = "judge.json"
 LEDGER_NAME = "judge-credits.jsonl"
-ADAPTER = Path(__file__).resolve().parents[2] / "adapters" / "copilot-cli"
 CLIENT = "copilot-cli"
 MODEL = "gemini-4-argon"
 EFFORT = "high"
@@ -151,16 +149,8 @@ class JudgePaths:
     root: str = "/opt/suss-judge"
     # Under the verifier's logs, which Harbor keeps as the trial's verifier/.
     logs: str = "/logs/verifier/judge"
-    # Found on PATH, where the session puts install.sh's $HOME/.local/bin first.
+    # Found on PATH, where the session puts the installer's $HOME/.local/bin first.
     copilot: str = "copilot"
-
-    @property
-    def adapter(self) -> str:
-        return f"{self.root}/adapter"
-
-    @property
-    def params(self) -> str:
-        return f"{self.root}/params.json"
 
     @property
     def session(self) -> str:
@@ -340,7 +330,6 @@ class JudgeVerifier(ReplayVerifier):
         classifier_model: Any = CLASSIFIER_MODEL,
         copilot_version: Any = COPILOT_VERSION,
         dotenv: Any = ".env",
-        adapter: Any = str(ADAPTER),
         session_seconds: Any = 1200,
         judge_seconds: Any = lanes.JUDGE_SECONDS,
         paths: JudgePaths = JudgePaths(),
@@ -351,12 +340,11 @@ class JudgeVerifier(ReplayVerifier):
         over every trial of the job, then grade it as ReplayVerifier does.
 
         `effort` is empty for a model that takes none. `dotenv` holds
-        COPILOT_GITHUB_TOKEN, and `adapter` is the copilot-cli adapter, whose
-        install.sh installs `copilot_version`. Host paths are relative to the
-        directory `harbor run` started in. A session is stopped after
-        `session_seconds`, and the judge, its install included, after
-        `judge_seconds`. `paths` is where the sandbox keeps things; Harbor
-        never passes it.
+        COPILOT_GITHUB_TOKEN, and `install_copilot` installs `copilot_version`.
+        Host paths are relative to the directory `harbor run` started in. A
+        session is stopped after `session_seconds`, and the judge, its install
+        included, after `judge_seconds`. `paths` is where the sandbox keeps
+        things; Harbor never passes it.
 
         Raises TypeError for a setting Harbor parsed into the wrong type,
         ConfigError when the .env cannot be read, and what ReplayVerifier raises.
@@ -369,7 +357,7 @@ class JudgeVerifier(ReplayVerifier):
                     f" a {type(value).__name__}"
                 )
         for key, value in (("model", model), ("effort", effort), ("classifier_model", classifier_model),
-                           ("copilot_version", copilot_version), ("dotenv", dotenv), ("adapter", adapter)):
+                           ("copilot_version", copilot_version), ("dotenv", dotenv)):
             if not isinstance(value, str):
                 raise TypeError(
                     f"--verifier-kwarg {key} must be a string, but Harbor parsed it as JSON into"
@@ -381,16 +369,10 @@ class JudgeVerifier(ReplayVerifier):
         self.effort = effort or None
         self.classifier_model = classifier_model
         self.copilot_version = copilot_version
-        self.adapter = Path(adapter).absolute()
         self.session_seconds = session_seconds
         self.judge_seconds = judge_seconds
         self.paths = paths
         self._token = _read_env(Path(dotenv).absolute()).get(TOKEN_NAME, "")
-        self._install_manifest = harness.load_manifest(self.adapter)
-        self._session_manifest = harness.Manifest(
-            name="suss-judge", version=version("suss"), install=None, run=SESSION_SCRIPT,
-            allowed_hosts=(), env=(TOKEN_NAME,),
-        )
         # The job's directory, which holds every trial of it.
         self._ledger = CreditLedger(self.trial_paths.trial_dir.parent / LEDGER_NAME, credit_budget)
         self._installed: str | None = None
@@ -452,17 +434,9 @@ class JudgeVerifier(ReplayVerifier):
         paths = self.paths
         environment = self.environment
         try:
-            await _upload(environment, self.adapter, paths.adapter)
-            await _upload_bytes(environment, json.dumps({"version": self.copilot_version}).encode(), paths.params)
             await _upload_bytes(environment, SESSION.encode(), paths.session)
             await _as_root(environment, f"chmod 755 {shlex.quote(paths.session)}")
-            code = await harness.install(
-                environment, self._install_manifest, workspace, {},
-                SandboxPaths(adapter=paths.adapter, params=paths.params, logs=paths.logs),
-            )
-            if code not in (0, None):
-                self._setup_error = f"install.sh exited {code}; its output is in {paths.logs}/install.log"
-                return
+            await install_copilot(environment, self.copilot_version, self.trial_paths.verifier_dir)
             result = await environment.exec(
                 f'PATH="$HOME/.local/bin:$PATH" {shlex.quote(paths.copilot)} --no-auto-update --version 2>&1'
             )
@@ -713,13 +687,13 @@ class JudgeVerifier(ReplayVerifier):
             await _run(environment, f"mkdir -p {shlex.quote(logs)} && touch {shlex.quote(paths.mark)}")
             started = time.monotonic()
             try:
-                code = await harness._start(
-                    environment, self._session_manifest, SESSION_SCRIPT,
-                    [workspace, prompt_file, out, home, f"{logs}/logs", paths.copilot, model,
-                     effort or "", "--resume" if resumes else "--session-id", session["session_id"],
-                     *TOOLS[kind]],
-                    workspace, {TOKEN_NAME: self._token},
-                    SandboxPaths(adapter=paths.root, logs=logs), "session.log", self.session_seconds,
+                code = await sandbox.run_limited(
+                    environment,
+                    [paths.session, workspace, prompt_file, out, home, f"{logs}/logs", paths.copilot,
+                     model, effort or "", "--resume" if resumes else "--session-id",
+                     session["session_id"], *TOOLS[kind]],
+                    cwd=workspace, env_vars={TOKEN_NAME: self._token},
+                    log_path=f"{logs}/session.log", timeout_sec=self.session_seconds,
                 )
             except asyncio.CancelledError:
                 # Stopped by the judge's limit or Harbor's: what it reported is still what it spent.
@@ -896,6 +870,11 @@ def _oracle(task: Path) -> str:
         if path.is_file():
             return path.read_text(errors="replace")
     return ""
+
+
+async def install_copilot(environment: BaseEnvironment, copilot_version: str, logs_dir: Path) -> None:
+    """Install Copilot CLI at `copilot_version`, as Harbor's own agent installs it. Raises when it cannot."""
+    await CopilotCli(logs_dir=logs_dir, version=copilot_version).install(environment)
 
 
 async def _run(environment: BaseEnvironment, command: str) -> str:

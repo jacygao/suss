@@ -14,7 +14,7 @@ from harbor.cli.utils import parse_kwargs
 from suss import config
 from suss.cli import harbor_commands, harbor_executable, stamp
 from suss.config import Arm, Config, Judge
-from suss.harness import Manifest
+from suss.agents import SussCopilotCli
 
 SPEC = Path(__file__).resolve().parent.parent / "docs" / "specs" / "suss-spec.md"
 STAMP = "20261031T142500Z"
@@ -32,9 +32,10 @@ def make_config(
         concurrency=concurrency,
         arm=Arm(
             name=arm,
-            harness=Path("/work/peer-review"),
+            agent="suss.agents:SussCopilotCli",
             baseline=None,
-            params={},
+            model=None,
+            kwargs={},
             max_seconds=None,
         ),
         env={},
@@ -42,15 +43,9 @@ def make_config(
     )
 
 
-def make_manifest(allowed_hosts: tuple[str, ...] = ("api.anthropic.com", "api.deepseek.com")):
-    return Manifest(
-        name="peer-review",
-        version="0.1.0",
-        install=None,
-        run="run.sh",
-        allowed_hosts=allowed_hosts,
-        env=(),
-    )
+def hosts(allowed_hosts: tuple[str, ...] = ("api.anthropic.com", "api.deepseek.com")):
+    """The hosts an agent class would list in ALLOWED_HOSTS."""
+    return allowed_hosts
 
 
 def ak_values(argv: list[str]) -> dict[str, str]:
@@ -77,7 +72,7 @@ def spec_commands(root: Path, env: Path, lane: str) -> list[list[str]]:
     blocks = re.findall(r"```bash\n(.*?)```", SPEC.read_text(), re.DOTALL)
     found = [
         block for block in blocks
-        if "-a suss.agent:SussAgent" in block and f"--ak lane={lane}" in block
+        if "-a suss.agents:" in block and f"--ak lane={lane}" in block
     ]
     assert len(found) == 1, f"expected one block with the {lane} agent job in {SPEC}, found {len(found)}"
     return [
@@ -97,7 +92,7 @@ def spec_config(tmp_path: Path, lane: str) -> Config:
     path = tmp_path / "suss" / "suss.toml"
     path.parent.mkdir()
     path.write_text(examples[0])
-    return config.load(path, "peer-review", lane)
+    return config.load(path, "copilot-gpt", lane)
 
 
 @pytest.mark.parametrize(
@@ -108,7 +103,7 @@ def test_each_lanes_commands_match_the_spec_token_for_token(tmp_path, lane, read
     harbor = harbor_executable()
     expected = spec_commands(loaded.path.parent, harbor.parent.parent, lane)
 
-    command = harbor_commands(loaded, make_manifest(), lane, STAMP, 1, reads=reads)
+    command = harbor_commands(loaded, SussCopilotCli.ALLOWED_HOSTS, lane, STAMP, 1, reads=reads)
 
     # suss runs each command with its own harbor in place of the first token.
     assert [[str(harbor), *command.argv[1:]]] == expected
@@ -130,13 +125,13 @@ def test_a_start_time_with_no_zone_is_refused():
 
 
 def test_the_job_is_named_from_the_stamp_and_the_trial_number(tmp_path):
-    agent = harbor_commands(make_config(tmp_path), make_manifest(), "senior", STAMP, 3)
+    agent = harbor_commands(make_config(tmp_path), hosts(), "senior", STAMP, 3)
 
     assert agent.argv[agent.argv.index("--job-name") + 1] == f"{STAMP}-3"
 
 
 def test_a_check_takes_the_check_lane_and_writes_under_checks(tmp_path):
-    agent = harbor_commands(make_config(tmp_path), make_manifest(), "senior", STAMP, 1, check=True)
+    agent = harbor_commands(make_config(tmp_path), hosts(), "senior", STAMP, 1, check=True)
 
     assert agent.argv[agent.argv.index("-p") + 1] == "lanes/senior-check"
     assert agent.argv[agent.argv.index("--jobs-dir") + 1] == "checks/senior/peer-review"
@@ -144,7 +139,7 @@ def test_a_check_takes_the_check_lane_and_writes_under_checks(tmp_path):
 
 def test_the_job_takes_the_environment_and_concurrency_from_the_config(tmp_path):
     agent = harbor_commands(
-        make_config(tmp_path, environment="modal", concurrency=4), make_manifest(), "senior", STAMP, 1
+        make_config(tmp_path, environment="modal", concurrency=4), hosts(), "senior", STAMP, 1
     )
 
     assert agent.argv[:10] == [
@@ -152,21 +147,21 @@ def test_the_job_takes_the_environment_and_concurrency_from_the_config(tmp_path)
     ]
 
 
-def test_the_agent_job_allows_each_manifest_host_in_order_and_no_others(tmp_path):
-    hosts = ("b.example.com", "a.example.com", "10.0.0.0/8")
+def test_the_agent_job_allows_each_host_its_agent_class_lists_in_order_and_no_others(tmp_path):
+    listed = ("b.example.com", "a.example.com", "10.0.0.0/8")
 
-    agent = harbor_commands(make_config(tmp_path), make_manifest(hosts), "rebench", STAMP, 1)
+    agent = harbor_commands(make_config(tmp_path), hosts(listed), "rebench", STAMP, 1)
 
     allowed = [token for flag, token in zip(agent.argv, agent.argv[1:]) if flag == "--allow-agent-host"]
-    assert allowed == list(hosts)
+    assert allowed == list(listed)
 
 
-def test_a_harness_with_no_allowed_hosts_gets_no_allow_agent_host(tmp_path):
-    agent = harbor_commands(make_config(tmp_path), make_manifest(()), "senior", STAMP, 1)
+def test_an_agent_with_no_allowed_hosts_gets_no_allow_agent_host(tmp_path):
+    agent = harbor_commands(make_config(tmp_path), hosts(()), "senior", STAMP, 1)
 
     assert agent.argv == [
         "harbor", "run", "-p", "lanes/senior", "-e", "docker", "-n", "16", "-k", "1",
-        "-a", "suss.agent:SussAgent", "--ak", "arm=peer-review", "--ak", "config=suss.toml",
+        "-a", "suss.agents:SussCopilotCli", "--ak", "arm=peer-review", "--ak", "suss_config=suss.toml",
         "--ak", "lane=senior",
         "--verifier", "suss.judge:JudgeVerifier", "--verifier-kwarg", "credit_budget=2000",
         "--jobs-dir", "results/senior/peer-review", "--job-name", f"{STAMP}-1",
@@ -182,13 +177,13 @@ def test_a_senior_agent_job_judges_and_grades_its_trials_in_suss_verifier_with_n
     )
 
     agent = harbor_commands(
-        settings, make_manifest(), "senior", STAMP, 2, ["--max-retries", "1"], reads=READS,
+        settings, hosts(), "senior", STAMP, 2, ["--max-retries", "1"], reads=READS,
         verifier_reads=READS,
     )
 
     assert agent.argv == [
         "harbor", "run", "-y", "-p", "lanes/senior", "-e", "docker", "-n", "16", "-k", "1",
-        "-a", "suss.agent:SussAgent", "--ak", "arm=peer-review", "--ak", "config=suss.toml",
+        "-a", "suss.agents:SussCopilotCli", "--ak", "arm=peer-review", "--ak", "suss_config=suss.toml",
         "--ak", "lane=senior",
         "--allow-agent-host", "api.anthropic.com", "--allow-agent-host", "api.deepseek.com",
         "--verifier", "suss.judge:JudgeVerifier",
@@ -214,7 +209,7 @@ def test_a_senior_agent_job_gives_its_verifier_no_key_for_seniors_own_judges(tmp
     reads = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PORTKEY_API_KEY", "SSB_OVERRIDE_ALL_JUDGE_MODEL")
 
     agent = harbor_commands(
-        settings, make_manifest(), "senior", STAMP, 1, reads=reads, verifier_reads=reads
+        settings, hosts(), "senior", STAMP, 1, reads=reads, verifier_reads=reads
     )
 
     # They would run senior's judges and validation agent on API keys, at about $100 a run.
@@ -223,11 +218,11 @@ def test_a_senior_agent_job_gives_its_verifier_no_key_for_seniors_own_judges(tmp
 
 
 def test_a_rebench_agent_job_grades_its_trials_in_suss_verifier_with_no_regrade(tmp_path):
-    agent = harbor_commands(make_config(tmp_path), make_manifest(()), "rebench", STAMP, 1)
+    agent = harbor_commands(make_config(tmp_path), hosts(()), "rebench", STAMP, 1)
 
     assert agent.argv == [
         "harbor", "run", "-p", "lanes/rebench", "-e", "docker", "-n", "16", "-k", "1",
-        "-a", "suss.agent:SussAgent", "--ak", "arm=peer-review", "--ak", "config=suss.toml",
+        "-a", "suss.agents:SussCopilotCli", "--ak", "arm=peer-review", "--ak", "suss_config=suss.toml",
         "--ak", "lane=rebench", "--verifier", "suss.replay:ReplayVerifier",
         "--jobs-dir", "results/rebench/peer-review", "--job-name", f"{STAMP}-1",
     ]
@@ -243,7 +238,7 @@ def test_a_rebench_agent_job_takes_grading_keys_from_harbors_environment_never_i
 
     agent = harbor_commands(
         settings,
-        make_manifest(),
+        hosts(),
         "rebench",
         STAMP,
         1,
@@ -259,10 +254,10 @@ def test_a_rebench_agent_job_takes_grading_keys_from_harbors_environment_never_i
 
 
 def test_arguments_after_the_separator_go_at_the_end_of_the_agent_job(tmp_path):
-    extra = ["--max-retries", "2", "--ae", "FOO=bar"]
+    extra = ["--max-retries", "2", "--ek", "foo=bar"]
 
-    agent = harbor_commands(make_config(tmp_path), make_manifest(), "senior", STAMP, 1, extra)
-    plain = harbor_commands(make_config(tmp_path), make_manifest(), "senior", STAMP, 1)
+    agent = harbor_commands(make_config(tmp_path), hosts(), "senior", STAMP, 1, extra)
+    plain = harbor_commands(make_config(tmp_path), hosts(), "senior", STAMP, 1)
 
     assert agent.argv == plain.argv + extra
 
@@ -270,7 +265,7 @@ def test_arguments_after_the_separator_go_at_the_end_of_the_agent_job(tmp_path):
 def test_a_refused_option_as_another_options_value_passes_through(tmp_path):
     extra = ["--extra-instruction", "-k", "--retry-include=--job-name"]
 
-    agent = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, extra)
+    agent = harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1, extra)
 
     assert agent.argv[-3:] == extra
 
@@ -289,7 +284,7 @@ def test_a_refused_option_as_another_options_value_passes_through(tmp_path):
         ["-k", "1"],
         ["-k2"],
         ["--n-attempts=2"],
-        ["-a", "suss.agent:SussAgent"],
+        ["-a", "suss.agents:SussCopilotCli"],
         ["--agent", "other"],
         ["-m", "replay"],
         ["--model=x"],
@@ -314,7 +309,7 @@ def test_a_refused_option_as_another_options_value_passes_through(tmp_path):
 def test_an_option_suss_sets_is_refused_in_every_spelling_whatever_its_value(extra, tmp_path):
     # Harbor takes the last of a repeated option, so any of these would win over suss's own.
     with pytest.raises(ValueError, match="can't be passed after --"):
-        harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, extra)
+        harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1, extra)
 
 
 def harbor_run_options():
@@ -326,9 +321,9 @@ def options_suss_sets(tmp_path) -> set[str]:
     run, _ = harbor_run_options()
     # -y only on a lane whose tasks read Harbor's environment.
     commands = [
-        harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1),
+        harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1),
         harbor_commands(
-            make_config(tmp_path), make_manifest(), "senior", STAMP, 1, reads=("ANTHROPIC_API_KEY",)
+            make_config(tmp_path), hosts(), "senior", STAMP, 1, reads=("ANTHROPIC_API_KEY",)
         ),
     ]
     emitted = set()
@@ -344,7 +339,7 @@ def refused_options(tmp_path) -> set[str]:
     for param in params:
         extra = [param.opts[0]] if param.is_flag else [param.opts[0], "1"]
         try:
-            harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, extra)
+            harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1, extra)
         except ValueError as error:
             if str(error).startswith(param.opts[0]):
                 refused.add(param.name)
@@ -392,6 +387,7 @@ def test_the_options_refused_beyond_those_suss_sets_are_these(tmp_path):
         "init",
         "print_config",
         "env_file",
+        "agent_env",
     }
 
 
@@ -405,14 +401,14 @@ def with_dotenv(tmp_path: Path, env: dict[str, str]) -> Config:
 
 
 def test_the_job_answers_harbors_question_when_the_tasks_read_its_environment(tmp_path):
-    agent = harbor_commands(make_config(tmp_path), make_manifest(), "senior", STAMP, 1, reads=READS)
+    agent = harbor_commands(make_config(tmp_path), hosts(), "senior", STAMP, 1, reads=READS)
 
     # Without a terminal, Harbor reads no answer and aborts the job.
     assert agent.argv[:3] == ["harbor", "run", "-y"]
 
 
 def test_the_job_answers_no_question_harbor_does_not_ask(tmp_path):
-    agent = harbor_commands(make_config(tmp_path), make_manifest(), "senior", STAMP, 1)
+    agent = harbor_commands(make_config(tmp_path), hosts(), "senior", STAMP, 1)
 
     assert "-y" not in agent.argv
 
@@ -422,7 +418,7 @@ def test_the_agent_job_withholds_every_variable_the_tasks_read_and_is_given_none
 ):
     settings = with_dotenv(tmp_path, {"SSB_OVERRIDE_ALL_JUDGE_MODEL": "anthropic/x"})
 
-    agent = harbor_commands(settings, make_manifest(), "senior", STAMP, 1, reads=READS)
+    agent = harbor_commands(settings, hosts(), "senior", STAMP, 1, reads=READS)
 
     assert agent.withheld == (*READS, "COPILOT_GITHUB_TOKEN")
     assert agent.given == {}
@@ -435,7 +431,7 @@ def test_the_agent_job_is_given_the_values_env_sets_for_what_its_verifier_alone_
     )
 
     agent = harbor_commands(
-        settings, make_manifest(), "senior", STAMP, 1, reads=READS, verifier_reads=READS
+        settings, hosts(), "senior", STAMP, 1, reads=READS, verifier_reads=READS
     )
 
     assert agent.withheld == (*READS, "COPILOT_GITHUB_TOKEN")
@@ -446,7 +442,7 @@ def test_a_commands_values_from_env_never_show_in_its_repr(tmp_path):
     settings = with_dotenv(tmp_path, {"GRADER_KEY": "sk-grade-secret"})
 
     agent = harbor_commands(
-        settings, make_manifest(), "rebench", STAMP, 1, reads=("GRADER_KEY",),
+        settings, hosts(), "rebench", STAMP, 1, reads=("GRADER_KEY",),
         verifier_reads=("GRADER_KEY",),
     )
 
@@ -456,7 +452,7 @@ def test_a_commands_values_from_env_never_show_in_its_repr(tmp_path):
 
 def test_yes_after_the_separator_is_refused_as_an_option_suss_sets(tmp_path):
     with pytest.raises(ValueError) as refused:
-        harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, ["--yes"])
+        harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1, ["--yes"])
 
     assert str(refused.value) == (
         "-y/--yes can't be passed after --: suss answers Harbor's question itself, on a lane "
@@ -467,7 +463,7 @@ def test_yes_after_the_separator_is_refused_as_an_option_suss_sets(tmp_path):
 def test_an_env_file_after_the_separator_is_refused(tmp_path):
     with pytest.raises(ValueError) as refused:
         harbor_commands(
-            make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, ["--env-file", ".env"]
+            make_config(tmp_path), hosts(), "rebench", STAMP, 1, ["--env-file", ".env"]
         )
 
     assert str(refused.value) == (
@@ -481,7 +477,7 @@ def test_sharing_with_an_organization_is_refused_where_suss_answers_harbors_ques
     extra = ["--upload", "--share-org", "acme"]
 
     with pytest.raises(ValueError) as refused:
-        harbor_commands(make_config(tmp_path), make_manifest(), "senior", STAMP, 1, extra, reads=READS)
+        harbor_commands(make_config(tmp_path), hosts(), "senior", STAMP, 1, extra, reads=READS)
 
     assert str(refused.value) == (
         "--share-org can't be passed after -- on senior: suss passes -y there, which would "
@@ -492,7 +488,7 @@ def test_sharing_with_an_organization_is_refused_where_suss_answers_harbors_ques
 def test_sharing_with_an_organization_passes_through_where_harbor_asks_no_question(tmp_path):
     extra = ["--upload", "--share-org", "acme"]
 
-    agent = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, extra)
+    agent = harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1, extra)
 
     assert agent.argv[-3:] == extra
 
@@ -529,8 +525,7 @@ def test_sharing_with_an_organization_passes_through_where_harbor_asks_no_questi
         ),
         (
             ["--agent-import-path", "x:Y"],
-            "--agent-import-path can't be passed after --: suss runs every agent job with"
-            " SussAgent",
+            "--agent-import-path can't be passed after --: set the arm's agent in suss.toml",
         ),
         (
             ["--environment-import-path", "x:Y"],
@@ -538,7 +533,7 @@ def test_sharing_with_an_organization_passes_through_where_harbor_asks_no_questi
         ),
         (
             ["--user-agent", "x"],
-            "--user-agent can't be passed after --: suss runs SussAgent alone, with no"
+            "--user-agent can't be passed after --: suss runs the arm's agent alone, with no"
             " simulated user",
         ),
         (
@@ -562,7 +557,7 @@ def test_an_option_that_changes_what_the_agent_job_runs_says_why_it_is_refused(
     extra, message, tmp_path
 ):
     with pytest.raises(ValueError) as refused:
-        harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, extra)
+        harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1, extra)
 
     assert str(refused.value) == message
 
@@ -578,15 +573,15 @@ def test_an_option_that_changes_what_the_agent_job_runs_says_why_it_is_refused(
 )
 def test_a_positional_argument_is_refused_by_name(extra, word, tmp_path):
     with pytest.raises(ValueError) as refused:
-        harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, extra)
+        harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1, extra)
 
     assert str(refused.value) == f"{word} can't be passed after --: harbor run takes only options"
 
 
 def test_an_options_value_is_not_taken_for_a_positional_argument(tmp_path):
-    extra = ["--max-retries", "2", "--ae=FOO=bar", "--retry-include", "stray"]
+    extra = ["--max-retries", "2", "--ek=foo=bar", "--retry-include", "stray"]
 
-    agent = harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, extra)
+    agent = harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1, extra)
 
     assert agent.argv[-5:] == extra
 
@@ -602,19 +597,19 @@ def test_an_options_value_is_not_taken_for_a_positional_argument(tmp_path):
             "-k/--n-attempts can't be passed after --: suss runs one trial per agent job,"
             " and k in suss.toml sets how many jobs",
         ),
-        (["-a", "x"], "-a/--agent can't be passed after --: suss runs every agent job with SussAgent"),
+        (["-a", "x"], "-a/--agent can't be passed after --: set the arm's agent in suss.toml"),
         (
             ["-m", "x"],
-            "-m/--model can't be passed after --: set the arm's model in its params in suss.toml",
+            "-m/--model can't be passed after --: set the arm's model in suss.toml",
         ),
         (
             ["--ak", "x=1"],
-            "--ak/--agent-kwarg can't be passed after --: set the arm's params in suss.toml",
+            "--ak/--agent-kwarg can't be passed after --: set the arm's kwargs in suss.toml",
         ),
         (
             ["--allow-agent-host", "x"],
-            "--allow-agent-host can't be passed after --: list the hosts in allowed_hosts"
-            " in the harness's manifest",
+            "--allow-agent-host can't be passed after --: suss allows the hosts the arm's agent"
+            " class lists in ALLOWED_HOSTS",
         ),
         (
             ["-o", "x"],
@@ -640,7 +635,7 @@ def test_an_options_value_is_not_taken_for_a_positional_argument(tmp_path):
 )
 def test_a_refused_option_says_where_its_setting_comes_from(extra, message, tmp_path):
     with pytest.raises(ValueError) as refused:
-        harbor_commands(make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, extra)
+        harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1, extra)
 
     assert str(refused.value) == message
 
@@ -650,13 +645,13 @@ def test_a_refused_option_says_where_its_setting_comes_from(extra, message, tmp_
 )
 def test_allow_agent_host_is_refused_when_the_manifest_allows_no_hosts(extra, tmp_path):
     with pytest.raises(ValueError, match="^--allow-agent-host can't be passed after --"):
-        harbor_commands(make_config(tmp_path), make_manifest(()), "rebench", STAMP, 1, extra)
+        harbor_commands(make_config(tmp_path), hosts(()), "rebench", STAMP, 1, extra)
 
 
 def test_an_option_harbor_does_not_know_is_refused(tmp_path):
     with pytest.raises(ValueError, match="--no-such-option"):
         harbor_commands(
-            make_config(tmp_path), make_manifest(), "rebench", STAMP, 1, ["--no-such-option"]
+            make_config(tmp_path), hosts(), "rebench", STAMP, 1, ["--no-such-option"]
         )
 
 
@@ -676,7 +671,7 @@ print(found.__module__, found.__name__)
     [("rebench", "suss.replay ReplayVerifier"), ("senior", "suss.judge JudgeVerifier")],
 )
 def test_the_harbor_suss_runs_loads_each_lanes_verifier_with_no_pythonpath(tmp_path, lane, verifier):
-    agent = harbor_commands(make_config(tmp_path), make_manifest(), lane, STAMP, 1)
+    agent = harbor_commands(make_config(tmp_path), hosts(), lane, STAMP, 1)
     python = harbor_executable().read_text().splitlines()[0].removeprefix("#!")
     env = {name: value for name, value in os.environ.items() if name != "PYTHONPATH"}
 
@@ -718,18 +713,43 @@ def test_the_harbor_suss_runs_loads_each_lanes_verifier_with_no_pythonpath(tmp_p
     ],
 )
 def test_every_ak_value_reaches_the_agent_as_the_string_it_was(arm, tmp_path):
-    agent = harbor_commands(make_config(tmp_path, arm=arm), make_manifest(), "senior", STAMP, 1)
+    agent = harbor_commands(make_config(tmp_path, arm=arm), hosts(), "senior", STAMP, 1)
 
-    assert harbor_parses(agent.argv) == {"arm": arm, "config": "suss.toml", "lane": "senior"}
+    assert harbor_parses(agent.argv) == {"arm": arm, "suss_config": "suss.toml", "lane": "senior"}
 
 
 def test_an_ordinary_ak_value_is_not_quoted(tmp_path):
-    agent = harbor_commands(make_config(tmp_path), make_manifest(), "senior", STAMP, 1)
+    agent = harbor_commands(make_config(tmp_path), hosts(), "senior", STAMP, 1)
 
-    assert ak_values(agent.argv) == {"arm": "peer-review", "config": "suss.toml", "lane": "senior"}
+    assert ak_values(agent.argv) == {"arm": "peer-review", "suss_config": "suss.toml", "lane": "senior"}
 
 
 def test_an_arm_harbor_would_read_as_a_number_is_quoted_as_a_json_string(tmp_path):
-    agent = harbor_commands(make_config(tmp_path, arm="2026"), make_manifest(), "rebench", STAMP, 1)
+    agent = harbor_commands(make_config(tmp_path, arm="2026"), hosts(), "rebench", STAMP, 1)
 
     assert ak_values(agent.argv)["arm"] == '"2026"'
+
+
+def test_the_arms_agent_model_and_kwargs_reach_harbor_each_of_its_own_type(tmp_path):
+    settings = make_config(tmp_path)
+    kwargs = {"version": "1.0.105", "reasoning_effort": "high", "rounds": 3, "strict": True,
+              "ratio": 0.5, "label": "007", "spaced": " it "}
+    arm = dataclasses.replace(settings.arm, model="gpt-6.1-sol", kwargs=kwargs)
+
+    agent = harbor_commands(dataclasses.replace(settings, arm=arm), hosts(), "rebench", STAMP, 1)
+
+    at = agent.argv.index("-a")
+    assert agent.argv[at + 1 : at + 4] == ["suss.agents:SussCopilotCli", "-m", "gpt-6.1-sol"]
+    parsed = harbor_parses(agent.argv)
+    assert {key: parsed[key] for key in kwargs} == kwargs
+    assert {key: type(parsed[key]) for key in kwargs} == {key: type(v) for key, v in kwargs.items()}
+
+
+def test_an_agent_env_option_is_refused_since_it_would_reach_the_agents_commands(tmp_path):
+    with pytest.raises(ValueError) as refused:
+        harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1, ["--ae", "GH_TOKEN=x"])
+
+    assert str(refused.value) == (
+        "--ae/--agent-env can't be passed after --: the arm's agent takes only the variables its"
+        " class names, from .env, and an --ae value would reach every command it runs"
+    )
