@@ -366,12 +366,11 @@ The agent's own files go there too, such as Copilot CLI's stream,
   ```
 - `base` is the commit. `model.patch` applies to the starting tree, which is
   the base only when the image left no change in the workspace.
-- `status` is `ok`, `harness-failed` or `timed-out`. A trial is `timed-out`
-  when suss stops the agent at `max_seconds`, and when Harbor's agent timeout
-  stops the trial while the agent runs. It is `harness-failed` when the agent
-  raises, as Harbor's agents do when their coding agent exits non-zero. Either
-  way, suss stops the agent's processes, then captures the patch and writes the
-  record, and the verifier grades it.
+- `status` is `ok`, `harness-failed` or `timed-out`. A trial runs until its
+  task's agent timeout, and is `timed-out` when Harbor stops it there. It is
+  `harness-failed` when the agent raises, as Harbor's agents do when their
+  coding agent exits non-zero. Either way, suss stops the agent's processes,
+  then captures the patch and writes the record, and the verifier grades it.
 - A trial whose patch cannot be written fails with the capture's error, and is
   not graded, whatever the agent did.
 - `usage` is what the agent reports it spent, or `null` for an agent whose
@@ -394,9 +393,6 @@ output into `trajectory.json`, and records its tokens in `result.json`.
   and when the run ends it kills every process in the sandbox whose environment
   holds it, as the agent's user, by reading `/proc`. That finds each one
   whatever session or process group it moved to.
-- It stops the agent after the arm's `max_seconds`. That is the only cap on a
-  trial: suss gives no arm a spending limit, and no agent in this repository
-  has a credit cap.
 - It captures the patch and writes `suss.json` however the run ends.
 - It takes `arm`, `lane` and `suss_config` as `--ak`, and reads the arm's
   settings and the `.env` from that `suss.toml` when Harbor constructs it, so a
@@ -675,8 +671,7 @@ lane may be using. It runs one agent job, whatever `k` is, and writes them to `c
 suss run copilot-gpt rebench --check
 ```
 
-`suss.toml` names where the tasks are, where the sandboxes run, the cap on each
-trial, and the arms:
+`suss.toml` names where the tasks are, where the sandboxes run, and the arms:
 
 ```toml
 swe_rebench = "../tasks/swe-rebench-07-2026"
@@ -684,7 +679,6 @@ senior_swe_bench = "../tasks/senior/senior-swe-bench-v2026.06"
 environment = "docker"
 k = 1
 concurrency = 16
-max_seconds = 2700
 
 [arms.copilot-sonnet]
 agent = "suss.agents:SussCopilotCli"
@@ -765,41 +759,6 @@ credit_budget = 2000
 
   When a single trial does not fit, the error says so and offers no
   `concurrency`.
-- `max_seconds` caps each trial: suss stops the agent after it. It can be set at
-  the top, in a lane's own table, and on an arm. On each lane, an arm's trials
-  take the arm's own value, else the lane's, else the top's. A `--check` takes
-  the value of the lane it checks. Here, every arm without its own value gets
-  2400 on `rebench`:
-
-  ```toml
-  max_seconds = 2700
-
-  [lanes.rebench]
-  max_seconds = 2400
-  ```
-
-  A `[lanes.<lane>]` table for a lane suss does not have, or one that sets
-  anything else, but `judge` on `senior`, makes `suss run` exit with an error
-  before it builds any lane or runs any job:
-
-  ```
-  $ suss run copilot-gpt rebench
-  error: /home/me/evals/suss.toml: sets [lanes.rebnech], but suss has no lane
-  named rebnech; its lanes are rebench, senior
-  ```
-
-  The value must be under the agent timeout of every task in the lane, so that
-  suss captures the patch before Harbor stops the trial: under 3000 seconds on
-  `rebench`, and under 7200 on `senior`, its shortest. Each lane is checked
-  against its own value. When one
-  is not under the timeout, `suss run` exits with an error before running any
-  job:
-
-  ```
-  $ suss run copilot-gpt rebench
-  error: arm copilot-gpt sets max_seconds = 3000, which must be under the
-  3000-second agent timeout of the tasks in rebench
-  ```
 - `[lanes.senior.judge]` gives the judge a `senior` run is judged with:
   `credit_budget`, which it requires, and `model` and `effort`, which take the
   judge's defaults where it leaves them out. They are the `--verifier-kwarg`s
@@ -813,13 +772,23 @@ credit_budget = 2000
   model = "gpt-6.1-sol"
   effort = "high"
   ```
+
+  A `[lanes.<lane>]` table for a lane suss does not have, or one that sets
+  anything else, but `judge` on `senior`, makes `suss run` exit with an error
+  before it builds any lane or runs any job:
+
+  ```
+  $ suss run copilot-gpt rebench
+  error: /home/me/evals/suss.toml: sets [lanes.rebnech], but suss has no lane
+  named rebnech; its lanes are rebench, senior
+  ```
 - `max_cost_usd`, at the top or on the arm, makes `suss run` exit with an error
   before it builds any lane or runs any job, with `DRY_RUN=1` and `--check` too:
 
   ```
   $ suss run copilot-gpt rebench
   error: /home/me/evals/suss.toml: [arms.copilot-gpt] sets max_cost_usd, but suss
-  does not read it, and caps an arm's trials by max_seconds alone
+  does not read it
   ```
 
 ### `suss compare`

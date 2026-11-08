@@ -51,9 +51,9 @@ SUSS_KWARGS = ("arm", "lane", "suss_config")
 class SussMixin:
     """
     Applied before a Harbor agent class, it records the starting tree before
-    the agent runs, stops every process the agent started at the arm's
-    `max_seconds`, and writes model.patch to the logs and artifacts
-    directories, the same bytes, however the run ends.
+    the agent runs and, however the run ends, stops every process the agent
+    started and writes model.patch to the logs and artifacts directories, the
+    same bytes.
 
     A run whose patch cannot be written raises the capture's error, which
     Harbor does not treat as the agent's, so the trial fails rather than
@@ -174,9 +174,8 @@ class SussMixin:
         Run the agent, stop everything it started, capture the patch, and
         write suss.json.
 
-        The trial is `timed-out` when `max_seconds` passes, and when Harbor
-        cancels the run at its agent timeout, `harness-failed` when the agent
-        raises, and `ok` otherwise. The agent's exception, and Harbor's
+        The trial is `timed-out` when Harbor cancels the run at its agent
+        timeout, `harness-failed` when the agent raises, and `ok` otherwise. The agent's exception, and Harbor's
         cancel, are raised once the record is written, the cancel within
         CLEANUP_SECONDS so Harbor still sees its timeout.
         """
@@ -187,14 +186,8 @@ class SussMixin:
         raised: BaseException | None = None
         started = time.monotonic()
         try:
-            async with asyncio.timeout(self.settings.arm.max_seconds) as limit:
-                await self._before_agent(environment)
-                await super().run(instruction, environment, context)
-        except TimeoutError as error:
-            if limit.expired():
-                status = "timed-out"
-            else:
-                status, raised = "harness-failed", error
+            await self._before_agent(environment)
+            await super().run(instruction, environment, context)
         except asyncio.CancelledError as cancelled:
             status, raised = "timed-out", cancelled
         except BaseException as error:

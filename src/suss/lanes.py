@@ -13,13 +13,8 @@ import stat
 import tomllib
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from harbor.models.task.config import EnvironmentConfig
-
-# For the annotation alone: config imports this module for its lanes.
-if TYPE_CHECKING:
-    from suss.config import Arm
 
 
 class LaneError(Exception):
@@ -66,25 +61,6 @@ def read_tasks(tasks: Iterable[Path]) -> dict[Path, dict]:
     is not TOML.
     """
     return {task: _read_task(task / "task.toml") for task in tasks}
-
-
-def check_max_seconds(arm: "Arm", lane: str, tasks: Mapping[Path, dict]) -> None:
-    """
-    Refuse an arm whose max_seconds is not under the agent timeout of every task.
-
-    Harbor stops a trial at its agent timeout, before suss can capture the
-    patch, so max_seconds must be strictly under the shortest one in the lane.
-    An arm with no max_seconds passes. `tasks` are the lane's, as `read_tasks`
-    gives them. Raises LaneError naming a task.toml with no [agent] timeout_sec.
-    """
-    if arm.max_seconds is None:
-        return
-    shortest = min(_agent_timeout(task, toml) for task, toml in tasks.items())
-    if arm.max_seconds >= shortest:
-        raise LaneError(
-            f"arm {arm.name} sets max_seconds = {_seconds(arm.max_seconds)}, which must be "
-            f"under the {_seconds(shortest)}-second agent timeout of the tasks in {lane}"
-        )
 
 
 def needs(tasks: Mapping[Path, dict]) -> tuple[int, int]:
@@ -172,13 +148,6 @@ def _need(task: Path, toml: dict, key: str) -> int:
             f"{task / 'task.toml'}: [environment] {key} is {value!r}, not a positive whole number"
         )
     return value
-
-
-def _agent_timeout(task: Path, toml: dict) -> float:
-    timeout = _field(toml, "agent", "timeout_sec")
-    if not isinstance(timeout, int | float):
-        raise LaneError(f"{task / 'task.toml'}: no [agent] timeout_sec")
-    return timeout
 
 
 def _field(toml: dict, table: str, key: str) -> object:
@@ -610,10 +579,3 @@ def _add_key(
             "anything else, so it must be added by hand"
         )
     return added_text.encode()
-
-
-def _seconds(value: float) -> str:
-    # A TOML float such as 3000.0 prints as 3000, and a fraction as it is.
-    if float(value).is_integer():
-        return str(int(value))
-    return str(value)
