@@ -5,5 +5,5 @@ results/
 jobs/
 .claude/worktrees/
 checks/
-lanes/
+/lanes/
 .squiz.json
