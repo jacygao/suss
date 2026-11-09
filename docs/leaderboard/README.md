@@ -13,44 +13,66 @@ difference, so a run with no baseline has none.
 ## `rebench`
 
 The lane is SWE-rebench's July 2026 snapshot, 108 tasks, each graded by its
-tests. All three runs carry the same grader: dataset `swe-rebench-07-2026`,
-digest `1263fe54…`.
+tests in a verifier sandbox of its own. Every run has `copilot-gpt` as its
+baseline.
 
-| Arm | Harness | Model | Date | Tasks | Resolved | Unresolved | Invalid | Timed out | Harness failed | Resolved share | vs. baseline | AI credits | Agent time, sum of trials | Elapsed |
-|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|
-| `copilot-sonnet` | `copilot-cli` | claude-sonnet-5.5 | 2026-11-04 | 108 | 71 | 37 | 0 | 0 | 0 | 66% | none set | 3,058 (≈ $31) | 7.1 h | 0.5 h |
-| `copilot-gpt` | `copilot-cli` | gpt-6.1-sol | 2026-11-04 | 108 | 70 | 38 | 0 | 0 | 0 | 65% | −1% [−10%, +8%] vs. `copilot-sonnet` | 5,500 (≈ $55) | 13.4 h | 0.7 h |
-| `hve-sol` | `copilot-cli-hve` | gpt-6.1-sol | 2026-11-04 | 108 | 65 | 43 | 0 | 2 | 0 | 60% | −5% [−10%, +1%] vs. `copilot-gpt` | 19,151 (≈ $192) | 34.8 h | 1.4 h |
+| Arm | Harness | Model | Date | Tasks | Resolved | Unresolved | Invalid | Timed out | Harness failed | Resolved share | vs. `copilot-gpt` | Cost | Agent time, sum of trials |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|
+| `claude-opus` | Claude Code 2.1.311 | claude-opus-5-5, effort high | 2026-11-09 | 108 | 74 | 34 | 0 | 3 | 0 | 69% | +2% [−5%, +8%] | Claude Max 5x plan, about 1.6 five-hour windows | 17.8 h |
+| `copilot-gpt` | Copilot CLI 1.0.107 | gpt-6.1-sol, effort high | 2026-11-08 | 108 | 72 | 36 | 0 | 0 | 0 | 67% | baseline | 4,186 credits (≈ $42) | 11.3 h |
+| `copilot-fusion` | Copilot CLI 1.0.107 | Fusion, tier standard | 2026-11-08 | 108 | 67 | 41 | 0 | 0 | 0 | 62% | −5% [−11%, +1%] | 1,612 credits (≈ $16) | 8.5 h |
+| `copilot-opus` | Copilot CLI 1.0.107 | claude-opus-5.5, effort high | 2026-11-08 | 108 | 67 | 41 | 0 | 1 | 0 | 62% | −5% [−11%, +2%] | 11,752 credits (≈ $118) | 15.1 h |
+| `copilot-fusion-high` | Copilot CLI 1.0.107 | Fusion, tier high | 2026-11-08 | 108 | 64 | 44 | 0 | 0 | 0 | 59% | −7% [−13%, −2%] | 3,218 credits (≈ $32) | 12.2 h |
 
 | Arm | Job | Params | Median trial |
 |---|---|---|---:|
-| `copilot-sonnet` | `20261104T004023Z-1` | version 1.0.105, effort high, `max_ai_credits` 1000 | 2.5 min |
-| `copilot-gpt` | `20261104T022938Z-1` | version 1.0.105, effort high, `max_ai_credits` 1000 | 5.7 min |
-| `hve-sol` | `20261104T205810Z-1` | version 1.0.105, effort high, `max_ai_credits` 1000, `hve_core_commit` `55352bb8` | 16.7 min |
+| `claude-opus` | `20261109T002622Z-1` | version 2.1.311, effort high | 5.6 min |
+| `copilot-gpt` | `20261108T112743Z-1` | version 1.0.107, effort high | 5.2 min |
+| `copilot-fusion` | `20261108T124036Z-1` | version 1.0.107 | 3.7 min |
+| `copilot-opus` | `20261108T212444Z-1` | version 1.0.107, effort high | 5.7 min |
+| `copilot-fusion-high` | `20261108T222220Z-1` | version 1.0.107, `fusion_tier` high | 4.3 min |
 
-`suss compare rebench copilot-sonnet copilot-gpt hve-sol` prints:
+`suss compare rebench copilot-gpt copilot-fusion copilot-fusion-high copilot-opus claude-opus` prints:
 
 ```
-arm             trials  resolved  failed  timed out
-copilot-sonnet     108       66%      0%         0%
-copilot-gpt        108       65%      0%         0%
-hve-sol            108       60%      0%         2%
+arm                  trials  resolved  failed  timed out
+copilot-gpt             108       67%      0%         0%
+copilot-fusion          108       62%      0%         0%
+copilot-fusion-high     108       59%      0%         0%
+copilot-opus            108       62%      0%         1%
+claude-opus             108       69%      0%         3%
 
-vs. baseline                   resolved
-copilot-gpt - copilot-sonnet   -1% [-10%, +8%]
-hve-sol - copilot-gpt          -5% [-10%, +1%]
+vs. baseline                        resolved
+copilot-fusion - copilot-gpt        -5% [-11%, +1%]
+copilot-fusion-high - copilot-gpt   -7% [-13%, -2%]
+copilot-opus - copilot-gpt          -5% [-11%, +2%]
+claude-opus - copilot-gpt           +2% [-5%, +8%]
 ```
 
-- Both intervals include zero. On these runs neither GPT-6.1 Sol against
-  Sonnet 5.5, nor hve-core's RPI Agent against plain Copilot CLI, is a
-  difference suss can tell from no difference.
-- Each arm ran one trial per task. The interval for `copilot-gpt` is 18 points
-  wide, so arms a few points apart cannot be ranked from one run each.
-- `hve-sol`'s two timed-out trials, `nearai__ironclaw-3694` and
-  `ubugeeei-prod__vize-1508`, report no credits. Its credit total is over the
-  other 106 trials.
-- `hve-sol` used about 3.5 times `copilot-gpt`'s credits and 2.6 times its agent
-  time, on the same model.
+- **Only `copilot-fusion-high`'s interval excludes zero.** Each arm ran one
+  trial per task, so a gap of about 5 points is one suss cannot tell from no
+  difference.
+- **The same model ran better in its own harness.** Opus 5.5 resolved 74 in
+  Claude Code against 67 in Copilot CLI. Compared directly, `claude-opus -
+  copilot-opus` is +6% [+1%, +12%]: 9 tasks only Claude Code resolved, 2 only
+  Copilot CLI did.
+- **Fusion picks the model and effort per task,** and refuses `--effort`. At
+  tier standard it ran one model per task, at medium effort: GPT-6.1 Sol on
+  73, GPT-6 Luna on 26, GPT-6.1 Terra on 7, and Claude Opus 5.5 on 2. Tier
+  high runs HydraFusion, a solver followed by a review pass.
+- **Credits per resolved task:** `copilot-fusion` 24, `copilot-fusion-high`
+  50, `copilot-gpt` 58, `copilot-opus` 175.
+- **Opus thought about as much as Sol at the same effort.** In Copilot CLI, the
+  median trial's reasoning tokens were 3,725 for Opus against 3,513 for Sol. Opus
+  wrote about 40% more output and read about 40% more context.
+- **Some trials ran twice.** In `copilot-gpt`, 11 trials were cut off when the
+  host slept, and 12 were scored 0 when their verifier could not download
+  Python from GitHub to parse the test output. In `claude-opus`, 50 trials were
+  stopped by the plan's 5-hour limit. Each was run again with `harbor jobs
+  resume`, and each task has one graded trial. The 12 first attempts' saved
+  test logs, parsed offline, give the same result as their reruns on all 12.
+- `copilot-opus`'s timed-out trial reports no credits, and its credit total is
+  over the other 107 trials.
 
 ## `senior`
 
@@ -108,18 +130,20 @@ taste judges, run through Copilot CLI on `gemini-4-argon` at effort `high`.
 
 - **Unresolved** counts every valid trial that did not resolve, timed-out and
   harness-failed ones included.
-- **Invalid** counts trials whose regrade wrote an empty reward. No share counts
-  them.
-- **AI credits** are Copilot CLI's own count, its `totalNanoAiu` divided by
-  10⁹. A trial's credits are the largest value in its `agent/run.log`, and a
-  run's are the sum over its trials. One credit is about $0.01. Every run here
+- **Invalid** counts trials whose verifier wrote an empty reward. No share
+  counts them.
+- **AI credits** are Copilot CLI's own count. On `rebench`, a trial's credits
+  are `usage.ai_credits` in its `agent/suss.json`; on the other lanes, they are
+  its `totalNanoAiu` divided by 10⁹, the largest value in its `agent/run.log`.
+  A run's are the sum over its trials. One credit is about $0.01. Every run here
   was on Modal, and Modal's cost is recorded nowhere, so no figure includes it.
 - **Agent time, sum of trials** is every trial's `run_seconds` added
   together. Modal bills each sandbox for its own time, so this is what tracks
   the run's Modal cost.
 - **Elapsed** is how long the agent job took, from its first trial's start to
   its last trial's finish. Up to 32 trials ran at once. The regrade that
-  follows is not included.
+  follows is not included. `rebench` gives none, since some of its jobs ran in
+  parts.
 - **Date** is the UTC day in the job id.
 
 ## Retired lane: SWE-bench Pro
@@ -161,7 +185,17 @@ checkout of this repository. The shares, intervals and invalid trials come from
 `suss compare`:
 
 ```bash
-uv run --project <suss> suss compare rebench copilot-sonnet copilot-gpt hve-sol
+uv run --project <suss> suss compare rebench copilot-gpt copilot-fusion copilot-fusion-high copilot-opus claude-opus
+```
+
+The `rebench` counts, credits and times come from each trial's records, with
+`<job>` a job's directory such as `results/rebench/copilot-gpt/20261108T112743Z-1`:
+
+```bash
+jq -r .status <job>/*/agent/suss.json | sort | uniq -c
+jq .verifier_result.rewards.reward <job>/*/result.json | sort | uniq -c
+jq -s 'map(.usage.ai_credits // empty) | add' <job>/*/agent/suss.json
+jq -s 'map(.run_seconds) | add / 3600' <job>/*/agent/suss.json
 ```
 
 Suss no longer takes the `pro-*` lanes, and `suss compare` takes two arms or
@@ -176,8 +210,8 @@ from pathlib import Path; from suss import compare
 print(compare.report(Path("."), sys.argv[1], ["copilot-sonnet"]), end="")' pro-go
 ```
 
-The counts, credits and times come from each trial's records, with `<job>` a
-job's directory such as `results/rebench/hve-sol/20261104T205810Z-1`:
+The other lanes' counts, credits and times come from each trial's records,
+with `<job>` a job's directory such as `results/senior/copilot-gpt/20261105T205511Z-1`:
 
 ```bash
 jq -r .status <job>/*/agent/suss.json | sort | uniq -c
