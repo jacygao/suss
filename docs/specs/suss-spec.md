@@ -462,6 +462,14 @@ shares the agent's sandbox:
 harbor run -p swe-rebench-07-2026 -e modal -a oracle
 ```
 
+Each copy's `tests/test.sh` installs `python3` through apt, on an image that has
+none, just before it parses the test log. Otherwise the task's own script runs
+its parser with `uv`, which downloads a Python from GitHub on every grade and
+fails the grade when GitHub does not answer. A `test.sh` with no line that is
+exactly `if command -v python3 >/dev/null 2>&1; then`, or with more than one, or
+in a `tests` directory that is a link, makes `suss run` exit with an error
+naming it before it builds any lane or runs any job.
+
 ### `senior`
 
 All 50 tasks of Snorkel's Senior SWE-Bench snapshot `senior-swe-bench-v2026.06`,
@@ -534,8 +542,8 @@ adds `[agent] network_mode = "no-network"` where `[agent]` sets no
 as every `senior` task's does, is copied unchanged. One whose `[agent]` sets any
 other `network_mode`, or sets `allowed_hosts` with no `network_mode`, makes
 `suss run` exit with an error naming it before it builds any lane or runs any
-job. The verifier keeps the task's own network, which it uses to download a
-Python on an image that has none. A `senior` task's verifier has a public
+job. The verifier keeps the task's own network, which a `rebench` copy uses to
+install Python through apt on an image that has none. A `senior` task's verifier has a public
 network, through which the judge reaches Copilot.
 
 ## 6. Commands
@@ -956,7 +964,11 @@ src/suss/
   agents.py       SussMixin, and the agent classes arms run on
   sandbox.py      commands in the sandbox, and stopping what they started
   workspace.py    finding the workspace, and capturing the patch
-  lanes.py        building a lane's directory from the downloaded tasks
+  lanes/          building a lane's directory from the downloaded tasks
+    __init__.py   the lanes, the build, and what every lane changes in a copy
+    edits.py      changing one line or key of a task's file, and nothing else
+    rebench.py    what the rebench lane alone leaves out and changes
+    senior.py     what the senior lane alone changes
   config.py       suss.toml
   replay.py       ReplayVerifier, which grades a trial in Harbor's separate verifier
   judge.py        JudgeVerifier, which judges a senior trial there, then grades it

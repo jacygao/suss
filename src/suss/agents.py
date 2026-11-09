@@ -303,7 +303,7 @@ def grader(settings: config.Config, lane: str) -> dict[str, str]:
     if lane == lanes.SENIOR:
         download = settings.download(lane)
         reads = config.host_variables(lanes.read_tasks(lanes.lane_tasks(lane, download)))
-        found["litellm"] = lanes.PINNED_LITELLM.decode()
+        found["litellm"] = lanes.senior.PINNED_LITELLM.decode()
         found |= config.grading_choices(config.verifier_env(settings, reads))
     return found
 

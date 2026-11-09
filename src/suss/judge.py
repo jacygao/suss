@@ -67,7 +67,7 @@ EVENTS = ("model.call_start", "model.call_final_result", "assistant.message",
           "session.usage_checkpoint", "tool.execution_start", "result")
 EVENT_LINES = shlex.quote('"type": ?"(' + "|".join(re.escape(e) for e in EVENTS) + ')"')
 SENIOR_SECONDS = 300
-CLEANUP_SECONDS = lanes.JUDGE_CLEANUP_SECONDS
+CLEANUP_SECONDS = lanes.senior.JUDGE_CLEANUP_SECONDS
 SESSION_SCRIPT = "session.sh"
 
 # How each prompt ends, in place of the forced tool call senior's judges make.
@@ -331,7 +331,7 @@ class JudgeVerifier(ReplayVerifier):
         copilot_version: Any = COPILOT_VERSION,
         dotenv: Any = ".env",
         session_seconds: Any = 1200,
-        judge_seconds: Any = lanes.JUDGE_SECONDS,
+        judge_seconds: Any = lanes.senior.JUDGE_SECONDS,
         paths: JudgePaths = JudgePaths(),
         **kwargs: Any,
     ):

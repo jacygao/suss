@@ -3,11 +3,11 @@ A lane's directory, which Harbor reads as `-p lanes/<lane>`, and the checks
 made on a lane before any job.
 
 Each lane holds copies of the downloaded tasks, since a task.toml that leaves
-the agent's network open must close it, a rebench task must grade in a
-separate verifier, and a senior task's test.sh must pin litellm.
+the agent's network open must close it, and a task must grade in a separate
+verifier. What one lane alone changes is in that lane's own module, which
+`LANE_MODULES` names.
 """
 
-import re
 import shutil
 import stat
 import tomllib
@@ -16,10 +16,8 @@ from pathlib import Path
 
 from harbor.models.task.config import EnvironmentConfig
 
-
-class LaneError(Exception):
-    """A lane cannot be built from the tasks given, or cannot run the arm given."""
-
+from suss.lanes import rebench, senior
+from suss.lanes.edits import LaneError, add_key
 
 MIB = 2**20
 
@@ -28,19 +26,12 @@ SENIOR = "senior"
 
 LANES = (REBENCH, SENIOR)
 
+# Each lane's module, which names the tasks the lane leaves out as UNGRADEABLE,
+# and gives the files its copy of a task writes with `rewrite(task, toml)`.
+LANE_MODULES = {REBENCH: rebench, SENIOR: senior}
+
 # The lanes whose trials Harbor grades in a sandbox of their own, in the agent job.
 SEPARATE_VERIFIER = (REBENCH, SENIOR)
-
-# How long suss's judge may take on a senior trial, its install included: about
-# three times the longest the judge has taken on one.
-JUDGE_SECONDS = 1800
-# How long putting the workspace back may take once the judge has stopped.
-JUDGE_CLEANUP_SECONDS = 300
-# What a senior task's verifier timeout gains, so the judge never shortens the
-# time its tests had.
-JUDGE_MARGIN_SECONDS = JUDGE_SECONDS + JUDGE_CLEANUP_SECONDS
-# Harbor's verifier timeout for a task.toml that sets none.
-VERIFIER_SECONDS = 600.0
 
 
 def check_lane(lane: str) -> None:
@@ -185,26 +176,17 @@ def download_tasks(download: Path) -> list[Path]:
     return sorted(found, key=lambda task: task.name)
 
 
-# Their builds need Maven or Gradle artifacts that no longer exist, so no fix passes their tests.
-UNGRADEABLE = (
-    "langchain4j__langchain4j-5315",
-    "langchain4j__langchain4j-5367",
-    "openrewrite__rewrite-7784",
-)
-
-
 def lane_tasks(lane: str, download: Path) -> list[Path]:
     """
-    The tasks of the download that `lane` takes, sorted by name: on rebench,
-    each but those in UNGRADEABLE, and on senior, every one. A download
-    lacking any of UNGRADEABLE is not an error.
+    The tasks of the download that `lane` takes, sorted by name: each but
+    those its module names in UNGRADEABLE. A download lacking any of them is
+    not an error.
 
     Raises LaneError as `download_tasks` does, and when the download holds no
     other task.
     """
-    found = download_tasks(download)
-    if lane == REBENCH:
-        found = [task for task in found if task.name not in UNGRADEABLE]
+    left_out = LANE_MODULES[lane].UNGRADEABLE
+    found = [task for task in download_tasks(download) if task.name not in left_out]
     if not found:
         source = Path(download).resolve()
         raise LaneError(
@@ -225,17 +207,16 @@ def build(lane: str, download: Path, lanes: Path, check: bool = False) -> Path:
     task.toml adds `[agent] network_mode = "no-network"` unless its agent's
     network is already closed. On a lane in SEPARATE_VERIFIER, the task.toml
     also sets `[verifier] environment_mode = "separate"`, as `_separate` gives
-    it. On senior, each
-    copy's verifier timeout gains JUDGE_MARGIN_SECONDS, as `_judge_room` gives
-    it, and its tests/test.sh pins litellm, as `_pinned` gives it.
+    it. The lane's module then rewrites whatever that lane alone changes,
+    task.toml included.
 
     With `check`, it makes `lanes/<lane>-check/` instead, holding only the
     first task by name. Every other file is copied as it is, mode included.
     Whatever an earlier build left is removed. Raises LaneError as
     `lane_tasks` does, naming a task.toml whose agent network `_without_network`
-    refuses or that a key cannot be added to, naming what `_separate`,
-    `_judge_room` and `_pinned` refuse, naming a senior tests/ that is a link,
-    and when the lane's path is a link or anything else but a
+    refuses or that a key cannot be added to, naming what `_separate` and the
+    lane module's `rewrite` refuse, and when the lane's path is a link or
+    anything else but a
     directory. Every file it rewrites is read before the lane is touched, so
     an error leaves an earlier build as it was.
     """
@@ -301,48 +282,9 @@ def _plan_build(
         toml = _without_network(task / "task.toml")
         if lane in SEPARATE_VERIFIER:
             toml = _separate(task / "task.toml", toml)
-        if lane == SENIOR:
-            toml = _judge_room(task / "task.toml", toml)
-        rewritten[task] = {"task.toml": (toml, task / "task.toml")}
-        if lane == SENIOR:
-            # The copy keeps the link, so a file written into tests/ would be written through it.
-            tests = (task / TEST_SH).parent
-            if tests.is_symlink():
-                raise LaneError(f"{tests}: a link, so the lane cannot write into a copy of it")
-            rewritten[task][TEST_SH] = (_pinned(task / TEST_SH), task / TEST_SH)
+        files = {"task.toml": toml, **LANE_MODULES[lane].rewrite(task, toml)}
+        rewritten[task] = {name: (content, task / name) for name, content in files.items()}
     return directory, rewritten
-
-
-TEST_SH = "tests/test.sh"
-# The requirement every senior task's test.sh installs, and what the lane's copy
-# installs in its place: every litellm from 1.106.0 fails each judge's call.
-LITELLM = b"litellm>=1.0,<2.0"
-PINNED_LITELLM = b"litellm>=1.0,<1.106"
-
-
-def _pinned(path: Path) -> bytes:
-    """
-    The test.sh at `path` with its one line that is exactly LITELLM made
-    PINNED_LITELLM, its bytes otherwise unchanged.
-
-    Raises LaneError naming the file when it cannot be read, or when not
-    exactly one of its lines is LITELLM.
-    """
-    try:
-        lines = path.read_bytes().splitlines(keepends=True)
-    except FileNotFoundError:
-        raise LaneError(f"{path}: no such file, so the lane cannot pin litellm in it") from None
-    except OSError as error:
-        raise LaneError(f"{path}: cannot be read: {error.strerror}") from None
-    found = [number for number, line in enumerate(lines) if line.rstrip(b"\r\n") == LITELLM]
-    if len(found) != 1:
-        raise LaneError(
-            f"{path}: has {len(found)} lines that are {LITELLM.decode()}, so the lane cannot "
-            f"pin litellm to {PINNED_LITELLM.decode()}; it takes a test.sh with exactly one"
-        )
-    line = lines[found[0]]
-    lines[found[0]] = PINNED_LITELLM + line[len(LITELLM) :]
-    return b"".join(lines)
 
 
 def _remove_from_read_only(function, path: str, error: BaseException) -> None:
@@ -385,7 +327,7 @@ def _without_network(path: Path) -> bytes:
             f"{path}: sets [agent] allowed_hosts with no network_mode, which Harbor "
             'refuses; it takes them only with network_mode = "allowlist"'
         )
-    return _add_key(path, path.read_bytes(), original, "agent", "network_mode", "no-network")
+    return add_key(path, path.read_bytes(), original, "agent", "network_mode", "no-network")
 
 
 def _separate(path: Path, text: bytes) -> bytes:
@@ -397,7 +339,7 @@ def _separate(path: Path, text: bytes) -> bytes:
 
     Raises LaneError naming the file when its verifier sets another mode, or
     an environment of its own, which ReplayVerifier does not grade in, and as
-    `_add_key` does.
+    `add_key` does.
     """
     original = tomllib.loads(text.decode())
     verifier = original.get("verifier", {})
@@ -416,117 +358,4 @@ def _separate(path: Path, text: bytes) -> bytes:
             f"{path}: sets [verifier] environment_mode = {mode!r}, but the lane grades its"
             ' trials in a separate verifier; it takes only "separate"'
         )
-    return _add_key(path, text, original, "verifier", "environment_mode", "separate")
-
-
-def _judge_room(path: Path, text: bytes) -> bytes:
-    """
-    The task.toml `text`, read from `path`, with its `[verifier] timeout_sec`,
-    or Harbor's default where it sets none, raised by JUDGE_MARGIN_SECONDS.
-
-    Raises LaneError naming the file when the timeout is not a positive
-    number, and as `_add_key` and `_replace_key` do.
-    """
-    original = tomllib.loads(text.decode())
-    verifier = original.get("verifier", {})
-    if not isinstance(verifier, dict):
-        verifier = {}
-    timeout = verifier.get("timeout_sec", VERIFIER_SECONDS)
-    if isinstance(timeout, bool) or not isinstance(timeout, int | float) or timeout <= 0:
-        raise LaneError(
-            f"{path}: [verifier] timeout_sec is {timeout!r}, not a positive number of seconds,"
-            " so the lane cannot make room in it for the judge"
-        )
-    raised = float(timeout) + JUDGE_MARGIN_SECONDS
-    if "timeout_sec" in verifier:
-        return _replace_key(path, text, original, "verifier", "timeout_sec", raised)
-    return _add_key(path, text, original, "verifier", "timeout_sec", raised)
-
-
-def _header(table: str) -> re.Pattern:
-    """The table's header as TOML allows it to be spelled, bare-keyed."""
-    return re.compile(rf"[ \t]*\[[ \t]*{table}[ \t]*\][ \t]*(#.*)?\r?\n?\Z")
-
-
-def _replace_key(
-    path: Path, text: bytes, original: dict, table: str, key: str, value: float
-) -> bytes:
-    """
-    The task.toml `text`, read from `path` as `original`, with the line that
-    sets `key` in its `[table]` made `key = value`, its text otherwise
-    unchanged.
-
-    Raises LaneError naming the file when no one line sets it, or when the
-    result does not parse to the original with that one value changed.
-    """
-    lines = text.decode().splitlines(keepends=True)
-    headers = [number for number, found in enumerate(lines) if _header(table).match(found)]
-    setting = re.compile(rf"[ \t]*{key}[ \t]*=")
-    found = []
-    if len(headers) == 1:
-        for number in range(headers[0] + 1, len(lines)):
-            if lines[number].lstrip().startswith("["):
-                break
-            if setting.match(lines[number]):
-                found.append(number)
-    expected = {**original, table: {**original[table], key: value}}
-    if len(found) == 1:
-        line = lines[found[0]]
-        lines[found[0]] = f"{key} = {value!r}" + line[len(line.rstrip("\r\n")) :]
-        changed = "".join(lines)
-        try:
-            if tomllib.loads(changed) == expected:
-                return changed.encode()
-        except tomllib.TOMLDecodeError:
-            pass
-    raise LaneError(
-        f"{path}: [{table}] {key} cannot be changed without changing anything else,"
-        " so it must be changed by hand"
-    )
-
-
-def _add_key(
-    path: Path, text: bytes, original: dict, table: str, key: str, value: str | float
-) -> bytes:
-    """
-    The task.toml `text`, read from `path` as `original`, with `key = value`
-    added to its `[table]`, its text otherwise unchanged. A string value is
-    quoted.
-
-    The line goes directly under the table's header, or under a new one at
-    the end where there is none. Raises LaneError naming the file when the
-    result does not parse to the original plus that one key.
-    """
-    line = f'{key} = "{value}"' if isinstance(value, str) else f"{key} = {value!r}"
-    lines = text.decode().splitlines(keepends=True)
-    headers = [number for number, found in enumerate(lines) if _header(table).match(found)]
-    if len(headers) == 1:
-        header = lines[headers[0]]
-        # The added line ends as the header does, \r\n or \n, and a header
-        # ending the file without one gains one.
-        newline = header[len(header.rstrip("\r\n")) :]
-        if not newline:
-            lines[headers[0]] += "\n"
-            newline = "\n"
-        lines.insert(headers[0] + 1, line + newline)
-    else:
-        if lines and not lines[-1].endswith("\n"):
-            lines[-1] += "\n"
-        lines.append(f"\n[{table}]\n{line}\n")
-    added_text = "".join(lines)
-    existing = original.get(table, {})
-    if not isinstance(existing, dict):
-        existing = {}
-    expected = {**original, table: {**existing, key: value}}
-    try:
-        added = tomllib.loads(added_text)
-    except tomllib.TOMLDecodeError:
-        added = None
-    # A header inside a multi-line string, or a table made some other way,
-    # puts the line where it changes something else, or breaks the file.
-    if added != expected:
-        raise LaneError(
-            f"{path}: [{table}] {key} cannot be added to it without changing "
-            "anything else, so it must be added by hand"
-        )
-    return added_text.encode()
+    return add_key(path, text, original, "verifier", "environment_mode", "separate")

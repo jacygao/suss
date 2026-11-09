@@ -1,5 +1,6 @@
 import re
 import shutil
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -71,6 +72,20 @@ mcp_servers = []
 
 NO_NETWORK = 'network_mode = "no-network"'
 
+# The end of a test.sh as the snapshot ships it, where it chooses what runs its parser.
+REBENCH_TEST_SH = b"""\
+#!/bin/bash
+set -euo pipefail
+cd /tests
+set +e
+if command -v python3 >/dev/null 2>&1; then
+  python3 parser.py | tee -a "$LOG_FILE"
+elif command -v uv >/dev/null 2>&1; then
+  uv run parser.py | tee -a "$LOG_FILE"
+fi
+"""
+PARSER_LINE = b"if command -v python3 >/dev/null 2>&1; then\n"
+
 
 def make_rebench(root: Path, names: list[str], toml: str = REBENCH_TOML) -> Path:
     """A download holding `names`, made in the order given, each laid out as the snapshot's are."""
@@ -83,7 +98,7 @@ def make_rebench(root: Path, names: list[str], toml: str = REBENCH_TOML) -> Path
         (task / "instruction.md").write_text(f"Fix {name}.\n")
         (task / "environment" / "Dockerfile").write_text("FROM scratch\n")
         (task / "tests" / "config.json").write_bytes(b'{"name": "\xc3\xa9"}\r\n')
-        (task / "tests" / "test.sh").write_text("#!/bin/bash\nexit 0\n")
+        (task / "tests" / "test.sh").write_bytes(REBENCH_TEST_SH)
         (task / "solution" / "solve.sh").write_text("#!/bin/bash\nexit 0\n")
     return root
 
@@ -94,11 +109,11 @@ def toml_of(task: Path) -> dict:
 
 
 def files_of(task: Path) -> dict[str, bytes]:
-    """Every file under `task` but its task.toml, by path relative to it."""
+    """Every file under `task` but the two a rebench copy rewrites, by path relative to it."""
     return {
         str(path.relative_to(task)): path.read_bytes()
         for path in sorted(task.rglob("*"))
-        if path.is_file() and path.name != "task.toml"
+        if path.is_file() and str(path.relative_to(task)) not in ("task.toml", "tests/test.sh")
     }
 
 
@@ -368,7 +383,7 @@ def test_the_tasks_the_lane_leaves_out_are_the_specs():
     sentences = re.findall(r"It leaves out ([^.]*?), whose", SPEC.read_text().replace("\n", " "))
 
     assert len(sentences) == 1, f"expected one sentence naming the tasks left out in {SPEC}"
-    assert sorted(re.findall(r"`([^`]+)`", sentences[0])) == sorted(lanes.UNGRADEABLE)
+    assert sorted(re.findall(r"`([^`]+)`", sentences[0])) == sorted(lanes.rebench.UNGRADEABLE)
 
 
 def test_the_rebench_lane_leaves_out_the_tasks_no_fix_can_pass(tmp_path: Path):
@@ -721,11 +736,140 @@ def test_the_senior_lane_takes_every_task_of_its_download(tmp_path: Path):
 
 def test_a_rebench_build_leaves_its_test_sh_unpinned(tmp_path: Path):
     source = make_rebench(tmp_path / "source", ["owner__repo-1"])
-    (source / "owner__repo-1" / "tests" / "test.sh").write_bytes(LITELLM + b"\n")
+    (source / "owner__repo-1" / "tests" / "test.sh").write_bytes(REBENCH_TEST_SH + LITELLM + b"\n")
 
     built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
 
-    assert (built / "owner__repo-1" / "tests" / "test.sh").read_bytes() == LITELLM + b"\n"
+    copied = (built / "owner__repo-1" / "tests" / "test.sh").read_bytes().splitlines()
+    assert copied[-1] == LITELLM
+    assert PINNED not in copied
+
+
+INSTALL_LINES = [line + b"\n" for line in lanes.rebench.INSTALL_PYTHON]
+
+
+def test_a_rebench_copy_differs_from_its_task_in_the_python_install_above_its_parser_alone(
+    tmp_path: Path,
+):
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"])
+
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes") / "owner__repo-1"
+
+    before = REBENCH_TEST_SH.splitlines(keepends=True)
+    at = before.index(PARSER_LINE)
+    assert (built / "tests" / "test.sh").read_bytes().splitlines(keepends=True) == (
+        before[:at] + INSTALL_LINES + before[at:]
+    )
+
+
+def test_a_rebench_test_sh_with_crlf_lines_gains_crlf_lines(tmp_path: Path):
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"])
+    test_sh = source / "owner__repo-1" / "tests" / "test.sh"
+    test_sh.write_bytes(REBENCH_TEST_SH.replace(b"\n", b"\r\n"))
+
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes") / "owner__repo-1"
+
+    added = b"".join(line.replace(b"\n", b"\r\n") for line in INSTALL_LINES)
+    assert (built / "tests" / "test.sh").read_bytes() == test_sh.read_bytes().replace(
+        PARSER_LINE.replace(b"\n", b"\r\n"), added + PARSER_LINE.replace(b"\n", b"\r\n")
+    )
+
+
+@pytest.mark.parametrize(
+    "rewrite",
+    [
+        lambda text: text.replace(PARSER_LINE, b""),
+        lambda text: text.replace(PARSER_LINE, b"  " + PARSER_LINE),
+        lambda text: text.replace(PARSER_LINE, PARSER_LINE * 2),
+        None,
+    ],
+    ids=["no-line", "indented", "twice", "no-test-sh"],
+)
+def test_a_rebench_test_sh_without_the_one_parser_line_is_refused_naming_it_and_changes_nothing(
+    tmp_path: Path, rewrite
+):
+    source = make_rebench(tmp_path / "source", ["owner__repo-1", "owner__repo-2"])
+    earlier = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
+    test_sh = source / "owner__repo-2" / "tests" / "test.sh"
+    if rewrite is None:
+        test_sh.unlink()
+    else:
+        test_sh.write_bytes(rewrite(test_sh.read_bytes()))
+    before = every_file(earlier)
+
+    with pytest.raises(LaneError) as error:
+        lanes.check_buildable(lanes.REBENCH, source, tmp_path / "lanes")
+    with pytest.raises(LaneError):
+        lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
+
+    assert str(error.value).startswith(f"{test_sh}: ")
+    assert "install Python" in str(error.value)
+    assert every_file(earlier) == before
+
+
+def test_a_rebench_tests_directory_that_is_a_link_is_refused_and_the_download_left_alone(
+    tmp_path: Path,
+):
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"])
+    tests = source / "owner__repo-1" / "tests"
+    shutil.move(tests, source / "owner__repo-1" / "real-tests")
+    tests.symlink_to("real-tests")
+    downloaded = every_file(source)
+
+    with pytest.raises(LaneError) as error:
+        lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
+
+    assert str(error.value).startswith(f"{tests}: ")
+    assert every_file(source) == downloaded
+
+
+# A PATH holding only these stand-ins, so the host's own python3 and apt-get are never found.
+FAKE_APT_GET = """\
+#!/bin/sh
+echo "apt-get $*" >> "$CALLS"
+if [ "$1" = install ]; then
+  [ "$APT" = works ] || exit 100
+  printf '#!/bin/sh\\necho "python3 $*"\\n' > "${0%/*}/python3"
+  /bin/chmod +x "${0%/*}/python3"
+fi
+"""
+
+
+@pytest.mark.parametrize(
+    "has_python, apt, calls, output",
+    [
+        (False, "works", ["apt-get update -qq", "apt-get install -y -qq --no-install-recommends python3"], "python3 parser.py"),
+        (False, "fails", ["apt-get update -qq", "apt-get install -y -qq --no-install-recommends python3"], "uv run parser.py"),
+        (True, "works", [], "python3 parser.py"),
+    ],
+    ids=["installs-python", "apt-fails-so-uv-runs-it", "python-already-there"],
+)
+def test_the_copys_test_sh_runs_its_parser_on_pythons_from_apt_and_falls_back_to_uv(
+    tmp_path: Path, has_python: bool, apt: str, calls: list[str], output: str
+):
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"])
+    (source / "owner__repo-1" / "tests" / "test.sh").write_bytes(
+        b"set +e\n" + PARSER_LINE + b"  python3 parser.py\nelse\n  echo uv run parser.py\nfi\n"
+    )
+    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes") / "owner__repo-1"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "apt-get").write_text(FAKE_APT_GET)
+    (bin_dir / "apt-get").chmod(0o755)
+    if has_python:
+        (bin_dir / "python3").write_text('#!/bin/sh\necho "python3 $*"\n')
+        (bin_dir / "python3").chmod(0o755)
+    calls_file = tmp_path / "calls"
+
+    ran = subprocess.run(
+        ["/bin/bash", str(built / "tests" / "test.sh")],
+        env={"PATH": str(bin_dir), "CALLS": str(calls_file), "APT": apt},
+        capture_output=True,
+        text=True,
+    )
+
+    assert ran.stdout.splitlines()[-1] == output, ran.stdout + ran.stderr
+    assert (calls_file.read_text().splitlines() if calls_file.exists() else []) == calls
 
 
 def test_harbor_grades_a_rebench_copy_in_a_separate_verifier_and_the_download_in_shared_mode(
@@ -808,7 +952,7 @@ def test_harbor_reads_a_senior_copy_with_its_own_agent_allowlist_and_a_separate_
 
 
 def test_the_judges_margin_is_its_limit_and_its_cleanup():
-    assert lanes.JUDGE_MARGIN_SECONDS == lanes.JUDGE_SECONDS + lanes.JUDGE_CLEANUP_SECONDS == 2100
+    assert lanes.senior.JUDGE_MARGIN_SECONDS == lanes.senior.JUDGE_SECONDS + lanes.senior.JUDGE_CLEANUP_SECONDS == 2100
 
 
 @pytest.mark.parametrize(
@@ -841,7 +985,7 @@ def test_the_shortest_senior_verifier_timeout_leaves_its_tests_their_own_time(tm
     built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / INVESTIGATE
 
     task = TaskConfig.model_validate_toml((built / "task.toml").read_text())
-    assert task.verifier.timeout_sec == 300 + lanes.JUDGE_SECONDS + lanes.JUDGE_CLEANUP_SECONDS
+    assert task.verifier.timeout_sec == 300 + lanes.senior.JUDGE_SECONDS + lanes.senior.JUDGE_CLEANUP_SECONDS
 
 
 def test_a_senior_verifier_with_no_timeout_gains_the_margin_on_harbors_default(tmp_path: Path):

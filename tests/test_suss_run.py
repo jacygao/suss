@@ -127,6 +127,12 @@ def stand_in(source: Path, target: Path) -> Path:
     return target
 
 
+def write_test_sh(task: Path) -> None:
+    """A test.sh holding only the line the rebench lane installs Python above."""
+    (task / "tests").mkdir(parents=True)
+    (task / "tests" / "test.sh").write_text("if command -v python3 >/dev/null 2>&1; then\n")
+
+
 def write_task(
     tasks: Path,
     name: str,
@@ -139,6 +145,7 @@ def write_task(
     task = tasks / name
     (task / "environment").mkdir(parents=True)
     (task / "environment" / "Dockerfile").write_text("FROM scratch\n")
+    write_test_sh(task)
     environment = 'network_mode = "public"\n'
     environment += f'docker_image = "{image}"\n' if image else ""
     environment += f"cpus = {cpus}\n" if cpus is not None else ""
@@ -488,7 +495,7 @@ def assert_nothing_ran(project: Project) -> None:
 def test_the_lane_checks_pass_over_a_task_the_lane_leaves_out(project, monkeypatch, check):
     # Too large for Docker, and first by name, so that a check would take it.
     write_task(project.tasks, "AAA__never-1", cpus=64)
-    monkeypatch.setattr(lanes, "UNGRADEABLE", ("AAA__never-1",))
+    monkeypatch.setattr(lanes.rebench, "UNGRADEABLE", ("AAA__never-1",))
 
     assert project.run("peer-review", "rebench", *(["--check"] if check else [])) == 0
 
@@ -583,7 +590,7 @@ def test_a_task_that_sets_the_agents_network_is_refused_before_anything_runs(
 )
 def test_a_task_toml_suss_cannot_read_is_an_error_naming_it(project, capfd, contents, message):
     task = project.tasks / "owner__repo-ggg"
-    task.mkdir()
+    write_test_sh(task)
     (task / "task.toml").write_text(contents)
 
     code = project.run("peer-review", "rebench")
@@ -1029,7 +1036,7 @@ def test_a_task_with_no_cpus_or_memory_mb_is_an_error_naming_it(project, capfd, 
 @pytest.mark.parametrize("value", ["0", "-1", "1.5", '"1"', "true"])
 def test_a_task_whose_cpus_is_not_a_positive_whole_number_is_an_error_naming_it(project, capfd, value):
     task = project.tasks / "owner__odd-1"
-    task.mkdir()
+    write_test_sh(task)
     (task / "task.toml").write_text(
         f"[agent]\ntimeout_sec = 3000\n\n[environment]\ncpus = {value}\nmemory_mb = 4096\n"
     )
