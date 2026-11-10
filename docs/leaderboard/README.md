@@ -148,10 +148,10 @@ taste judges, run through Copilot CLI on `gemini-4-argon` at effort `high`.
 ## How to read the columns
 
 - **Runs** is how many times the arm ran every task, each run a job of its own
-  with one trial per task. **Resolved**, **Unresolved**, **Invalid**, **Timed
-  out** and **Harness failed** count trials over all of an arm's runs, so they
-  add up to its tasks times its runs, and its resolved share pools them, as
-  `suss compare` does.
+  with one trial per task. The trial counts pool all of an arm's runs, as
+  `suss compare` does: **Resolved**, **Unresolved** and **Invalid** add up to
+  its tasks times its runs, and **Timed out** and **Harness failed** count
+  trials already in Unresolved.
 - **Unresolved** counts every valid trial that did not resolve, timed-out and
   harness-failed ones included.
 - **Invalid** counts trials whose verifier wrote an empty reward. No share
