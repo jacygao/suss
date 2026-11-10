@@ -1,7 +1,7 @@
 # Suss leaderboard
 
-Every harness run suss has records for, one trial per task, a section for each
-lane. The lanes measure different things, so their numbers never compare
+Every harness run suss has records for, one trial per task in each run, a
+section for each lane. The lanes measure different things, so their numbers never compare
 across lanes: `rebench` grades by tests alone, and `senior` adds judges of code
 quality.
 
@@ -16,20 +16,20 @@ The lane is SWE-rebench's July 2026 snapshot, 108 tasks, each graded by its
 tests in a verifier sandbox of its own. Every run has `copilot-gpt` as its
 baseline.
 
-| Arm | Harness | Model | Date | Tasks | Resolved | Unresolved | Invalid | Timed out | Harness failed | Resolved share | vs. `copilot-gpt` | Cost, USD at pay-as-you-go prices | Agent time, sum of trials |
-|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|
-| `claude-opus` | Claude Code 2.1.311 | claude-opus-5-5, effort high | 2026-11-09 | 108 | 74 | 34 | 0 | 3 | 0 | 69% | +2% [−5%, +8%] | $118.98 | 17.8 h |
-| `copilot-gpt` | Copilot CLI 1.0.107 | gpt-6.1-sol, effort high | 2026-11-08 | 108 | 72 | 36 | 0 | 0 | 0 | 67% | baseline | $41.86 | 11.3 h |
-| `copilot-sonnet` | Copilot CLI 1.0.107 | claude-sonnet-5.5, effort high | 2026-11-09 | 108 | 72 | 36 | 0 | 0 | 0 | 67% | not computed | $36.18 | 12.5 h |
-| `copilot-fusion` | Copilot CLI 1.0.107 | Fusion, tier standard | 2026-11-08 | 108 | 67 | 41 | 0 | 0 | 0 | 62% | −5% [−11%, +1%] | $16.12 | 8.5 h |
-| `copilot-opus` | Copilot CLI 1.0.107 | claude-opus-5.5, effort high | 2026-11-08 | 108 | 67 | 41 | 0 | 1 | 0 | 62% | −5% [−11%, +2%] | $117.52 | 15.1 h |
-| `copilot-fusion-high` | Copilot CLI 1.0.107 | Fusion, tier high | 2026-11-08 | 108 | 64 | 44 | 0 | 0 | 0 | 59% | −7% [−13%, −2%] | $32.18 | 12.2 h |
+| Arm | Harness | Model | Date | Tasks | Runs | Resolved | Unresolved | Invalid | Timed out | Harness failed | Resolved share | vs. `copilot-gpt` | Cost per run, USD at pay-as-you-go prices | Agent time per run, sum of trials |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|
+| `claude-opus` | Claude Code 2.1.311 | claude-opus-5-5, effort high | 2026-11-09 | 108 | 1 | 74 | 34 | 0 | 3 | 0 | 69% | +2% [−5%, +8%] | $118.98 | 17.8 h |
+| `copilot-gpt` | Copilot CLI 1.0.107 | gpt-6.1-sol, effort high | 2026-11-08 | 108 | 1 | 72 | 36 | 0 | 0 | 0 | 67% | baseline | $41.86 | 11.3 h |
+| `copilot-sonnet` | Copilot CLI 1.0.107 | claude-sonnet-5.5, effort high | 2026-11-09, 2026-11-10 | 108 | 2 | 141 | 75 | 0 | 2 | 0 | 65% | not computed | $35.89 | 14.4 h |
+| `copilot-fusion` | Copilot CLI 1.0.107 | Fusion, tier standard | 2026-11-08 | 108 | 1 | 67 | 41 | 0 | 0 | 0 | 62% | −5% [−11%, +1%] | $16.12 | 8.5 h |
+| `copilot-opus` | Copilot CLI 1.0.107 | claude-opus-5.5, effort high | 2026-11-08 | 108 | 1 | 67 | 41 | 0 | 1 | 0 | 62% | −5% [−11%, +2%] | $117.52 | 15.1 h |
+| `copilot-fusion-high` | Copilot CLI 1.0.107 | Fusion, tier high | 2026-11-08 | 108 | 1 | 64 | 44 | 0 | 0 | 0 | 59% | −7% [−13%, −2%] | $32.18 | 12.2 h |
 
 | Arm | Job | Params | Median trial |
 |---|---|---|---:|
 | `claude-opus` | `20261109T002622Z-1` | version 2.1.311, effort high | 5.6 min |
 | `copilot-gpt` | `20261108T112743Z-1` | version 1.0.107, effort high | 5.2 min |
-| `copilot-sonnet` | `20261109T221503Z-1` | version 1.0.107, effort high | 3.9 min |
+| `copilot-sonnet` | `20261109T221503Z-1`, `20261110T074227Z-1` | version 1.0.107, effort high | 3.9 min, 4.5 min |
 | `copilot-fusion` | `20261108T124036Z-1` | version 1.0.107 | 3.7 min |
 | `copilot-opus` | `20261108T212444Z-1` | version 1.0.107, effort high | 5.7 min |
 | `copilot-fusion-high` | `20261108T222220Z-1` | version 1.0.107, `fusion_tier` high | 4.3 min |
@@ -51,14 +51,17 @@ copilot-opus - copilot-gpt          -5% [-11%, +2%]
 claude-opus - copilot-gpt           +2% [-5%, +8%]
 ```
 
-- **Only `copilot-fusion-high`'s interval excludes zero.** Each arm ran one
-  trial per task, so a gap of about 5 points is one suss cannot tell from no
+- **Only `copilot-fusion-high`'s interval excludes zero.** With one run of
+  each arm, a gap of about 5 points is one suss cannot tell from no
   difference.
-- **`copilot-sonnet` resolved as many tasks as `copilot-gpt`,** 72 each, but
-  its difference has no interval. It ran on Docker on a Windows PC, under
-  WSL2 with 16 CPUs and 24.5 GiB for Docker, 6 trials at once, and
-  `copilot-gpt`'s trials are on the machine that ran it on Modal. `suss
-  compare` pairs two arms only from one `results/` directory.
+- **One run of an arm moves by a few points on its own.** `copilot-sonnet`
+  resolved 72 tasks in its first run and 69 in its second, and 15 of the 108
+  went differently between them (14%): 9 only the first resolved, 6 only the
+  second.
+- **`copilot-sonnet`'s difference has no interval.** It ran on Docker on a
+  Windows PC, under WSL2 with 16 CPUs and 24.5 GiB for Docker, 6 trials at
+  once, and `copilot-gpt`'s trials are on the machine that ran it on Modal.
+  `suss compare` pairs two arms only from one `results/` directory.
 - **The same model ran better in its own harness.** Opus 5.5 resolved 74 in
   Claude Code against 67 in Copilot CLI. Compared directly, `claude-opus -
   copilot-opus` is +6% [+1%, +12%]: 9 tasks only Claude Code resolved, 2 only
@@ -68,11 +71,11 @@ claude-opus - copilot-gpt           +2% [-5%, +8%]
   73, GPT-6 Luna on 26, GPT-6.1 Terra on 7, and Claude Opus 5.5 on 2. Tier
   high runs HydraFusion, a solver followed by a review pass.
 - **Cost per resolved task:** `copilot-fusion` $0.24, `copilot-fusion-high`
-  $0.50, `copilot-sonnet` $0.50, `copilot-gpt` $0.58, `claude-opus` $1.61,
+  $0.50, `copilot-sonnet` $0.51, `copilot-gpt` $0.58, `claude-opus` $1.61,
   `copilot-opus` $1.75.
 - **Cost is a price, not what was paid.** A Copilot CLI run's is its AI
   credits at $0.01 each: 4,186, 1,612, 11,752, 3,218 and, for
-  `copilot-sonnet`, 3,618. `claude-opus`'s is
+  `copilot-sonnet`'s two, 3,618 and 3,560. `claude-opus`'s is
   Anthropic's API price for its tokens; it ran on a Claude Max 5x plan, which
   it cost about 1.6 five-hour windows and nothing more.
 - **Opus thought about as much as Sol at the same effort.** In Copilot CLI, the
@@ -81,10 +84,11 @@ claude-opus - copilot-gpt           +2% [-5%, +8%]
 - **Some trials ran twice.** In `copilot-gpt`, 11 trials were cut off when the
   host slept, and 12 were scored 0 when their verifier could not download
   Python from GitHub to parse the test output. In `claude-opus`, 50 trials were
-  stopped by the plan's 5-hour limit. In `copilot-sonnet`, 53 trials errored
-  when the PC's Docker engine stopped answering, the second time because its
-  drive was full. Each was run again with `harbor jobs
-  resume`, and each task has one graded trial. The 12 first attempts' saved
+  stopped by the plan's 5-hour limit. In `copilot-sonnet`'s first run, 53
+  trials errored when the PC's Docker engine stopped answering, the second
+  time because its drive was full, and in its second, 2 errored when Docker
+  could not reach its credential helper. Each was run again with `harbor jobs
+  resume`, and each task has one graded trial in each run. The 12 first attempts' saved
   test logs, parsed offline, give the same result as their reruns on all 12.
 - `copilot-opus`'s timed-out trial reports no credits, and its cost is over the
   other 107 trials.
@@ -99,9 +103,9 @@ taste judges, run through Copilot CLI on `gemini-4-argon` at effort `high`.
 
 ### Correctness
 
-| Arm | Harness | Model | Date | Investigate tasks | Resolved | Resolved share | Design tasks graded | vs. baseline | AI credits | Agent time, sum of trials |
-|---|---|---|---|---:|---:|---:|---:|---|---:|---:|
-| `copilot-gpt` | `copilot-cli` | gpt-6.1-sol | 2026-11-05 | 25 | 8 | 32% | 0 of 25 | none set | 4,739 (≈ $47) | 11.3 h |
+| Arm | Harness | Model | Date | Investigate tasks | Runs | Resolved | Resolved share | Design tasks graded | vs. baseline | AI credits | Agent time, sum of trials |
+|---|---|---|---|---:|---:|---:|---:|---:|---|---:|---:|
+| `copilot-gpt` | `copilot-cli` | gpt-6.1-sol | 2026-11-05 | 25 | 1 | 8 | 32% | 0 of 25 | none set | 4,739 (≈ $47) | 11.3 h |
 
 ### Code quality
 
@@ -143,6 +147,11 @@ taste judges, run through Copilot CLI on `gemini-4-argon` at effort `high`.
 
 ## How to read the columns
 
+- **Runs** is how many times the arm ran every task, each run a job of its own
+  with one trial per task. **Resolved**, **Unresolved**, **Invalid**, **Timed
+  out** and **Harness failed** count trials over all of an arm's runs, so they
+  add up to its tasks times its runs, and its resolved share pools them, as
+  `suss compare` does.
 - **Unresolved** counts every valid trial that did not resolve, timed-out and
   harness-failed ones included.
 - **Invalid** counts trials whose verifier wrote an empty reward. No share
@@ -151,22 +160,23 @@ taste judges, run through Copilot CLI on `gemini-4-argon` at effort `high`.
   provider's own rates. For Copilot CLI it is the run's AI credits at $0.01
   each. For Claude Code it is `agent_result.cost_usd` in each trial's
   `result.json`, which Harbor works out from the trial's tokens at Anthropic's
-  API prices. A run's is the sum over its trials. Neither includes what the
-  sandboxes cost.
+  API prices. A run's is the sum over its trials, and **cost per run** is the
+  mean over an arm's runs. Neither includes what the sandboxes cost.
 - **AI credits** are Copilot CLI's own count. On `rebench`, a trial's credits
   are `usage.ai_credits` in its `agent/suss.json`; on the other lanes, they are
   its `totalNanoAiu` divided by 10⁹, the largest value in its `agent/run.log`.
   A run's are the sum over its trials. One credit is about $0.01. Every run here
-  but `copilot-sonnet`'s on `rebench`, which ran on a local PC, was on Modal,
+  but `copilot-sonnet`'s two on `rebench`, which ran on a local PC, was on Modal,
   and Modal's cost is recorded nowhere, so no figure includes it.
 - **Agent time, sum of trials** is every trial's `run_seconds` added
   together. Modal bills each sandbox for its own time, so this is what tracks
-  the run's Modal cost.
+  the run's Modal cost. **Agent time per run** is the mean over an arm's runs.
 - **Elapsed** is how long the agent job took, from its first trial's start to
   its last trial's finish. Up to 32 trials ran at once. The regrade that
   follows is not included. `rebench` gives none, since some of its jobs ran in
   parts.
-- **Date** is the UTC day in the job id.
+- **Date** is the UTC day in the job id, one for each run.
+- **Median trial** is over a run's trials, one for each run.
 
 ## Retired lane: SWE-bench Pro
 
