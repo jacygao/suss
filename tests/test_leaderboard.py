@@ -833,6 +833,16 @@ def test_nothing_under_checks_counts(results, capsys):
     assert (code, err, out) == (0, "", before)
 
 
+def test_an_arm_whose_name_starts_with_a_dot_is_ranked(tmp_path, capsys):
+    (tmp_path / "suss.toml").write_text(SUSS_TOML)
+    write_arm(tmp_path, ".experiment", {"t1": [T], "t2": [F]})
+
+    code, out, err = run_leaderboard(tmp_path, capsys)
+
+    assert (code, err) == (0, "")
+    assert row(out, ".experiment")[:2] == ["1", "50%"]
+
+
 def test_no_arm_under_results_is_an_error(tmp_path, capsys):
     (tmp_path / "suss.toml").write_text(SUSS_TOML)
     write_arm(tmp_path, "alpha", {"t1": [T]})

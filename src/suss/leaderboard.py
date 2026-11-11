@@ -283,7 +283,9 @@ def _read(directory: Path) -> dict[str, list[Trial]]:
     cannot be.
     """
     lane_directory = Path(directory) / "results" / LANE
-    arms = sorted(arm.name for arm in _directories(lane_directory)) if lane_directory.is_dir() else []
+    # Every directory: an arm's name may start with a `.`, which marks Harbor's own directories only inside a job.
+    found = lane_directory.iterdir() if lane_directory.is_dir() else []
+    arms = sorted(entry.name for entry in found if entry.is_dir())
     if not arms:
         raise LeaderboardError(f"no results under results/{LANE}/")
     trials = {}
