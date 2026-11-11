@@ -49,3 +49,6 @@ agent = "suss.agents:SussClaudeCode"
 model = "claude-opus-5-5"
 baseline = "copilot-gpt"
 kwargs = { version = "2.1.311", reasoning_effort = "high" }
+
+[lanes.senior.judge]
+credit_budget = 2000
