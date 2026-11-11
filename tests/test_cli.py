@@ -33,7 +33,6 @@ def make_config(
         arm=Arm(
             name=arm,
             agent="suss.agents:SussCopilotCli",
-            baseline=None,
             model=None,
             kwargs={},
         ),

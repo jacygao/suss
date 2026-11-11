@@ -55,11 +55,8 @@ def test_reads_each_arm_of_the_spec_example(spec_config: Path):
     assert (sonnet.name, sonnet.agent, sonnet.model) == (
         "copilot-sonnet", "suss.agents:SussCopilotCli", "claude-sonnet-5.5",
     )
-    assert sonnet.baseline is None
     assert sonnet.kwargs == {"version": "1.0.105", "reasoning_effort": "high"}
-    assert (hve.agent, hve.model, hve.baseline) == (
-        "suss.agents:SussCopilotCliHve", "gpt-6.1-sol", "copilot-gpt",
-    )
+    assert (hve.agent, hve.model) == ("suss.agents:SussCopilotCliHve", "gpt-6.1-sol")
     assert hve.kwargs == {
         "version": "1.0.105",
         "reasoning_effort": "high",
@@ -300,7 +297,7 @@ def test_an_old_suss_toml_without_swe_rebench_is_refused_for_its_old_keys(tmp_pa
 def test_an_arm_without_an_agent_is_an_error_naming_the_key_the_arm_and_the_file(
     tmp_path: Path,
 ):
-    path = write_config(tmp_path, TOP + '[arms.lonely]\nbaseline = "claude-code"\n')
+    path = write_config(tmp_path, TOP + '[arms.lonely]\nmodel = "claude-sonnet-5.5"\n')
 
     with pytest.raises(config.ConfigError) as error:
         config.load(path, "lonely", "rebench")
@@ -331,41 +328,46 @@ def test_max_cost_usd_is_refused(
     assert str(error.value) == f"{path}: {where}, but suss does not read it"
 
 
-def test_baselines_reads_each_arms_baseline_and_none_where_it_names_none(spec_config: Path):
-    assert config.baselines(spec_config, ["copilot-gpt", "copilot-sonnet"]) == {
-        "copilot-gpt": "copilot-sonnet",
-        "copilot-sonnet": None,
-    }
+BASELINE = "\n[arms.b]\nagent = \"m:B\"\nbaseline = \"a\"\n"
 
 
-def test_baselines_needs_none_of_what_a_run_needs(tmp_path: Path):
-    # No top-level key, no agent, and a max_cost_usd that load refuses.
-    path = write_config(
-        tmp_path, 'max_cost_usd = 20\n[arms.a]\nbaseline = "b"\nmax_cost_usd = 5\n[arms.b]\n'
-    )
-
-    assert config.baselines(path, ["a", "b"]) == {"a": "b", "b": None}
-
-
-def test_baselines_refuses_an_arm_the_file_does_not_define_naming_both(tmp_path: Path):
-    path = write_config(tmp_path, '[arms.a]\nbaseline = "b"\n')
+@pytest.mark.parametrize("arm", ["a", "b"], ids=["another-arm", "the-arm-run"])
+def test_an_arm_that_sets_baseline_is_refused_naming_it_and_the_key(tmp_path: Path, arm: str):
+    path = write_config(tmp_path, TOP + '[arms.a]\nagent = "m:A"\n' + BASELINE)
 
     with pytest.raises(config.ConfigError) as error:
-        config.baselines(path, ["a", "b"])
+        config.load(path, arm, "rebench")
 
-    assert str(error.value) == f"arm b is not defined in {path.resolve()}"
+    assert str(error.value) == (
+        f"{path}: [arms.b] sets baseline, which suss no longer reads; suss leaderboard "
+        "ranks every arm on its lane"
+    )
 
 
-def test_baselines_refuses_a_missing_file(tmp_path: Path):
+def test_check_arms_refuses_an_arm_that_sets_baseline(tmp_path: Path):
+    path = write_config(tmp_path, '[arms.a]\nagent = "m:A"\n' + BASELINE)
+
+    with pytest.raises(config.ConfigError, match=r"\[arms.b\] sets baseline"):
+        config.check_arms(path)
+
+
+def test_check_arms_needs_none_of_what_a_run_needs(tmp_path: Path):
+    # No top-level key, no agent, and a max_cost_usd that load refuses.
+    path = write_config(tmp_path, 'max_cost_usd = 20\n[arms.a]\nmax_cost_usd = 5\n[arms.b]\n')
+
+    config.check_arms(path)
+
+
+def test_check_arms_refuses_a_missing_file(tmp_path: Path):
     with pytest.raises(config.ConfigError, match="suss.toml: no such file"):
-        config.baselines(tmp_path / "suss.toml", ["a"])
+        config.check_arms(tmp_path / "suss.toml")
 
 
-def test_baselines_refuses_a_file_that_is_not_toml(tmp_path: Path):
+def test_check_arms_refuses_a_file_that_is_not_toml(tmp_path: Path):
     path = write_config(tmp_path, "[arms.a\n")
 
     with pytest.raises(config.ConfigError, match="not valid TOML"):
-        config.baselines(path, ["a"])
+        config.check_arms(path)
 
 
 # The verifier's environment

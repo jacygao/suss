@@ -12,13 +12,11 @@ kwargs = { version = "1.0.107", reasoning_effort = "high" }
 [arms.copilot-gpt]
 agent = "suss.agents:SussCopilotCli"
 model = "gpt-6.1-sol"
-baseline = "copilot-sonnet"
 kwargs = { version = "1.0.107", reasoning_effort = "high" }
 
 [arms.hve-sol]
 agent = "suss.agents:SussCopilotCliHve"
 model = "gpt-6.1-sol"
-baseline = "copilot-gpt"
 kwargs = { version = "1.0.107", reasoning_effort = "high", hve_core_commit = "55352bb8e9f0622ff40f5c6afa80363adaf6b07f" }
 
 [arms.claude-sonnet]
@@ -29,25 +27,21 @@ kwargs = { version = "2.1.311", reasoning_effort = "high" }
 [arms.copilot-fusion]
 agent = "suss.agents:SussCopilotCli"
 model = "fusion"
-baseline = "copilot-gpt"
 kwargs = { version = "1.0.107" }
 
 [arms.copilot-fusion-high]
 agent = "suss.agents:SussCopilotCli"
 model = "fusion"
-baseline = "copilot-gpt"
 kwargs = { version = "1.0.107", fusion_tier = "high" }
 
 [arms.copilot-opus]
 agent = "suss.agents:SussCopilotCli"
 model = "claude-opus-5.5"
-baseline = "copilot-gpt"
 kwargs = { version = "1.0.107", reasoning_effort = "high" }
 
 [arms.claude-opus]
 agent = "suss.agents:SussClaudeCode"
 model = "claude-opus-5-5"
-baseline = "copilot-gpt"
 kwargs = { version = "2.1.311", reasoning_effort = "high" }
 
 [lanes.senior.judge]

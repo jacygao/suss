@@ -668,6 +668,28 @@ def test_an_old_max_cost_usd_is_refused_as_the_spec_shows(project, capfd, monkey
 @pytest.mark.parametrize(
     "dry_run, check", [(False, False), (True, False), (False, True)], ids=["run", "dry-run", "check"]
 )
+def test_an_arm_that_sets_baseline_is_refused_naming_it_and_the_key(
+    project, capfd, monkeypatch, dry_run, check
+):
+    if dry_run:
+        monkeypatch.setenv("DRY_RUN", "1")
+    project.write_toml(arm_extra='baseline = "copilot-gpt"')
+
+    code = project.run("peer-review", "rebench", *(["--check"] if check else []))
+
+    out, err = capfd.readouterr()
+    assert code != 0
+    assert err == (
+        f"error: {project.directory / 'suss.toml'}: [arms.peer-review] sets baseline, which suss "
+        "no longer reads; suss leaderboard ranks every arm on its lane\n"
+    )
+    assert out == ""
+    assert_nothing_ran(project)
+
+
+@pytest.mark.parametrize(
+    "dry_run, check", [(False, False), (True, False), (False, True)], ids=["run", "dry-run", "check"]
+)
 def test_a_lane_suss_does_not_have_in_suss_toml_is_refused_as_the_spec_shows(
     project, capfd, monkeypatch, dry_run, check
 ):

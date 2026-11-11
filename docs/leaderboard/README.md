@@ -6,9 +6,10 @@ across lanes: `rebench` grades by tests alone, and `senior` adds judges of code
 quality.
 
 The resolved share is resolved trials over valid trials, as `suss compare`
-prints it. A run with a `baseline` also shows its resolved difference from that
-baseline, with a 95% interval. `suss compare` gives an interval only for a
-difference, so a run with no baseline has none.
+printed it before `suss leaderboard` replaced it. A run with a `baseline` also
+shows its resolved difference from that baseline, with a 95% interval.
+`suss compare` gave an interval only for a difference, so a run with no
+baseline has none.
 
 ## `rebench`
 
@@ -34,7 +35,7 @@ baseline.
 | `copilot-opus` | `20261108T212444Z-1` | version 1.0.107, effort high | 5.7 min |
 | `copilot-fusion-high` | `20261108T222220Z-1` | version 1.0.107, `fusion_tier` high | 4.3 min |
 
-`suss compare rebench copilot-gpt copilot-fusion copilot-fusion-high copilot-opus claude-opus` prints:
+`suss compare rebench copilot-gpt copilot-fusion copilot-fusion-high copilot-opus claude-opus` printed:
 
 ```
 arm                  trials  resolved  failed  timed out
@@ -65,7 +66,7 @@ claude-opus - copilot-gpt           +2% [-5%, +8%]
 - **`copilot-sonnet`'s difference has no interval.** It ran on Docker on a
   Windows PC, under WSL2 with 16 CPUs and 24.5 GiB for Docker, 6 trials at
   once, and `copilot-gpt`'s trials are on the machine that ran it on Modal.
-  `suss compare` pairs two arms only from one `results/` directory.
+  `suss compare` paired two arms only from one `results/` directory.
 - **The same model ran better in its own harness.** Opus 5.5 resolved 74 in
   Claude Code against 67 in Copilot CLI. Compared directly, `claude-opus -
   copilot-opus` is +6% [+1%, +12%]: 9 tasks only Claude Code resolved, 2 only
@@ -153,7 +154,7 @@ taste judges, run through Copilot CLI on `gemini-4-argon` at effort `high`.
 
 - **Runs** is how many times the arm ran every task, each run a job of its own
   with one trial per task. The trial counts pool all of an arm's runs, as
-  `suss compare` does: **Resolved**, **Unresolved** and **Invalid** add up to
+  `suss compare` did: **Resolved**, **Unresolved** and **Invalid** add up to
   its tasks times its runs, and **Timed out** and **Harness failed** count
   trials already in Unresolved.
 - **Unresolved** counts every valid trial that did not resolve, timed-out and
@@ -217,7 +218,8 @@ harnesses apart. Suss no longer runs or compares these lanes.
 ## How this page was made
 
 Run from the directory holding `suss.toml` and `results/`, with `<suss>` the
-checkout of this repository. The shares, intervals and invalid trials come from
+checkout of this repository at the last commit before `suss leaderboard`
+replaced `suss compare`. The shares, intervals and invalid trials come from
 `suss compare`:
 
 ```bash
@@ -235,7 +237,7 @@ jq -s 'map(.agent_result.cost_usd // empty) | add' <job>/*/result.json      # Cl
 jq -s 'map(.run_seconds) | add / 3600' <job>/*/agent/suss.json
 ```
 
-Suss no longer takes the `pro-*` lanes, and `suss compare` takes two arms or
+Suss no longer takes the `pro-*` lanes, and `suss compare` took two arms or
 more. Their shares come from the `compare` module of commit `b210cc1`, the last
 before suss ran `rebench` alone, called on the one arm:
 

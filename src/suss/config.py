@@ -21,7 +21,6 @@ class Arm:
     name: str
     # The import path of the Harbor agent class the arm runs on.
     agent: str
-    baseline: str | None
     # Harbor's -m; None where the arm sets none.
     model: str | None
     # Each is passed to the agent class as an --ak.
@@ -86,10 +85,11 @@ def load(path: Path, arm: str, lane: str) -> Config:
     has a `model` or `kwargs` it cannot pass to Harbor, when the top or `arm`
     sets `max_cost_usd`, when a `[lanes.<lane>]` table names a lane suss does
     not have or sets a key other than `judge` on senior, when
-    `[lanes.senior.judge]` is not as `_judge` takes it, or when a .env line is
-    not NAME=VALUE.
+    `[lanes.senior.judge]` is not as `_judge` takes it, when any arm sets
+    `baseline`, or when a .env line is not NAME=VALUE.
     """
     path, data = _read(path)
+    _refuse_baseline(path, data)
     directory = path.parent
     retired = [key for key in RETIRED if key in data]
     if retired:
@@ -137,7 +137,6 @@ def load(path: Path, arm: str, lane: str) -> Config:
         arm=Arm(
             name=arm,
             agent=table["agent"],
-            baseline=table.get("baseline"),
             model=table.get("model"),
             kwargs=table.get("kwargs", {}),
         ),
@@ -177,23 +176,27 @@ def _path(directory: Path, value: str | None) -> Path | None:
     return None if value is None else (directory / value).resolve()
 
 
-def baselines(path: Path, arms: list[str]) -> dict[str, str | None]:
+def check_arms(path: Path) -> None:
     """
-    Each of `arms`' baseline from the suss.toml at `path`, None for an arm that
-    names none.
+    Raise ConfigError, naming the suss.toml at `path`, when any arm sets
+    `baseline`, or when the file is missing or is not TOML.
 
     Nothing else in the file is read, so a file `load` refuses for a run still
-    gives them. Raises ConfigError, naming the file, when it is missing or is
-    not TOML, or when it does not define one of the arms.
+    passes.
     """
-    path, data = _read(path)
-    defined = data.get("arms", {})
-    found = {}
-    for arm in arms:
-        if arm not in defined:
-            raise ConfigError(f"arm {arm} is not defined in {path}")
-        found[arm] = defined[arm].get("baseline")
-    return found
+    _refuse_baseline(*_read(path))
+
+
+def _refuse_baseline(path: Path, data: dict[str, Any]) -> None:
+    """Raise ConfigError naming the first arm that sets `baseline`."""
+    arms = data.get("arms", {})
+    for arm, table in arms.items() if isinstance(arms, dict) else ():
+        # Ignored, it would leave its author believing the arm is still measured against one.
+        if isinstance(table, dict) and "baseline" in table:
+            raise ConfigError(
+                f"{path}: [arms.{arm}] sets baseline, which suss no longer reads; "
+                "suss leaderboard ranks every arm on its lane"
+            )
 
 
 def _read(path: Path) -> tuple[Path, dict[str, Any]]:

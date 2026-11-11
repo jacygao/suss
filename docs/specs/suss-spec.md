@@ -8,23 +8,17 @@
 coding work.** A harness is anything that takes a task's instruction and changes
 a repository. Each kind of work is a lane: a set of benchmark tasks and the way
 they are graded. Suss runs the same tasks under several arms, grades every
-result the same way, and reports how each arm's score differs from its
-baseline's.
+result the same way, and ranks the arms on each lane.
 
-Comparing plain Claude Code with two harnesses that review its change prints
-output like this:
+Ranking plain Claude Code against two harnesses that review its change, each
+run three times, prints output like this:
 
 ```
-$ suss compare rebench claude-code self-review peer-review
-
-arm          trials  resolved  failed  timed out
-claude-code     108       58%      0%         1%
-self-review     108       62%      1%         1%
-peer-review     108       66%      1%         2%
-
-vs. baseline                resolved
-self-review - claude-code   +4% [-4%, +12%]
-peer-review - claude-code   +8% [+1%, +15%]
+$ suss leaderboard --lane rebench
+arm          runs  resolved rate  pass@k
+peer-review     3         66% ±7  78% @3
+self-review     3         62% ±7  74% @3
+claude-code     3         58% ±8  70% @3
 ```
 
 ## 2. Dependencies
@@ -57,7 +51,6 @@ docker run --rm alpine:3.19 sh -c 'zcat /proc/config.gz | grep NFT_FIB_INET'
 | **Harness** | What is being measured: a coding agent, with whatever plugins and settings it runs with. |
 | **Agent** | The Harbor agent class an arm runs on: one of Harbor's own, with suss's mixin applied. |
 | **Arm** | An agent and what it runs with: a model, and kwargs such as a version and a reasoning effort. |
-| **Baseline** | The arm another arm is measured against, named by that arm's `baseline` in `suss.toml`. Any arm can be one. |
 | **Trial** | Harbor's unit of work: one attempt at one task by one arm, in a fresh sandbox. |
 | **Base** | The commit the workspace's `HEAD` names when the trial starts. |
 | **Starting tree** | What the workspace holds when the trial starts: the base, with every change the image left uncommitted, staged or not, and every untracked file git does not ignore. |
@@ -426,11 +419,10 @@ shows there. Where Harbor's parse found no token counts, as for a GPT model,
 Suss has two lanes, `rebench` and `senior`. Every task gives the agent a
 repository at the commit before a real change, and an instruction about that
 change. The task's verifier grades it, and a trial resolves when its reward is
-1. Each lane reports its own measures, and nothing compares one lane with
-another. `rebench` reports the share of trials that resolve, and each arm's
-difference from its baseline. `senior` reports the same, over the investigate
-tasks unless a validation agent graded the design tasks, and the judges' rubric
-and taste scores.
+1. Each lane is measured on its own, and nothing compares one lane with
+another. On `rebench`, `suss leaderboard` ranks the arms by the share of trials
+that resolve. `senior` has no leaderboard, and each of its trials keeps its
+judges' rubric and taste scores in `verifier/judge.json`.
 
 Each lane is a directory of copies of its tasks, built from the download that
 its key in `suss.toml` names. Each task's image is built from the `Dockerfile`
@@ -488,7 +480,7 @@ The verifier runs the task's tests, a validation agent on the 25 tasks whose
 pass and, on a design task, the validation agent passes the change too. The
 judges' scores never change it. The validation agent and the judges need an API
 key, and suss gives the verifier none, so it writes an empty reward for every
-design task, which `suss compare` counts as invalid, and suss's own judge scores
+design task, which makes the trial invalid, and suss's own judge scores
 every patch. Six design tasks have no tests, so the
 validation agent alone sets their reward: `electric-feat-sync-service-start`,
 `harbor-add-windows-tasks-support`, `plausible-feat-shared-dashboard-deeplink`,
@@ -662,9 +654,8 @@ then prints the job's name and Harbor's exit code, runs nothing more, and exits
 non-zero.
 
 It gives Harbor `results/<lane>/<arm>/` as its jobs directory, so each agent job
-is written there. Results stay there across runs, so an arm
-run later is compared against a baseline graded earlier, without running the
-baseline again.
+is written there. Results stay there across runs, so `suss leaderboard` ranks
+an arm run later beside arms graded earlier, without running them again.
 
 `--check` tests that an arm works under suss, for the cost of one trial per
 lane. It builds `lanes/<lane>-check/` with only the lane's first task by name,
@@ -692,13 +683,11 @@ kwargs = { version = "1.0.105", reasoning_effort = "high" }
 [arms.copilot-gpt]
 agent = "suss.agents:SussCopilotCli"
 model = "gpt-6.1-sol"
-baseline = "copilot-sonnet"
 kwargs = { version = "1.0.105", reasoning_effort = "high" }
 
 [arms.hve-sol]
 agent = "suss.agents:SussCopilotCliHve"
 model = "gpt-6.1-sol"
-baseline = "copilot-gpt"
 kwargs = { version = "1.0.105", reasoning_effort = "high", hve_core_commit = "55352bb8e9f0622ff40f5c6afa80363adaf6b07f" }
 
 [lanes.senior.judge]
@@ -794,162 +783,91 @@ credit_budget = 2000
   error: /home/me/evals/suss.toml: [arms.copilot-gpt] sets max_cost_usd, but suss
   does not read it
   ```
+- `baseline`, on any arm, makes `suss run` and `suss leaderboard` exit with an
+  error naming the arm, before `suss run` builds any lane or runs any job, with
+  `DRY_RUN=1` and `--check` too:
 
-### `suss compare`
+  ```
+  $ suss run copilot-gpt rebench
+  error: /home/me/evals/suss.toml: [arms.hve-sol] sets baseline, which suss no
+  longer reads; suss leaderboard ranks every arm on its lane
+  ```
+
+### `suss leaderboard`
 
 ```bash
-suss compare <lane> <arm> <arm>...
+suss leaderboard --lane rebench
 ```
 
-It reads every trial under `results/<lane>/<arm>/` for the arms it is given,
-and each arm's `baseline` from `suss.toml` in the current directory. Trials
-under `checks/` never count. It compares arms on one lane at a time, never one
-lane with another.
+It ranks every arm under `results/rebench/` in the current directory, the one
+holding `suss.toml`. Each directory there is an arm, whether or not `suss.toml`
+defines it, and trials under `checks/` never count. It prints one table, best
+resolved rate first, and arms with the same rate by name:
+
+```
+arm          runs  resolved rate  pass@k
+claude-opus     2         68% ±7  78% @2
+copilot-gpt     1         67% ±9  67% @1
+```
+
+- `runs` is how many of the arm's agent jobs hold a trial.
+- `resolved rate` is resolved trials over valid trials, so a task with more
+  valid trials weighs more. The ± is half the width of a 95% interval from a
+  bootstrap of 10,000 resamples, each drawing the arm's tasks with replacement
+  and taking every valid trial of each task drawn, so a task's runs stay
+  together. The same results always print the same margin.
+- `pass@k` is the share of the arm's tasks that at least one run resolved, and
+  k, after the `@`, is the arm's runs.
+- Each percent is whole, a half rounded up.
 
 A trial's result is the reward its own verifier gave it, in the agent trial's
-`result.json`. Every other file this section reads is in the agent trial's
-`verifier/`, where the verifier wrote it.
+`result.json`. A valid trial whose verifier left no reward is unresolved, as
+when it timed out or crashed, and `harness-failed` and `timed-out` trials count
+as their verifier graded them.
 
-It compares the arms over the tasks every one of them has a valid trial of. It
-prints two tables. The first gives each arm's trials and its resolved, failed
-and timed-out shares. The second gives each arm's resolved difference from its
-baseline, with an interval. After the tables, it names each trial whose verifier
-recorded no test result, then each invalid trial, by arm, job and task:
+A trial is invalid when its verifier wrote an empty `verifier/reward.txt`,
+which Harbor records in the trial's `result.json` as an `exception_info` whose
+`exception_type` is `RewardFileEmptyError`. An invalid trial counts nowhere, as
+if it had not run, so a task whose every trial in an arm is invalid is not one
+of that arm's tasks.
+
+After the table, it names each valid trial whose verifier recorded no test
+result, then each invalid trial, by arm in the table's order, then by job and
+task. A verifier records a test result when its `verifier/report.json` counts a
+test as `PASSED`, `FAILED`, `SKIPPED` or `ERROR` in `parsed_counts`.
 
 ```
 These trials' verifiers recorded no test result, so their grading may have broken:
-  claude-code  20261103T204423Z-2  marimo-team__marimo-9766
+  claude-opus  20261109T031500Z-2  marimo-team__marimo-9766
 
-These trials' verifiers judged them invalid, so no table counts them:
-  claude-code  20261103T204423Z-1  paperless-ngx-perf-workflow-queries
+These trials' verifiers judged them invalid, so the leaderboard counts none of them:
+  copilot-gpt  20261108T011500Z-1  gleam-lang__gleam-4890
 ```
 
-- Every valid trial counts as its verifier graded it, `harness-failed` and
-  `timed-out` ones included.
-- A trial is invalid when its verifier wrote an empty `verifier/reward.txt`,
-  which Harbor records in the trial's `result.json` as an `exception_info` whose `exception_type` is
-  `RewardFileEmptyError`. An invalid trial counts in no table, as if it
-  had not run. The task's other trials, in every arm, still count. Where every
-  trial of a task in one arm is invalid, that task counts in no arm. The list
-  names the invalid trials of every task each arm has a trial of. An invalid
-  trial is never also named as recording no test result.
-- A verifier records a test result in the file its lane's verifier writes, as
-  the table below says. It records none when that file is missing.
-
-  | Lane | File | Records a test result when |
-  |---|---|---|
-  | `rebench` | `verifier/report.json` | its `parsed_counts` counts a test as `PASSED`, `FAILED`, `SKIPPED` or `ERROR` |
-  | `senior` | `verifier/verifier_results.json` | its `total` is above 0, or is 0 with `all_pass` true and no `runner_errors`, as the verifier writes for a task that has no tests and grades by its validation agent alone |
-- A valid trial whose verifier left no reward counts as unresolved, as when it
-  timed out or crashed. A trial with no `suss.json`, which a sandbox
-  that never started or a Harbor exception leaves, counts as `harness-failed`.
-- `failed` is the share of trials whose status is `harness-failed`, and
-  `timed out` the share whose status is `timed-out`.
-- Each arm whose `baseline` is among the arms given gets a row in the second
-  table. The bracketed range is a 95% interval from a bootstrap of 10,000
-  resamples, each drawing tasks so that a task's trials stay together. A share
-  is resolved trials over trials, so a task left with fewer valid trials weighs
-  less in that arm. The same results always print the same interval.
-- Shares print as whole percents, and every difference and interval end
-  carries a sign.
-
-On the `senior` lane, a third table follows the second. It gives each arm's mean
-score from each judge, over the valid trials the shares count, and in
-parentheses how many trials each mean is over. When a verifier wrote
-`judge.json`, a last column names each arm's judge:
+`--lane` is required, and only `rebench` has a leaderboard:
 
 ```
-mean (trials)     rubric  practice alignment  relative taste  patch bloat  judge
-claude-code    0.71 (34)           3.62 (47)       3.04 (47)    1.48 (47)  copilot-cli gemini-4-argon high
-self-review    0.78 (33)           3.81 (46)       3.17 (46)    1.31 (46)  copilot-cli gemini-4-argon high
+$ suss leaderboard --lane senior
+error: suss leaderboard covers rebench only, not senior
 ```
-
-After the list of invalid trials, it names each counted trial whose judges
-failed or were skipped, by arm, job and task, then the judges:
-
-```
-These trials' judges failed or were skipped, so the means leave out their scores:
-  claude-code  20261103T204423Z-1  posthog-feat-approval-gating         taste
-  self-review  20261103T204423Z-1  paperless-ngx-perf-workflow-queries  rubric, taste
-```
-
-- A trial's scores are its `verifier/judge.json` when it has one, and
-  otherwise its `verifier_result.rewards`. Each column is a key of
-  them:
-
-  | Column | Key | Scale |
-  |---|---|---|
-  | `rubric` | `rubric_score` | the share of the task's rubric criteria the patch meets, 0 to 1 |
-  | `practice alignment` | `taste_practice_alignment` | the median of five dimensions, each 1 to 5 |
-  | `relative taste` | `taste_relative_taste` | the median of five dimensions, each 1 to 5, against the task's reference patch |
-  | `patch bloat` | `taste_patch_bloat` | the patch's source lines over the reference patch's, so 1 is the same size |
-
-- A score counts only when its judge's flag is 1: `rubric_judge_ok` for the
-  rubric, and `taste_judge_ok` for the other three. In `judge.json`, a flag is 1
-  exactly when that judge's status is `ok`. A trial whose judge failed, was
-  skipped or never ran takes no part in that mean, whatever scores it holds. A
-  task with no rubric criteria has no rubric score in any arm.
-- A judge is named when its flag is not 1, except a rubric judge whose status is
-  `skipped:no_criteria`, in `judge.json` or in the verifier's
-  `verifier/judge_output.json` as `rubric_status`. A trial whose verifier left
-  neither `judge.json` nor a reward is not named.
-- A judge is named in the last column by the client, model and effort its
-  `judge.json` gives, and senior's verifier by the grader's `judge_model`, as
-  `senior verifier anthropic/claude-sonnet-4-6`.
-- An arm whose trials more than one judge scored has no mean. Its row is `-`
-  throughout, with `more than one` as its judge, and a line after the table
-  names each judge and its trials:
-
-  ```
-  beta was judged by copilot-cli gemini-4-argon high on 2 trials and copilot-cli gpt-6.1-sol high on 1 trial, so it has no mean.
-  ```
-- Arms judged by different judges each keep their means, and a line after the
-  table says they do not compare:
-
-  ```
-  The means do not compare across arms: base was judged by senior verifier anthropic/claude-sonnet-4-6, beta by copilot-cli gemini-4-argon high.
-  ```
-- Means print to two decimal places, a half rounded away from zero, and as `-`
-  when no trial has the score.
-- On every other lane, neither the third table nor the list prints, unless a
-  verifier wrote `judge.json`.
 
 It exits with an error, and prints nothing else, when:
 
-- An arm it is given has no trials under `results/<lane>/<arm>/`, has only
-  invalid ones, or is not in `suss.toml`:
+- `suss.toml` is missing, or an arm in it sets `baseline`.
+- `results/rebench/` holds no arm, or an arm with no trials or only invalid
+  ones:
 
   ```
-  $ suss compare rebench claude-code self-review
-  error: every trial of arm self-review under results/rebench/ is invalid: its
+  $ suss leaderboard --lane rebench
+  error: every trial of arm copilot-gpt under results/rebench/ is invalid: its
   verifier wrote an empty reward
   ```
-- The arms' trials that have a `suss.json` do not all carry the same `grader`.
-  A trial with no `suss.json` has no `grader` to compare, and still counts as
-  `harness-failed`. Two graders are named by the fields they differ in:
-
-  ```
-  $ suss compare senior claude-code self-review
-  error: trials carry different graders: judge_model "anthropic/claude-sonnet-4-6"
-  in results/senior/claude-code/20261031T142500Z-1, judge_model "openai/gpt-5.5"
-  in results/senior/self-review/20261103T090000Z-1
-  ```
-- Two trials of one task, in any of the arms, carry different `task_checksum`
-  in their `result.json`, which is Harbor's hash of the task's files as the
-  trial ran them:
-
-  ```
-  $ suss compare rebench claude-code self-review
-  error: the trials of ArcadeData__arcadedb-4281 in
-  results/rebench/claude-code/20261031T142500Z-1 and
-  results/rebench/self-review/20261103T090000Z-1 ran different versions of the
-  task, as their task_checksum differs
-  ```
 - A trial whose `suss.json` has `patch_bytes` above 0 has a verifier that
-  applied no patch: its `replay.json` has `"patch": null`, or it has no
-  `replay.json` and its `result.json` records an exception.
+  applied no patch: its `verifier/replay.json` has `"patch": null`, or it has
+  no `replay.json` and its `result.json` records an exception.
 - A trial's verifier could not apply its patch: its `replay.json` names a
   patch, and its `apply_rc` is not 0.
+- Anything follows `--`.
 
 ## 7. The project
 
@@ -972,7 +890,7 @@ src/suss/
   config.py       suss.toml
   replay.py       ReplayVerifier, which grades a trial in Harbor's separate verifier
   judge.py        JudgeVerifier, which judges a senior trial there, then grades it
-  compare.py      suss compare
+  leaderboard.py  suss leaderboard
   cli.py          the suss command
 tests/
 docs/specs/
