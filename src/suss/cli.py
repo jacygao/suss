@@ -17,8 +17,8 @@ import typer.main
 from harbor.cli.main import app as harbor_app
 from harbor.cli.utils import parse_kwargs
 
-from suss import agents, compare, config, lanes
-from suss.compare import CompareError
+from suss import agents, config, lanes, leaderboard
+from suss.leaderboard import LeaderboardError
 from suss.config import GRADING_KEYS, TOKEN_NAME, Config, ConfigError, verifier_env
 from suss.lanes import LaneError
 
@@ -363,7 +363,7 @@ def main(
             str(docker),
             clock,
         )
-    except (_Stop, ConfigError, LaneError, CompareError) as error:
+    except (_Stop, ConfigError, LaneError, LeaderboardError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
@@ -394,16 +394,15 @@ def _parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         action="store_true",
         help="run one agent job on each lane's first task, under checks/",
     )
-    compare_ = commands.add_parser(
-        "compare",
+    ranking = commands.add_parser(
+        "leaderboard",
         allow_abbrev=False,
-        usage="suss compare <lane> <arm> <arm>...",
-        help="compare arms' results on a lane, each against its baseline",
-        description="Print each arm's resolved, failed and timed-out shares, and each "
-        "arm's resolved difference from its baseline where that is given too.",
+        usage="suss leaderboard --lane <lane>",
+        help="rank every arm's results on a lane",
+        description="Print each arm under results/<lane>/ with its runs, its resolved rate "
+        "and pass@k, best resolved rate first. Only rebench has a leaderboard.",
     )
-    compare_.add_argument("lane", help=", ".join(lanes.LANES))
-    compare_.add_argument("arms", nargs="+", metavar="arm", help="an arm defined in suss.toml")
+    ranking.add_argument("--lane", required=True, help=lanes.REBENCH)
     return parser.parse_args(argv), harbor_args
 
 
@@ -416,8 +415,8 @@ def _dry_run() -> bool:
 
 def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> int:
     args, harbor_args = _parse(argv)
-    if args.command == "compare":
-        return _compare(args.lane, args.arms, harbor_args, directory)
+    if args.command == "leaderboard":
+        return _leaderboard(args.lane, harbor_args, directory)
     dry_run = _dry_run()
     run_stamp = stamp(clock())
     on_lane = {lane: config.load(directory / "suss.toml", args.arm, lane) for lane in args.lanes}
@@ -472,16 +471,13 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
     return 0
 
 
-def _compare(lane: str, arms: list[str], harbor_args: list[str], directory: Path) -> int:
+def _leaderboard(lane: str, harbor_args: list[str], directory: Path) -> int:
     if harbor_args:
-        raise _Stop("suss compare takes nothing after --")
-    if len(arms) < 2:
-        raise _Stop("suss compare takes a lane and at least two arms")
-    for at, arm in enumerate(arms):
-        if arm in arms[:at]:
-            raise _Stop(f"{arm} is named twice: each arm is compared once")
+        raise _Stop("suss leaderboard takes nothing after --")
+    if lane != lanes.REBENCH:
+        raise _Stop(f"suss leaderboard covers {lanes.REBENCH} only, not {lane}")
     # Printed whole, after every check, so that an error leaves no partial table.
-    print(compare.report(directory, lane, arms), end="")
+    print(leaderboard.report(directory), end="")
     return 0
 
 
