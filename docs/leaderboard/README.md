@@ -20,7 +20,7 @@ baseline.
 |---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|
 | `claude-opus` | Claude Code 2.1.311 | claude-opus-5-5, effort high | 2026-11-09 | 108 | 1 | 74 | 34 | 0 | 3 | 0 | 69% | +2% [−5%, +8%] | $118.98 | 17.8 h |
 | `copilot-gpt` | Copilot CLI 1.0.107 | gpt-6.1-sol, effort high | 2026-11-08 | 108 | 1 | 72 | 36 | 0 | 0 | 0 | 67% | baseline | $41.86 | 11.3 h |
-| `copilot-sonnet` | Copilot CLI 1.0.107 | claude-sonnet-5.5, effort high | 2026-11-09, 2026-11-10 | 108 | 2 | 141 | 75 | 0 | 2 | 0 | 65% | not computed | $35.89 | 14.4 h |
+| `copilot-sonnet` | Copilot CLI 1.0.107 | claude-sonnet-5.5, effort high | 2026-11-09, 2026-11-10, 2026-11-10 | 108 | 3 | 207 | 117 | 0 | 5 | 0 | 64% | not computed | $35.39 | 15.0 h |
 | `copilot-fusion` | Copilot CLI 1.0.107 | Fusion, tier standard | 2026-11-08 | 108 | 1 | 67 | 41 | 0 | 0 | 0 | 62% | −5% [−11%, +1%] | $16.12 | 8.5 h |
 | `copilot-opus` | Copilot CLI 1.0.107 | claude-opus-5.5, effort high | 2026-11-08 | 108 | 1 | 67 | 41 | 0 | 1 | 0 | 62% | −5% [−11%, +2%] | $117.52 | 15.1 h |
 | `copilot-fusion-high` | Copilot CLI 1.0.107 | Fusion, tier high | 2026-11-08 | 108 | 1 | 64 | 44 | 0 | 0 | 0 | 59% | −7% [−13%, −2%] | $32.18 | 12.2 h |
@@ -29,7 +29,7 @@ baseline.
 |---|---|---|---:|
 | `claude-opus` | `20261109T002622Z-1` | version 2.1.311, effort high | 5.6 min |
 | `copilot-gpt` | `20261108T112743Z-1` | version 1.0.107, effort high | 5.2 min |
-| `copilot-sonnet` | `20261109T221503Z-1`, `20261110T074227Z-1` | version 1.0.107, effort high | 3.9 min, 4.5 min |
+| `copilot-sonnet` | `20261109T221503Z-1`, `20261110T074227Z-1`, `20261110T214213Z-1` | version 1.0.107, effort high | 3.9 min, 4.5 min, 4.9 min |
 | `copilot-fusion` | `20261108T124036Z-1` | version 1.0.107 | 3.7 min |
 | `copilot-opus` | `20261108T212444Z-1` | version 1.0.107, effort high | 5.7 min |
 | `copilot-fusion-high` | `20261108T222220Z-1` | version 1.0.107, `fusion_tier` high | 4.3 min |
@@ -55,9 +55,13 @@ claude-opus - copilot-gpt           +2% [-5%, +8%]
   each arm, a gap of about 5 points is one suss cannot tell from no
   difference.
 - **One run of an arm moves by a few points on its own.** `copilot-sonnet`
-  resolved 72 tasks in its first run and 69 in its second, and 15 of the 108
-  went differently between them (14%): 9 only the first resolved, 6 only the
-  second.
+  resolved 72, 69 and 66 tasks in its three runs, and 23 of the 108 went
+  differently across them (21%): 13 resolved in two runs, 10 in one. 57
+  resolved in all three, and 28 in none.
+- **Each `copilot-sonnet` run resolved fewer than the one before, and took
+  longer:** its median trial was 3.9, 4.5 and 4.9 min. The three ran within a
+  day of each other, and three runs cannot tell chance from a change on
+  Copilot's side.
 - **`copilot-sonnet`'s difference has no interval.** It ran on Docker on a
   Windows PC, under WSL2 with 16 CPUs and 24.5 GiB for Docker, 6 trials at
   once, and `copilot-gpt`'s trials are on the machine that ran it on Modal.
@@ -75,7 +79,7 @@ claude-opus - copilot-gpt           +2% [-5%, +8%]
   `copilot-opus` $1.75.
 - **Cost is a price, not what was paid.** A Copilot CLI run's is its AI
   credits at $0.01 each: 4,186, 1,612, 11,752, 3,218 and, for
-  `copilot-sonnet`'s two, 3,618 and 3,560. `claude-opus`'s is
+  `copilot-sonnet`'s three, 3,618, 3,560 and 3,440. `claude-opus`'s is
   Anthropic's API price for its tokens; it ran on a Claude Max 5x plan, which
   it cost about 1.6 five-hour windows and nothing more.
 - **Opus thought about as much as Sol at the same effort.** In Copilot CLI, the
@@ -166,7 +170,7 @@ taste judges, run through Copilot CLI on `gemini-4-argon` at effort `high`.
   are `usage.ai_credits` in its `agent/suss.json`; on the other lanes, they are
   its `totalNanoAiu` divided by 10⁹, the largest value in its `agent/run.log`.
   A run's are the sum over its trials. One credit is about $0.01. Every run here
-  but `copilot-sonnet`'s two on `rebench`, which ran on a local PC, was on Modal,
+  but `copilot-sonnet`'s three on `rebench`, which ran on a local PC, was on Modal,
   and Modal's cost is recorded nowhere, so no figure includes it.
 - **Agent time, sum of trials** is every trial's `run_seconds` added
   together. Modal bills each sandbox for its own time, so this is what tracks
