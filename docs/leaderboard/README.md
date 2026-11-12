@@ -41,8 +41,11 @@ copilot-sonnet          3         64% ±8  74% @3
 copilot-fusion-high     2         63% ±9  67% @2
 ```
 
-- **Arms a few points apart cannot be ranked.** Over three runs, an arm's
-  resolved rate has a margin of about ±8 points.
+- **A margin is one arm's uncertainty, not a difference's.** `copilot-sonnet`'s
+  rate over three runs has a margin of ±8 points. Two arms graded on the same
+  tasks can differ by less than their margins and still be told apart, as
+  `claude-opus` and `copilot-opus` are below, so overlapping margins do not
+  settle which arm is ahead.
 - **One run of an arm moves by a few points on its own.** `copilot-sonnet`
   resolved 72, 69 and 66 tasks in its three runs, and 23 of the 108 went
   differently across them (21%): 13 resolved in two runs, 10 in one. 57
