@@ -31,6 +31,9 @@ resolved rate, as `suss leaderboard --lane rebench` does.
   points on its own, and the ± covers one arm's rate, not the gap between two.
 - **Runs on Docker on a PC are slower than on Modal.** Their trials took
   longer and timed out more often. The jobs table says where each run ran.
+- **`copilot-fusion-high` is ranked on its two runs on Docker,** so that all
+  its runs are on one machine. Its run on Modal, `20261108T222220Z-1`,
+  resolved 59% and is left out.
 
 ## `senior`
 
@@ -112,7 +115,8 @@ resolved 98% of `pro-go`, leaving no room to tell harnesses apart.
 
 Run from the directory holding `suss.toml` and `results/`, with `<suss>` the
 checkout of this repository. The `rebench` resolved rates, margins and pass@k
-come from `suss leaderboard`, which ranks every arm under `results/rebench/`:
+come from `suss leaderboard`, which ranks every arm under `results/rebench/`.
+`copilot-fusion-high`'s come from the PC holding only its two runs on Docker:
 
 ```bash
 uv run --project <suss> suss leaderboard --lane rebench
