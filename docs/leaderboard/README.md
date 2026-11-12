@@ -60,8 +60,8 @@ patch for quality with senior's rubric and taste judges.
 
 - **Rubric** is the share of a task's criteria met, from 0 to 1; the count in
   brackets is the tasks that have criteria. **Practice alignment** and
-  **relative taste** run from 1 to 5. **Patch bloat** is the patch's lines over
-  the reference fix's.
+  **relative taste** run from 1 to 5. **Patch bloat** is the patch's source
+  lines over the reference fix's, with test and doc files left out of both.
 - **These are suss's scores, not senior's published ones,** and taste moves by
   up to a point between judgings, so treat a gap under about 0.5 as noise.
 
