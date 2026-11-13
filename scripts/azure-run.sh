@@ -149,7 +149,7 @@ text = open("suss.toml").read()
 table = re.search(r"(?m)^[ \t]*\[", text)
 head, rest = (text[: table.start()], text[table.start() :]) if table else (text, "")
 for key, value in (("environment", '"docker"'), ("concurrency", str(n))):
-    head, found = re.subn(rf"(?m)^[ \t]*{key}[ \t]*=.*$", f"{key} = {value}", head)
+    head, found = re.subn(rf"""(?m)^[ \t]*(["']?){key}\1[ \t]*=.*$""", f"{key} = {value}", head)
     if found != 1:
         sys.exit(f"suss.toml has {found} top-level {key} keys, not 1")
 open("suss.toml", "w").write(head + rest)
