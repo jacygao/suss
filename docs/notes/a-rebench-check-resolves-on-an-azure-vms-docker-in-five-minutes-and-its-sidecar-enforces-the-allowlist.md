@@ -24,9 +24,11 @@ recheck-when: Harbor upgrades past 0.25.0, Harbor changes its egress sidecar, th
 - **Never point a remote `DOCKER_HOST` at the VM from another machine.** Harbor
   bind-mounts each trial's log directories from the Docker host's filesystem,
   which is then the VM's, not the client's.
-- **Size the VM at 1 vCPU and 4 GB per trial in `concurrency`.** The
+- **Set `concurrency` from the lane's largest task.** The
   Visual Studio Enterprise subscription allows 20 vCPUs a region, so its largest
-  VM, a Standard_E20as_v5 with 160 GB, runs 20 trials at once.
+  VM is a Standard_E20as_v5 with 160 GB. That runs 20 rebench trials at once,
+  at 1 CPU and 4 GB each, but only 5 senior trials, whose largest task takes
+  4 CPUs and 8 GB.
 - **Run three arms in parallel in `australiaeast`, `newzealandnorth` and
   `koreacentral`, one VM each, rather than raising the quota.** The quota is
   per region, and all three create a Standard_E20as_v5. Three rebench checks

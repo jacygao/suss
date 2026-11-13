@@ -5,11 +5,12 @@
 #
 # Run it from a suss checkout with a .env, signed in with `az login`. The VM's
 # resource group is deleted only once results/, checks/ and the run's output
-# are copied back. If the copy fails, the VM is left running and the script
-# prints the command that deletes it.
+# are copied back. If the copy or the delete fails, the script exits non-zero
+# and prints the command that deletes the group.
 #
 # SIZE sets the VM size (default Standard_E20as_v5). suss.toml on the VM gets
-# environment = "docker" and a concurrency the VM can hold.
+# environment = "docker" and the largest concurrency the lane's biggest task
+# fits in the VM's Docker.
 set -euo pipefail
 
 region=$1 arm=$2 lane=$3 check=${4:-}
@@ -20,6 +21,29 @@ rg="suss-run-$region"
 log() { printf '%s [%s] %s\n' "$(date +%H:%M:%S)" "$region" "$*"; }
 
 [ -f "$suss/suss.toml" ] && [ -f "$suss/.env" ] || { echo "run from a suss checkout with a .env" >&2; exit 2; }
+
+# The lane's download, as suss.toml names it. It goes to the same path relative
+# to suss on the VM, so it must be relative.
+download=$(cd "$suss" && uv run -q python - "$lane" <<'EOF'
+import sys, tomllib
+from suss.config import DOWNLOADS
+lane = sys.argv[1]
+if lane not in DOWNLOADS:
+    sys.exit(f"suss has no lane named {lane}; its lanes are {', '.join(DOWNLOADS)}")
+value = tomllib.load(open("suss.toml", "rb")).get(DOWNLOADS[lane])
+if value is None:
+    sys.exit(f"suss.toml names no {DOWNLOADS[lane]}")
+if value.startswith("/"):
+    sys.exit(f"{DOWNLOADS[lane]} is absolute; azure-run.sh needs it relative to suss.toml")
+print(value)
+EOF
+)
+[ -d "$suss/$download" ] || { echo "$download: no such directory" >&2; exit 2; }
+
+if [ "$(az group exists -n "$rg")" != false ]; then
+  echo "$rg already exists, or Azure could not say: a run is going there, or an earlier one left it" >&2
+  exit 2
+fi
 [ -f "$key" ] || ssh-keygen -t ed25519 -N "" -f "$key" -C suss-azure -q
 work=$(mktemp -d)
 known="$work/known_hosts"
@@ -36,37 +60,41 @@ runcmd:
   - sudo -u azureuser sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
 EOF
 
-if [ "$(az group exists -n "$rg")" = true ]; then
-  echo "$rg already exists: a run is going there, or an earlier one left it" >&2
-  exit 2
-fi
-
 ip=
 copied=
+
+# Copy results/, checks/ and the run's output back. Fails, with nothing marked
+# copied, when SSH or a transfer fails, so the VM is never deleted on a guess.
 copy_back() {
-  local dir
-  for dir in results checks; do
-    if ssh_ "[ -d suss/$dir ]"; then rsync_ "azureuser@$ip:suss/$dir" "$suss/" || return 1; fi
+  local found dir
+  found=$(ssh_ 'cd suss && for d in results checks; do [ -d "$d" ] && echo "$d"; done; [ -f ~/run.log ] && echo run.log; true' < /dev/null) || return 1
+  for dir in $found; do
+    case $dir in
+      run.log) mkdir -p "$suss/logs"; rsync_ "azureuser@$ip:run.log" "$suss/logs/azure-$region-$arm.out" || return 1 ;;
+      *) rsync_ "azureuser@$ip:suss/$dir" "$suss/" || return 1 ;;
+    esac
   done
-  mkdir -p "$suss/logs"
-  if ssh_ "[ -f run.log ]"; then
-    rsync_ "azureuser@$ip:run.log" "$suss/logs/azure-$region-$arm.out" || return 1
-  fi
   copied=1
 }
+
 finish() {
-  code=$?
+  local code=$? exists
   set +e
   if [ -n "$ip" ] && [ -z "$copied" ]; then
     log "copying results back"
     copy_back
   fi
-  if [ "$(az group exists -n "$rg")" = true ]; then
-    if [ -n "$copied" ] || [ -z "$ip" ]; then
-      log "deleting $rg"
-      az group delete -n "$rg" --yes
-    else
-      log "results NOT copied; $rg left at $ip. Copy them, then: az group delete -n $rg --yes"
+  exists=$(az group exists -n "$rg")
+  if [ "$exists" = false ]; then
+    :
+  elif [ -n "$ip" ] && [ -z "$copied" ]; then
+    log "results NOT copied; $rg left running at $ip. Copy them, then: az group delete -n $rg --yes"
+    code=1
+  else
+    log "deleting $rg"
+    if ! az group delete -n "$rg" --yes; then
+      log "delete FAILED; $rg is still billing. Run: az group delete -n $rg --yes"
+      code=1
     fi
   fi
   rm -rf "$work"
@@ -85,45 +113,48 @@ ip=$(az vm create -g "$rg" -n suss-vm --image Ubuntu2404 --size "$size" \
 az network nsg rule create -g "$rg" --nsg-name suss-vmNSG -n ssh-from-me --priority 1000 \
   --source-address-prefixes "$me/32" --destination-port-ranges 22 --access Allow --protocol Tcp -o none
 log "VM at $ip; waiting for cloud-init"
-until ssh_ true 2>/dev/null; do sleep 10; done
-ssh_ 'cloud-init status --wait > /dev/null'
+until ssh_ true < /dev/null 2> /dev/null; do sleep 10; done
+ssh_ 'cloud-init status --wait > /dev/null' < /dev/null
 
-log "copying suss, its tasks and .env"
+log "copying suss, $download and .env"
 git -C "$suss" ls-files -z | rsync_ --from0 --files-from=- "$suss/" "azureuser@$ip:suss/"
-# Each lane's tasks, at the same path relative to suss as here.
-(cd "$suss" && uv run -q python - suss.toml) <<'EOF' > "$work/tasks"
-import sys, tomllib
-for value in tomllib.load(open(sys.argv[1], "rb")).values():
-    if isinstance(value, str) and value.startswith("../"):
-        print(value)
-EOF
-while read -r tasks; do
-  ssh_ "mkdir -p \"suss/$(dirname "$tasks")\""
-  rsync_ "$suss/$tasks/" "azureuser@$ip:suss/$tasks/"
-done < "$work/tasks"
+ssh_ "mkdir -p suss/$(printf %q "$download")" < /dev/null
+rsync_ "$suss/$download/" "azureuser@$ip:suss/$download/"
 ssh_ 'umask 077; cat > suss/.env' < "$suss/.env"
 
-ssh_ bash -s <<'EOF'
+ssh_ bash -s "$lane" <<'EOF'
 set -e
 cd suss
-cpus=$(nproc)
-mem=$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1024 / 1024 / 4 ))
-n=$(( cpus < mem ? cpus : mem ))
-sed -i "s/^environment = .*/environment = \"docker\"/; s/^concurrency = .*/concurrency = $n/" suss.toml
 ~/.local/bin/uv sync -q
+n=$(~/.local/bin/uv run -q python - "$1" <<'PY'
+import subprocess, sys, tomllib
+from pathlib import Path
+from suss import lanes
+from suss.config import DOWNLOADS
+download = Path(tomllib.load(open("suss.toml", "rb"))[DOWNLOADS[sys.argv[1]]]).resolve()
+tasks = [task for task in download.iterdir() if (task / "task.toml").is_file()]
+cpus, memory_mb = lanes.needs(lanes.read_tasks(tasks))
+info = subprocess.check_output(["docker", "info", "--format", "{{.NCPU}} {{.MemTotal}}"], text=True)
+docker_cpus, docker_bytes = map(int, info.split())
+print(min(docker_cpus // cpus, docker_bytes // (memory_mb * 1024 * 1024)))
+PY
+)
+[ "$n" -ge 1 ] || { echo "one trial of $1 does not fit this VM" >&2; exit 1; }
+sed -i "s/^environment = .*/environment = \"docker\"/; s/^concurrency = .*/concurrency = $n/" suss.toml
+echo "concurrency = $n"
 EOF
 
 log "suss run $arm $lane $check"
-ssh_ "cd suss && tmux new -d -s run '~/.local/bin/uv run suss run $arm $lane $check > ~/run.log 2>&1; echo EXIT \$? >> ~/run.log'"
+ssh_ "cd suss && tmux new -d -s run '~/.local/bin/uv run suss run $arm $lane $check > ~/run.log 2>&1; echo EXIT \$? >> ~/run.log'" < /dev/null
 started=$(date +%s)
-until ssh_ 'grep -q "^EXIT" ~/run.log' 2>/dev/null; do
+until ssh_ 'grep -q "^EXIT" ~/run.log' < /dev/null 2> /dev/null; do
   sleep 60
   log "running, $(( ($(date +%s) - started) / 60 )) min"
 done
-ssh_ 'tail -25 ~/run.log'
-status=$(ssh_ 'grep "^EXIT" ~/run.log' | awk '{print $2}')
+ssh_ 'tail -25 ~/run.log' < /dev/null
+status=$(ssh_ 'grep "^EXIT" ~/run.log' < /dev/null | awk '{print $2}')
 
 log "copying results back"
-copy_back
+copy_back || { log "copy-back failed"; exit 1; }
 log "suss run exited $status"
 exit "$status"
