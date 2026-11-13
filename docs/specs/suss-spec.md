@@ -32,6 +32,7 @@ claude-code     3         58% ±8  70% @3
 | Senior SWE-Bench | `snorkel-ai/senior-swe-bench-v2026.06` from Harbor Hub, as `harbor download` writes it | The `senior` lane's tasks. |
 | Python | 3.12 | Suss itself, whose agents and verifier Harbor imports. |
 | `uv` | any | Installs suss and Harbor. |
+| Azure CLI | any, signed in with `az login` | `scripts/azure-run.sh`, which runs one `suss run` on an Azure VM's Docker and deletes the VM once the results are copied back. |
 
 A Docker engine's kernel has the option when this prints `CONFIG_NFT_FIB_INET=y`
 or `CONFIG_NFT_FIB_INET=m`:
@@ -892,6 +893,8 @@ src/suss/
   judge.py        JudgeVerifier, which judges a senior trial there, then grades it
   leaderboard.py  suss leaderboard
   cli.py          the suss command
+scripts/
+  azure-run.sh    one suss run on a fresh Azure VM, then the VM deleted
 tests/
 docs/specs/
 ```
