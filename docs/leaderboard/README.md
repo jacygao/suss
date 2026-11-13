@@ -12,8 +12,8 @@ resolved rate, as `suss leaderboard --lane rebench` does.
 | Arm | Harness | Model | Date | Runs | Resolved rate | pass@k | Timed out | Cost per run, USD at pay-as-you-go prices | Agent time per run, sum of trials |
 |---|---|---|---|---:|---:|---:|---:|---:|---:|
 | `claude-opus` | Claude Code 2.1.311 | claude-opus-5-5, effort high | 2026-11-09 | 1 | 69% | | 3 | $118.98 | 17.8 h |
-| `copilot-opus` | Copilot CLI 1.0.107 | claude-opus-5.5, effort high | 2026-11-12 | 1 | 68% | | 5 | $125.70 | 26.6 h |
 | `copilot-gpt` | Copilot CLI 1.0.107 | gpt-6.1-sol, effort high | 2026-11-08 | 1 | 67% | | 0 | $41.86 | 11.3 h |
+| `copilot-opus` | Copilot CLI 1.0.107 | claude-opus-5.5, effort high | 2026-11-12, 2026-11-12 | 2 | 65% ±8 | 72% @2 | 12 | $117.94 | 27.5 h |
 | `copilot-sonnet` | Copilot CLI 1.0.107 | claude-sonnet-5.5, effort high | 2026-11-09, 2026-11-10, 2026-11-10 | 3 | 64% ±8 | 74% @3 | 5 | $35.39 | 15.0 h |
 | `copilot-fusion-high` | Copilot CLI 1.0.107 | Fusion, tier high | 2026-11-11, 2026-11-12 | 2 | 63% ±9 | 67% @2 | 8 | $33.28 | 21.4 h |
 | `copilot-fusion` | Copilot CLI 1.0.107 | Fusion, tier standard | 2026-11-08 | 1 | 62% | | 0 | $16.12 | 8.5 h |
@@ -21,8 +21,8 @@ resolved rate, as `suss leaderboard --lane rebench` does.
 | Arm | Job | Where it ran | Params | Median trial |
 |---|---|---|---|---:|
 | `claude-opus` | `20261109T002622Z-1` | Modal | version 2.1.311, effort high | 5.6 min |
-| `copilot-opus` | `20261112T093414Z-1` | Docker on a PC | version 1.0.107, effort high | 10.8 min |
 | `copilot-gpt` | `20261108T112743Z-1` | Modal | version 1.0.107, effort high | 5.2 min |
+| `copilot-opus` | `20261112T093414Z-1`, `20261112T212852Z-1` | Docker on a PC | version 1.0.107, effort high | 10.8 min, 12.1 min |
 | `copilot-sonnet` | `20261109T221503Z-1`, `20261110T074227Z-1`, `20261110T214213Z-1` | Docker on a PC | version 1.0.107, effort high | 3.9 min, 4.5 min, 4.9 min |
 | `copilot-fusion-high` | `20261111T035703Z-1`, `20261112T010208Z-1` | Docker on a PC | version 1.0.107, `fusion_tier` high | 7.5 min, 6.5 min |
 | `copilot-fusion` | `20261108T124036Z-1` | Modal | version 1.0.107 | 3.7 min |
@@ -35,8 +35,12 @@ resolved rate, as `suss leaderboard --lane rebench` does.
   Docker,** so that all of an arm's runs are on one machine. Their runs on
   Modal are left out: `copilot-fusion-high`'s `20261108T222220Z-1` resolved
   59%, and `copilot-opus`'s `20261108T212444Z-1` resolved 62%.
-- **One `copilot-opus` trial, `vuejs__core-14897`, has no grade,** since
-  Docker Compose failed to start its environment. It counts as unresolved.
+- **Three `copilot-opus` trials have no grade, and count as unresolved.**
+  Docker Compose failed to start the environment of `vuejs__core-14897` in
+  the first run and of `marimo-team__marimo-9754` in the second.
+  `kubernetes-sigs__kueue-11559` hit Harbor's own agent timeout in the second
+  run, which left no suss record and no test result, so Timed out leaves it
+  out.
 
 ## `senior`
 
