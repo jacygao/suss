@@ -113,7 +113,12 @@ ip=$(az vm create -g "$rg" -n suss-vm --image Ubuntu2404 --size "$size" \
 az network nsg rule create -g "$rg" --nsg-name suss-vmNSG -n ssh-from-me --priority 1000 \
   --source-address-prefixes "$me/32" --destination-port-ranges 22 --access Allow --protocol Tcp -o none
 log "VM at $ip; waiting for cloud-init"
-until ssh_ true < /dev/null 2> /dev/null; do sleep 10; done
+tries=0
+until ssh_ true < /dev/null 2> /dev/null; do
+  tries=$((tries + 1))
+  [ "$tries" -lt 30 ] || { log "no SSH to the VM after 5 min"; exit 1; }
+  sleep 10
+done
 ssh_ 'cloud-init status --wait > /dev/null' < /dev/null
 
 log "copying suss, $download and .env"
@@ -126,8 +131,8 @@ ssh_ bash -s "$lane" <<'EOF'
 set -e
 cd suss
 ~/.local/bin/uv sync -q
-n=$(~/.local/bin/uv run -q python - "$1" <<'PY'
-import subprocess, sys, tomllib
+~/.local/bin/uv run -q python - "$1" <<'PY'
+import re, subprocess, sys, tomllib
 from pathlib import Path
 from suss import lanes
 from suss.config import DOWNLOADS
@@ -136,18 +141,40 @@ tasks = [task for task in download.iterdir() if (task / "task.toml").is_file()]
 cpus, memory_mb = lanes.needs(lanes.read_tasks(tasks))
 info = subprocess.check_output(["docker", "info", "--format", "{{.NCPU}} {{.MemTotal}}"], text=True)
 docker_cpus, docker_bytes = map(int, info.split())
-print(min(docker_cpus // cpus, docker_bytes // (memory_mb * 1024 * 1024)))
+n = min(docker_cpus // cpus, docker_bytes // (memory_mb * 1024 * 1024))
+if n < 1:
+    sys.exit(f"one trial of {sys.argv[1]} does not fit this VM")
+# Only the top-level keys, which all come before the first table.
+text = open("suss.toml").read()
+table = re.search(r"(?m)^[ \t]*\[", text)
+head, rest = (text[: table.start()], text[table.start() :]) if table else (text, "")
+for key, value in (("environment", '"docker"'), ("concurrency", str(n))):
+    head, found = re.subn(rf"(?m)^[ \t]*{key}[ \t]*=.*$", f"{key} = {value}", head)
+    if found != 1:
+        sys.exit(f"suss.toml has {found} top-level {key} keys, not 1")
+open("suss.toml", "w").write(head + rest)
+data = tomllib.load(open("suss.toml", "rb"))
+if (data["environment"], data["concurrency"]) != ("docker", n):
+    sys.exit("suss.toml did not take environment = docker and the concurrency")
+print(f"concurrency = {n}")
 PY
-)
-[ "$n" -ge 1 ] || { echo "one trial of $1 does not fit this VM" >&2; exit 1; }
-sed -i "s/^environment = .*/environment = \"docker\"/; s/^concurrency = .*/concurrency = $n/" suss.toml
-echo "concurrency = $n"
 EOF
 
 log "suss run $arm $lane $check"
 ssh_ "cd suss && tmux new -d -s run '~/.local/bin/uv run suss run $arm $lane $check > ~/run.log 2>&1; echo EXIT \$? >> ~/run.log'" < /dev/null
 started=$(date +%s)
-until ssh_ 'grep -q "^EXIT" ~/run.log' < /dev/null 2> /dev/null; do
+# SSH exits 255 when it cannot reach the VM, and grep 1 or 2 while the run goes on.
+unreachable=0
+while :; do
+  code=0
+  ssh_ 'grep -q "^EXIT" ~/run.log' < /dev/null 2> /dev/null || code=$?
+  [ "$code" -eq 0 ] && break
+  if [ "$code" -eq 255 ]; then
+    unreachable=$((unreachable + 1))
+    [ "$unreachable" -lt 15 ] || { log "no SSH to the VM for 15 min; has your IP changed?"; exit 1; }
+  else
+    unreachable=0
+  fi
   sleep 60
   log "running, $(( ($(date +%s) - started) / 60 )) min"
 done
