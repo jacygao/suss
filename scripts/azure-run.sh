@@ -99,6 +99,8 @@ ip=
 copied=
 uploaded=
 assignment=
+# Set once the run starts: before then the VM holds no results to keep.
+launched=
 me=
 
 # Point the VM's SSH rule at this machine's public IP when that has changed,
@@ -133,20 +135,21 @@ copy_back() {
 finish() {
   local code=$? exists
   set +e
-  if [ -n "$ip" ] && [ -z "$copied" ]; then
+  if [ -n "$launched" ] && [ -z "$copied" ]; then
     log "copying results back"
     copy_back || { allow_me && copy_back; }
   fi
   exists=$(az group exists -n "$rg")
   if [ "$exists" = false ]; then
     :
-  elif [ -n "$ip" ] && [ -z "$copied" ]; then
+  elif [ -n "$launched" ] && [ -z "$copied" ]; then
     log "results NOT copied; $rg left running at $ip. Copy them, then: az group delete -n $rg --yes"
     code=1
   else
     # The VM's role is on the storage account, outside the group.
     if [ -n "$assignment" ] && ! az role assignment delete --ids "$assignment" -o none; then
       log "could not remove the VM's storage role; run: az role assignment delete --ids $assignment"
+      code=1
     fi
     log "deleting $rg"
     if ! az group delete -n "$rg" --yes; then
@@ -356,12 +359,18 @@ if [ -n "$url" ]; then
     [ -z "$ok" ] || break
     sleep 60
   done
-  if [ -n "$ok" ]; then echo "UPLOAD ok" >> ~/run.log; else echo "UPLOAD failed; see ~/upload.log" >> ~/run.log; fi
+  if [ -n "$ok" ]; then
+    echo "UPLOAD ok" >> ~/run.log
+  else
+    echo "UPLOAD failed; the end of azcopy's output:" >> ~/run.log
+    tail -n 50 ~/upload.log >> ~/run.log
+  fi
 fi
 echo "EXIT $code" >> ~/run.log
 EOF
 
 log "suss run $arm $lane $check, retrying up to $retries times"
+launched=1
 ssh_ "tmux new -d -s run 'bash ~/run.sh $retries \"$runs_url\" $arm $lane $check'" < /dev/null
 started=$(date +%s)
 # SSH exits 255 when it cannot reach the VM, and grep 1 or 2 while the run goes on.
