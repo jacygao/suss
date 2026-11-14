@@ -32,7 +32,9 @@ claude-code     3         58% ±8  70% @3
 | Senior SWE-Bench | `snorkel-ai/senior-swe-bench-v2026.06` from Harbor Hub, as `harbor download` writes it | The `senior` lane's tasks. |
 | Python | 3.12 | Suss itself, whose agents and verifier Harbor imports. |
 | `uv` | any | Installs suss and Harbor. |
-| Azure CLI | any, signed in with `az login` | `scripts/azure-run.sh`, which runs one `suss run` on an Azure VM's Docker and deletes the VM once the results are copied back. |
+| Azure CLI | any, signed in with `az login` | `scripts/azure-run.sh`, which runs one `suss run` on an Azure VM's Docker and deletes the VM once its results are kept. |
+| Azure Blob Storage | a container named by `SUSS_RUNS_URL`, in the environment or `.env`, that the signed-in user may write to | Keeping runs off any one machine. A VM uploads its `results/` and `checks/` there, at their paths under the checkout, and `scripts/results.sh down <mirror>` downloads what `suss leaderboard` reads, which then runs in `<mirror>`. |
+| `azcopy` | 10 | `scripts/results.sh`, and the VMs' uploads. |
 
 A Docker engine's kernel has the option when this prints `CONFIG_NFT_FIB_INET=y`
 or `CONFIG_NFT_FIB_INET=m`:
@@ -895,6 +897,7 @@ src/suss/
   cli.py          the suss command
 scripts/
   azure-run.sh    one suss run on a fresh Azure VM, then the VM deleted
+  results.sh      runs to and from Azure Blob Storage
 tests/
 docs/specs/
 ```

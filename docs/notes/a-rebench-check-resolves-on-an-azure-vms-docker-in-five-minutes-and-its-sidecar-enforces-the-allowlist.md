@@ -41,7 +41,10 @@ recheck-when: Harbor upgrades past 0.25.0, Harbor changes its egress sidecar, th
   with `Error: Model "claude-opus-5.5" from --model flag is not available.`
   before doing anything.
 
-- **Delete each VM's resource group once its results are copied back.** A
+- **Keep every run in Azure Blob Storage, and rank from a mirror of it.** No
+  run then depends on the machine that started it, and the VM uploads at
+  Azure's speed rather than over the caller's connection.
+- **Delete each VM's resource group once its results are kept.** A
   deallocated VM still bills for its disk and public IP, and the image the
   check built from cold took 51 s.
 
@@ -62,11 +65,34 @@ A subscription's first VM needs `Microsoft.Compute` and `Microsoft.Network`
 registered, with `az provider register -n <name> --wait`.
 
 The script creates resource group `suss-run-<region>`, with SSH open only to
-the caller's IP. It copies suss's tracked files, each lane's tasks and `.env`,
+the caller's IP. It copies suss's tracked files, the lane's tasks and `.env`,
 sets `environment = "docker"` and a `concurrency` the VM holds, and runs the
-arm in `tmux`. It copies `results/`, `checks/` and the console output, as
-`logs/azure-<region>-<arm>.out`, back into the checkout, then deletes the group.
-A second run in a region whose group still exists is refused.
+arm in `tmux`. The VM uploads `results/` and `checks/` to the container
+`SUSS_RUNS_URL` names, and the console output comes back as
+`logs/azure-<region>-<arm>.out`. Then the script removes the VM's storage role
+and deletes the group. A second run in a region whose group still exists is
+refused.
+
+### Storage
+
+```
+SUSS_RUNS_URL=https://sussae63383b.blob.core.windows.net/runs
+```
+
+Account `sussae63383b`, in group `suss-storage` in `australiaeast`, with
+shared keys and public access off, so every caller signs in with `az login`.
+Its blob paths are the paths under a checkout: `results/…`, `checks/…`, and
+`excluded/results/…` for runs the leaderboard leaves out. Each VM gets a
+system identity with Storage Blob Data Contributor on the `runs` container
+alone. A check's upload worked about 6 minutes after the role was granted.
+
+```bash
+scripts/results.sh down <mirror>
+(cd <mirror> && uv run --project <suss> suss leaderboard --lane rebench)
+```
+
+The download is the 5 files per trial the leaderboard reads: 28 MB in 33 s,
+against 6.2 GB for every run kept.
 
 Three runs at once, one per region:
 
