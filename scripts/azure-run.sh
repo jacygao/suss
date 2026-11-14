@@ -11,10 +11,19 @@
 # SIZE sets the VM size (default Standard_E20as_v5). suss.toml on the VM gets
 # environment = "docker" and the largest concurrency the lane's biggest task
 # fits in the VM's Docker.
+#
+# Before the copy-back, each trial whose agent never worked on its task runs
+# again on the same VM, up to RETRIES times (default 1). Those are the trials
+# whose environment or setup failed, and those whose agent failed without a
+# single model call. A trial that timed out, or failed after the agent did any
+# work, is never run again. The trials set aside go to
+# logs/azure-<region>-<arm>-retried/.
 set -euo pipefail
 
 region=$1 arm=$2 lane=$3 check=${4:-}
 size=${SIZE:-Standard_E20as_v5}
+retries=${RETRIES:-1}
+case $retries in ''|*[!0-9]*) echo "RETRIES is $retries, not a whole number" >&2; exit 2 ;; esac
 key=${SSH_KEY:-$HOME/.ssh/suss-azure}
 suss=$(pwd)
 rg="suss-run-$region"
@@ -62,15 +71,30 @@ EOF
 
 ip=
 copied=
+me=
+
+# Point the VM's SSH rule at this machine's public IP when that has changed,
+# as it does on a VPN switch. Succeeds only when it changed the rule.
+allow_me() {
+  local now
+  now=$(curl -fsS --max-time 10 https://api.ipify.org) || return 1
+  [ "$now" != "$me" ] || return 1
+  log "this machine's IP is now $now; letting it reach the VM"
+  # `me` changes only once the rule does, so a failed update is tried again.
+  az network nsg rule update -g "$rg" --nsg-name suss-vmNSG -n ssh-from-me \
+    --source-address-prefixes "$now/32" -o none || return 1
+  me=$now
+}
 
 # Copy results/, checks/ and the run's output back. Fails, with nothing marked
 # copied, when SSH or a transfer fails, so the VM is never deleted on a guess.
 copy_back() {
   local found dir
-  found=$(ssh_ 'cd suss && for d in results checks; do [ -d "$d" ] && echo "$d"; done; [ -f ~/run.log ] && echo run.log; true' < /dev/null) || return 1
+  found=$(ssh_ 'cd suss && for d in results checks; do [ -d "$d" ] && echo "$d"; done; [ -f ~/run.log ] && echo run.log; [ -d ~/retried ] && echo retried; true' < /dev/null) || return 1
   for dir in $found; do
     case $dir in
       run.log) mkdir -p "$suss/logs"; rsync_ "azureuser@$ip:run.log" "$suss/logs/azure-$region-$arm.out" || return 1 ;;
+      retried) mkdir -p "$suss/logs"; rsync_ "azureuser@$ip:retried/" "$suss/logs/azure-$region-$arm-retried/" || return 1 ;;
       *) rsync_ "azureuser@$ip:suss/$dir" "$suss/" || return 1 ;;
     esac
   done
@@ -82,7 +106,7 @@ finish() {
   set +e
   if [ -n "$ip" ] && [ -z "$copied" ]; then
     log "copying results back"
-    copy_back
+    copy_back || { allow_me && copy_back; }
   fi
   exists=$(az group exists -n "$rg")
   if [ "$exists" = false ]; then
@@ -117,6 +141,7 @@ tries=0
 until ssh_ true < /dev/null 2> /dev/null; do
   tries=$((tries + 1))
   [ "$tries" -lt 30 ] || { log "no SSH to the VM after 5 min"; exit 1; }
+  allow_me || true
   sleep 10
 done
 ssh_ 'cloud-init status --wait > /dev/null' < /dev/null
@@ -160,8 +185,125 @@ print(f"concurrency = {n}")
 PY
 EOF
 
-log "suss run $arm $lane $check"
-ssh_ "cd suss && tmux new -d -s run '~/.local/bin/uv run suss run $arm $lane $check > ~/run.log 2>&1; echo EXIT \$? >> ~/run.log'" < /dev/null
+ssh_ 'cat > ~/retry.py' <<'EOF'
+"""
+Run again, up to argv[1] times, each trial whose agent never worked on its task.
+
+Each such trial is set aside under ~/retried/<attempt>/, and its job resumed
+with the environment suss gives the job's `harbor run`. A trial the resume
+made no replacement for is put back, so it still counts as unresolved. Exits
+1 when a resume failed or a trial was put back.
+"""
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+from suss import cli, config
+
+# Harbor raises these before the agent starts on the task.
+SETUP = {
+    "AgentSetupTimeoutError",
+    "ComposeLoadError",
+    "EnvironmentStartTimeoutError",
+    "HealthcheckError",
+    "SandboxBuildFailedError",
+}
+
+
+def read(path):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def spent(trial):
+    result = read(trial / "result.json").get("agent_result") or {}
+    usage = read(trial / "agent" / "suss.json").get("usage") or {}
+    found = (result.get("n_input_tokens"), result.get("cost_usd"), usage.get("ai_credits"))
+    return any(isinstance(value, (int, float)) and value > 0 for value in found)
+
+
+def never_worked(trial):
+    error = (read(trial / "result.json").get("exception_info") or {}).get("exception_type")
+    if error is None or error == "AgentTimeoutError":
+        return False
+    return error in SETUP or not spent(trial)
+
+
+def trials(job):
+    return [t for t in job.iterdir() if t.is_dir() and not t.name.startswith(".")]
+
+
+def task(trial):
+    """The task a trial ran: its directory's name less Harbor's suffix."""
+    return trial.name.rsplit("__", 1)[0]
+
+
+def main():
+    retries, arm, lane = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+    check = "--check" in sys.argv[4:]
+    harbor = Path(sys.executable).parent / "harbor"
+    settings = config.load(Path("suss.toml"), arm, lane)
+    job_command = cli._plan(settings, (), lane, "retry", [], check, harbor).jobs[0]
+    env = cli._environment(job_command)
+    failed = False
+    for attempt in range(1, retries + 1):
+        jobs = [path.parent for path in sorted(Path(".").glob("*/*/*/*/config.json"))]
+        # Every trial is chosen before any moves, so a fault while choosing moves none.
+        chosen = {
+            job: [t for t in trials(job) if never_worked(t)]
+            for job in jobs
+            if job.parts[0] in ("results", "checks")
+        }
+        chosen = {job: found for job, found in chosen.items() if found}
+        if not chosen:
+            break
+        aside = Path.home() / "retried" / str(attempt)
+        for job, found in chosen.items():
+            moved = []
+            try:
+                (aside / job).mkdir(parents=True, exist_ok=True)
+                for trial in found:
+                    shutil.move(str(trial), str(aside / trial))
+                    moved.append(trial)
+                print(f"azure-run: attempt {attempt} at {len(found)} trials in {job} whose agent never worked on the task", flush=True)
+                if subprocess.call([str(harbor), "jobs", "resume", "-p", str(job)], env=env) != 0:
+                    print(f"azure-run: harbor jobs resume failed on {job}", flush=True)
+                    failed = True
+            except Exception as error:
+                print(f"azure-run: the retry of {job} failed: {error}", flush=True)
+                failed = True
+            finally:
+                # Whatever failed, a set-aside trial with no replacement goes back.
+                made = {task(t) for t in trials(job)}
+                for trial in moved:
+                    if task(trial) not in made:
+                        shutil.move(str(aside / trial), str(trial))
+                        print(f"azure-run: put back {trial.name}, which the resume did not run again", flush=True)
+                        failed = True
+    sys.exit(1 if failed else 0)
+
+
+main()
+EOF
+ssh_ 'cat > ~/run.sh' <<'EOF'
+cd ~/suss
+retries=$1
+shift
+~/.local/bin/uv run suss run "$@" > ~/run.log 2>&1
+code=$?
+if ! ~/.local/bin/uv run python ~/retry.py "$retries" "$@" >> ~/run.log 2>&1; then
+  echo "azure-run: the retry failed; its output is above" >> ~/run.log
+  [ "$code" -ne 0 ] || code=1
+fi
+echo "EXIT $code" >> ~/run.log
+EOF
+
+log "suss run $arm $lane $check, retrying up to $retries times"
+ssh_ "tmux new -d -s run 'bash ~/run.sh $retries $arm $lane $check'" < /dev/null
 started=$(date +%s)
 # SSH exits 255 when it cannot reach the VM, and grep 1 or 2 while the run goes on.
 unreachable=0
@@ -171,7 +313,8 @@ while :; do
   [ "$code" -eq 0 ] && break
   if [ "$code" -eq 255 ]; then
     unreachable=$((unreachable + 1))
-    [ "$unreachable" -lt 15 ] || { log "no SSH to the VM for 15 min; has your IP changed?"; exit 1; }
+    [ "$unreachable" -lt 15 ] || { log "no SSH to the VM for 15 min"; exit 1; }
+    allow_me || true
   else
     unreachable=0
   fi
