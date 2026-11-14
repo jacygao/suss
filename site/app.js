@@ -89,7 +89,7 @@
       var selected = arm.name === picked;
       return el("tr", { class: selected ? "selected" : "" }, [
         el("td", { class: "rank", text: String(i + 1) }),
-        el("td", {}, [el("button", { type: "button", class: "arm-btn", "aria-pressed": String(selected), on: { click: function () { picked = arm.name; render(); } } }, [
+        el("td", {}, [el("button", { type: "button", class: "arm-btn", "data-arm": arm.name, "aria-pressed": String(selected), on: { click: function () { pick(arm.name); } } }, [
           el("span", { class: "arm-name", text: arm.name }),
           el("span", { class: "arm-sub", text: arm.harness + " · " + arm.model })
         ])]),
@@ -239,6 +239,14 @@
       ]));
     });
     return out;
+  }
+
+  // A render replaces every button, so focus goes back to the one just pressed.
+  function pick(name) {
+    picked = name;
+    render();
+    var again = Array.prototype.filter.call(app.querySelectorAll(".arm-btn"), function (b) { return b.dataset.arm === name; })[0];
+    if (again) again.focus();
   }
 
   function render() {
