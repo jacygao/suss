@@ -11,10 +11,19 @@
 # SIZE sets the VM size (default Standard_E20as_v5). suss.toml on the VM gets
 # environment = "docker" and the largest concurrency the lane's biggest task
 # fits in the VM's Docker.
+#
+# Before the copy-back, each trial whose agent never worked on its task runs
+# again on the same VM, up to RETRIES times (default 1). Those are the trials
+# whose environment or setup failed, and those whose agent failed without a
+# single model call. A trial that timed out, or failed after the agent did any
+# work, is never run again. The trials set aside go to
+# logs/azure-<region>-<arm>-retried/.
 set -euo pipefail
 
 region=$1 arm=$2 lane=$3 check=${4:-}
 size=${SIZE:-Standard_E20as_v5}
+retries=${RETRIES:-1}
+case $retries in ''|*[!0-9]*) echo "RETRIES is $retries, not a whole number" >&2; exit 2 ;; esac
 key=${SSH_KEY:-$HOME/.ssh/suss-azure}
 suss=$(pwd)
 rg="suss-run-$region"
@@ -67,10 +76,11 @@ copied=
 # copied, when SSH or a transfer fails, so the VM is never deleted on a guess.
 copy_back() {
   local found dir
-  found=$(ssh_ 'cd suss && for d in results checks; do [ -d "$d" ] && echo "$d"; done; [ -f ~/run.log ] && echo run.log; true' < /dev/null) || return 1
+  found=$(ssh_ 'cd suss && for d in results checks; do [ -d "$d" ] && echo "$d"; done; [ -f ~/run.log ] && echo run.log; [ -d ~/retried ] && echo retried; true' < /dev/null) || return 1
   for dir in $found; do
     case $dir in
       run.log) mkdir -p "$suss/logs"; rsync_ "azureuser@$ip:run.log" "$suss/logs/azure-$region-$arm.out" || return 1 ;;
+      retried) mkdir -p "$suss/logs"; rsync_ "azureuser@$ip:retried/" "$suss/logs/azure-$region-$arm-retried/" || return 1 ;;
       *) rsync_ "azureuser@$ip:suss/$dir" "$suss/" || return 1 ;;
     esac
   done
@@ -160,8 +170,75 @@ print(f"concurrency = {n}")
 PY
 EOF
 
-log "suss run $arm $lane $check"
-ssh_ "cd suss && tmux new -d -s run '~/.local/bin/uv run suss run $arm $lane $check > ~/run.log 2>&1; echo EXIT \$? >> ~/run.log'" < /dev/null
+ssh_ 'cat > ~/retry.py' <<'EOF'
+"""Move aside each trial whose agent never worked on its task, into argv[1], and print each job it came from."""
+import json
+import shutil
+import sys
+from pathlib import Path
+
+# Harbor raises these before the agent starts on the task.
+SETUP = {
+    "AgentSetupTimeoutError",
+    "ComposeLoadError",
+    "EnvironmentStartTimeoutError",
+    "HealthcheckError",
+    "SandboxBuildFailedError",
+}
+
+
+def read(path):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def spent(trial):
+    result = read(trial / "result.json").get("agent_result") or {}
+    usage = read(trial / "agent" / "suss.json").get("usage") or {}
+    found = (result.get("n_input_tokens"), result.get("cost_usd"), usage.get("ai_credits"))
+    return any(isinstance(value, (int, float)) and value > 0 for value in found)
+
+
+def never_worked(trial):
+    error = (read(trial / "result.json").get("exception_info") or {}).get("exception_type")
+    if error is None or error == "AgentTimeoutError":
+        return False
+    return error in SETUP or not spent(trial)
+
+
+aside = Path(sys.argv[1])
+for config in sorted(Path(".").glob("*/*/*/*/config.json")):
+    job = config.parent
+    if job.parts[0] not in ("results", "checks"):
+        continue
+    moved = [t for t in job.iterdir() if t.is_dir() and not t.name.startswith(".") and never_worked(t)]
+    for trial in moved:
+        (aside / job).mkdir(parents=True, exist_ok=True)
+        shutil.move(str(trial), str(aside / trial))
+    if moved:
+        print(job)
+EOF
+ssh_ 'cat > ~/run.sh' <<'EOF'
+cd ~/suss
+retries=$1
+shift
+~/.local/bin/uv run suss run "$@" > ~/run.log 2>&1
+code=$?
+for attempt in $(seq 1 "$retries"); do
+  jobs=$(python3 ~/retry.py ~/retried/"$attempt") || break
+  [ -n "$jobs" ] || break
+  echo "azure-run: attempt $attempt at the trials whose agent never worked on the task, in: $jobs" >> ~/run.log
+  for job in $jobs; do
+    ~/.local/bin/uv run harbor jobs resume -p "$job" >> ~/run.log 2>&1
+  done
+done
+echo "EXIT $code" >> ~/run.log
+EOF
+
+log "suss run $arm $lane $check, retrying up to $retries times"
+ssh_ "tmux new -d -s run 'bash ~/run.sh $retries $arm $lane $check'" < /dev/null
 started=$(date +%s)
 # SSH exits 255 when it cannot reach the VM, and grep 1 or 2 while the run goes on.
 unreachable=0
