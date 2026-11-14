@@ -13,6 +13,26 @@ from harbor.models.task.config import EnvironmentConfig
 from harbor.models.trial.paths import TrialPaths
 
 
+# A developer's own credentials, which Harbor loads into the process from a
+# .env in the current directory. A test that sees one passes or fails on
+# whoever runs it.
+CREDENTIALS = (
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "COPILOT_GITHUB_TOKEN",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "OPENAI_API_KEY",
+    "PORTKEY_API_KEY",
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_credentials(monkeypatch):
+    for name in CREDENTIALS:
+        monkeypatch.delenv(name, raising=False)
+
+
 class LocalEnvironment(BaseEnvironment):
     """
     Harbor's environment, run on this machine, so SWE-drill's parts can be tested
