@@ -162,7 +162,7 @@
         el("div", {}, [el("h2", { id: "cost-title", text: "Resolved rate against cost" }), el("p", { class: "small muted", text: "Cost per run at pay-as-you-go prices. Up and to the left is better." })]),
         el("div", { class: "scatter", role: "img", "aria-label": "Resolved rate against cost per run: " + described }, [
           el("div", { class: "y", "aria-hidden": "true" }, ["68%", "64%", "60%"].map(function (t) { return el("span", { text: t }); })),
-          el("div", { class: "plot-wrap" }, [el("div", { class: "plot" }, points), el("div", { class: "x", "aria-hidden": "true" }, ["$0", "$40", "$80", "$120"].map(function (t) { return el("span", { text: t }); }))])
+          el("div", { class: "plot-wrap" }, [el("div", { class: "plot" }, points), el("div", { class: "x", "aria-hidden": "true" }, [0, 40, 80, 120].map(function (t) { return el("span", { text: "$" + t, style: "left: " + (t / maxCost) * 100 + "%" }); }))])
         ])
       ])]),
       el("section", { class: "card", "aria-labelledby": "read-title" }, [el("div", { class: "card-body" }, [
