@@ -1,9 +1,13 @@
 name: Leaderboard site
 
-# Publishes site/ to GitHub Pages. It runs only when started by hand, because
-# Pages publishes to anyone who has the address: start it once Pages is turned
-# on for the repository, with GitHub Actions as its source.
+# Publishes site/ to GitHub Pages whenever it changes on main. Starting it by
+# hand republishes main as it stands, as after a rename moves the address.
 on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 permissions:

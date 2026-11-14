@@ -905,7 +905,7 @@ scripts/
   results.sh        runs to and from Azure Blob Storage
 site/               the leaderboard page, static, drawn from leaderboard.json
 .github/workflows/
-  pages.yml         publishes site/ to GitHub Pages, when started by hand
+  pages.yml         publishes site/ to GitHub Pages whenever it changes on main
 tests/
 docs/specs/
 ```
