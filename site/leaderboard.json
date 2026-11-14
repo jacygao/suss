@@ -1,5 +1,5 @@
 {
-  "updated": "2026-11-14",
+  "updated": "2026-11-15",
   "rebench": {
     "title": "rebench",
     "about": "SWE-rebench’s July 2026 snapshot: 108 GitHub issues from open-source repositories, each graded by its own hidden tests. Every arm runs the same tasks, graded the same way.",
@@ -108,30 +108,36 @@
         "name": "copilot-fusion-high",
         "harness": "Copilot CLI 1.0.107",
         "model": "Fusion, tier high",
-        "rate": 0.63,
-        "margin": 0.09,
-        "pass": 0.67,
-        "timedOut": 8,
-        "cost": 33.28,
-        "hours": 21.4,
-        "tokens": null,
-        "where": "Docker · PC",
+        "rate": 0.6296,
+        "margin": 0.0864,
+        "pass": 0.6944,
+        "timedOut": 4,
+        "cost": 31.92,
+        "hours": 16.8,
+        "tokens": 828000,
+        "where": "Docker · Azure",
         "params": "version 1.0.107, fusion_tier high",
         "runs": [
           {
-            "job": "20261111T035703Z-1",
-            "date": "2026-11-11",
-            "where": "Docker on a PC",
-            "median": 7.5
+            "job": "20261114T124819Z-1",
+            "date": "2026-11-14",
+            "where": "Docker on Azure, Australia East",
+            "median": 5.2
           },
           {
-            "job": "20261112T010208Z-1",
-            "date": "2026-11-12",
-            "where": "Docker on a PC",
-            "median": 6.5
+            "job": "20261114T125147Z-1",
+            "date": "2026-11-14",
+            "where": "Docker on Azure, New Zealand North",
+            "median": 5.5
+          },
+          {
+            "job": "20261114T125449Z-1",
+            "date": "2026-11-14",
+            "where": "Docker on Azure, Korea Central",
+            "median": 5.4
           }
         ],
-        "note": "Its run on Modal, which resolved 59%, is left out, so that both runs are on one kind of machine."
+        "note": "The three runs ran at once, one Azure region each, and no trial needed running again. Four trials have no test result and count as unresolved. Its run on Modal, which resolved 59%, and its two runs on a PC, which resolved 63%, are left out."
       },
       {
         "name": "copilot-fusion",

@@ -17,7 +17,7 @@ resolved rate, as `swe-drill leaderboard --lane rebench` does.
 | `claude-opus` | Claude Code 2.1.311 | claude-opus-5-5, effort high | 2026-11-09, 2026-11-11 | 2 | 66% ±9 | 70% @2 | 5 | $120.40 | 17.3 h |
 | `copilot-opus` | Copilot CLI 1.0.107 | claude-opus-5.5, effort high | 2026-11-12, 2026-11-12, 2026-11-13 | 3 | 65% ±8 | 75% @3 | 17 | $119.09 | 27.6 h |
 | `copilot-sonnet` | Copilot CLI 1.0.107 | claude-sonnet-5.5, effort high | 2026-11-09, 2026-11-10, 2026-11-10 | 3 | 64% ±8 | 74% @3 | 5 | $35.39 | 15.0 h |
-| `copilot-fusion-high` | Copilot CLI 1.0.107 | Fusion, tier high | 2026-11-11, 2026-11-12 | 2 | 63% ±9 | 67% @2 | 8 | $33.28 | 21.4 h |
+| `copilot-fusion-high` | Copilot CLI 1.0.107 | Fusion, tier high | 2026-11-14, 2026-11-14, 2026-11-14 | 3 | 63% ±9 | 69% @3 | 4 | $31.92 | 16.8 h |
 | `copilot-fusion` | Copilot CLI 1.0.107 | Fusion, tier standard | 2026-11-13, 2026-11-13, 2026-11-13 | 3 | 62% ±9 | 67% @3 | 0 | $15.23 | 12.4 h |
 | `copilot-gpt-6.1-sol` | Copilot CLI 1.0.107 | gpt-6.1-sol, effort high | 2026-11-14, 2026-11-14, 2026-11-14 | 3 | 62% ±9 | 67% @3 | 1 | $44.06 | 14.8 h |
 
@@ -26,7 +26,7 @@ resolved rate, as `swe-drill leaderboard --lane rebench` does.
 | `claude-opus` | `20261109T002622Z-1`, `20261111T060421Z-1` | Modal | version 2.1.311, effort high | 5.6 min, 5.8 min |
 | `copilot-opus` | `20261112T093414Z-1`, `20261112T212852Z-1`, `20261113T063106Z-1` | Docker on a PC | version 1.0.107, effort high | 10.8 min, 12.1 min, 11.5 min |
 | `copilot-sonnet` | `20261109T221503Z-1`, `20261110T074227Z-1`, `20261110T214213Z-1` | Docker on a PC | version 1.0.107, effort high | 3.9 min, 4.5 min, 4.9 min |
-| `copilot-fusion-high` | `20261111T035703Z-1`, `20261112T010208Z-1` | Docker on a PC | version 1.0.107, `fusion_tier` high | 7.5 min, 6.5 min |
+| `copilot-fusion-high` | `20261114T124819Z-1`, `20261114T125147Z-1`, `20261114T125449Z-1` | Docker on Azure VMs | version 1.0.107, `fusion_tier` high | 5.2 min, 5.5 min, 5.4 min |
 | `copilot-fusion` | `20261113T223307Z-1`, `20261113T223410Z-1`, `20261113T223531Z-1` | Docker on Azure VMs | version 1.0.107 | 5.2 min, 4.8 min, 5.6 min |
 | `copilot-gpt-6.1-sol` | `20261114T042619Z-1`, `20261114T042923Z-1`, `20261114T043249Z-1` | Docker on Azure VMs | version 1.0.107, effort high | 5.5 min, 5.7 min, 5.9 min |
 
@@ -42,15 +42,22 @@ resolved rate, as `swe-drill leaderboard --lane rebench` does.
   `20261108T112743Z-1` 67%, and `copilot-opus`'s `20261108T212444Z-1` 62%.
   `copilot-gpt` is `copilot-gpt-6.1-sol`'s name from before the arms were
   named for their agent and model.
-- **`copilot-fusion`'s and `copilot-gpt-6.1-sol`'s runs ran three at a time,
-  one Azure region each.** Copilot CLI never started on 12 of
+- **`copilot-fusion-high`'s runs on a PC are left out too,** so that all three
+  of its runs are on Azure: `20261111T035703Z-1` and `20261112T010208Z-1`
+  together resolved 63%.
+- **`copilot-fusion`'s, `copilot-gpt-6.1-sol`'s and `copilot-fusion-high`'s
+  runs ran three at a time, one Azure region each.** Copilot CLI never started on 12 of
   `copilot-fusion`'s trials, refused by Copilot's model router or out of time
-  in setup, and those 12 ran again on a fresh VM. `copilot-gpt-6.1-sol`'s runs
-  started three minutes apart, and none of their trials needed running again.
+  in setup, and those 12 ran again on a fresh VM. `copilot-gpt-6.1-sol`'s and
+  `copilot-fusion-high`'s runs started three minutes apart, and none of their
+  trials needed running again.
 - **Two `copilot-gpt-6.1-sol` trials have no test result, and count as
   unresolved.** The patches of `mikro-orm__mikro-orm-7799` in the first run and
   `apache__pulsar-25953` in the third applied, but their verifiers recorded no
   test result.
+- **Four `copilot-fusion-high` trials have no test result, and count as
+  unresolved.** They are `apache__hugegraph-3037` and `apache__pulsar-25953`
+  in both the second run and the third.
 - **Three `copilot-opus` trials have no grade, and count as unresolved.**
   Docker Compose failed to start the environment of `vuejs__core-14897` in
   the first run and of `marimo-team__marimo-9754` in the second.
@@ -139,8 +146,7 @@ resolved 98% of `pro-go`, leaving no room to tell harnesses apart.
 Run from the directory holding `swe-drill.toml` and `results/`, with `<checkout>` the
 checkout of this repository. The `rebench` resolved rates, margins and pass@k
 come from `swe-drill leaderboard`, which ranks every arm under `results/rebench/`.
-`copilot-fusion-high`'s and `copilot-opus`'s come from the PC holding only
-their runs on Docker. Every other arm's come from a mirror of the runs kept in
+`copilot-opus`'s come from the PC holding only its runs on Docker. Every other arm's come from a mirror of the runs kept in
 Azure Blob Storage:
 
 ```bash
