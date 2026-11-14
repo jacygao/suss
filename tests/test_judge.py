@@ -1244,6 +1244,25 @@ def test_a_task_with_no_validation_spec_leaves_test_sh_nothing(box, workspace, l
     assert not Path(verifier.paths.validation).exists()
 
 
+def test_a_setup_that_fails_after_leaving_the_token_still_removes_it(
+    box, design, workspace, local_environment, validated, monkeypatch
+):
+    prepare = JudgeVerifier._prepare_validation
+
+    async def prepare_then_fail(self):
+        await prepare(self)
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(JudgeVerifier, "_prepare_validation", prepare_then_fail)
+    verifier = judge_verifier(box, local_environment, a_patch(workspace))
+
+    with pytest.raises(asyncio.CancelledError):
+        verify(verifier)
+
+    assert validated.runs == []
+    assert not Path(verifier.paths.validation).exists()
+
+
 def test_no_file_holding_the_token_outlives_test_sh_in_the_sandbox_or_the_trial(
     box, design, workspace, local_environment, validated
 ):

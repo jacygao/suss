@@ -687,8 +687,10 @@ job with an organization you are not a member of.
 
 A run of `senior` exits with an error before it builds any lane or runs any
 job, with `DRY_RUN=1` and `--check` too, when `swe-drill.toml` has no
-`[lanes.senior.judge]`, or `.env` sets no `COPILOT_GITHUB_TOKEN`. A token set to
-an empty value counts as missing:
+`[lanes.senior.judge]`, or `.env` sets no `COPILOT_GITHUB_TOKEN`, or sets
+`TIMEOUT_MULTIPLIER` to anything but 1. `run_validate.py` multiplies the
+validation agent's timeouts by it, and the lane's verifier timeout makes room
+for them unmultiplied. A token set to an empty value counts as missing:
 
 ```
 $ swe-drill run copilot-gpt senior

@@ -418,7 +418,7 @@ class JudgeVerifier(ReplayVerifier):
         that reaches the judge is raised again once the test files are back.
 
         On a design task, test.sh gets what `_prepare_validation` leaves, and
-        however it ends, `_after_validation` runs.
+        however either ends, `_after_validation` runs.
         """
         needed = self.judge_seconds + CLEANUP_SECONDS
         if self.task.config.verifier.timeout_sec <= needed:
@@ -449,8 +449,8 @@ class JudgeVerifier(ReplayVerifier):
             raise self._cancelled
         if not (self.task.paths.task_dir / lanes.senior.VALIDATION_SPEC).is_file():
             return await Verifier.verify(self)
-        await self._prepare_validation()
         try:
+            await self._prepare_validation()
             return await Verifier.verify(self)
         finally:
             await self._after_validation()

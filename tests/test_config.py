@@ -513,6 +513,23 @@ def test_a_senior_run_with_no_copilot_token_is_refused_naming_it(tmp_path: Path,
     )
 
 
+@pytest.mark.parametrize("value", ["", "1"])
+def test_a_senior_run_takes_no_timeout_multiplier_or_one_of_one(tmp_path: Path, value: str):
+    config.check_judge(senior(tmp_path, JUDGE, f"COPILOT_GITHUB_TOKEN=gh-1\nTIMEOUT_MULTIPLIER={value}\n"), "senior")
+
+
+def test_a_senior_run_with_a_timeout_multiplier_is_refused_naming_it(tmp_path: Path):
+    settings = senior(tmp_path, JUDGE, "COPILOT_GITHUB_TOKEN=gh-1\nTIMEOUT_MULTIPLIER=3\n")
+
+    with pytest.raises(config.ConfigError) as error:
+        config.check_judge(settings, "senior")
+
+    assert str(error.value) == (
+        f"{tmp_path / '.env'} sets TIMEOUT_MULTIPLIER=3, which would lengthen senior's validation agent past"
+        " the verifier timeout the lane gives it; leave it unset"
+    )
+
+
 def test_a_senior_run_needs_no_key_for_seniors_own_judges(tmp_path: Path):
     settings = senior(tmp_path, JUDGE)
 

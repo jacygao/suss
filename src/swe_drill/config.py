@@ -337,12 +337,16 @@ def grading_choices(env: Mapping[str, str]) -> dict[str, str]:
 # SWE-drill judges senior itself, on a Copilot subscription, so no job is given them.
 GRADING_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PORTKEY_API_KEY")
 TOKEN_NAME = "COPILOT_GITHUB_TOKEN"
+TIMEOUT_MULTIPLIER = "TIMEOUT_MULTIPLIER"
 
 
 def check_judge(settings: Config, lane: str) -> None:
     """
     Refuse a senior run with no judge: no `[lanes.senior.judge]` in swe-drill.toml,
-    or no COPILOT_GITHUB_TOKEN in .env. Every other lane passes.
+    or no COPILOT_GITHUB_TOKEN in .env. Refuse one whose .env sets
+    TIMEOUT_MULTIPLIER to other than 1 too, since run_validate.py multiplies
+    the validation agent's timeouts by it and the lane's verifier timeout does
+    not. Every other lane passes.
 
     An empty token counts as unset. Raises ConfigError naming what is missing.
     """
@@ -357,6 +361,12 @@ def check_judge(settings: Config, lane: str) -> None:
         raise ConfigError(
             f"{settings.path.parent / '.env'} sets no {TOKEN_NAME}, which SWE-drill judges the trials"
             f" of {lane} with"
+        )
+    multiplier = settings.env.get(TIMEOUT_MULTIPLIER, "")
+    if multiplier not in ("", "1"):
+        raise ConfigError(
+            f"{settings.path.parent / '.env'} sets {TIMEOUT_MULTIPLIER}={multiplier}, which would lengthen"
+            f" senior's validation agent past the verifier timeout the lane gives it; leave it unset"
         )
 
 

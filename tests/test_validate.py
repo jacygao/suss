@@ -392,8 +392,10 @@ def test_an_empty_effort_passes_none(box):
     fix(box)
     write_settings(box, effort="")
 
-    validate_in(box)
+    run = validate_in(box)
 
+    assert run.returncode == 0, explain(run)
+    assert [call["kind"] for call in calls(box)] == ["agent", "review", "review"]
     assert all("--reasoning-effort" not in call["flags"] for call in calls(box))
 
 
