@@ -16,7 +16,7 @@ resolved rate, as `suss leaderboard --lane rebench` does.
 | `copilot-opus` | Copilot CLI 1.0.107 | claude-opus-5.5, effort high | 2026-11-12, 2026-11-12 | 2 | 65% ±8 | 72% @2 | 12 | $117.94 | 27.5 h |
 | `copilot-sonnet` | Copilot CLI 1.0.107 | claude-sonnet-5.5, effort high | 2026-11-09, 2026-11-10, 2026-11-10 | 3 | 64% ±8 | 74% @3 | 5 | $35.39 | 15.0 h |
 | `copilot-fusion-high` | Copilot CLI 1.0.107 | Fusion, tier high | 2026-11-11, 2026-11-12 | 2 | 63% ±9 | 67% @2 | 8 | $33.28 | 21.4 h |
-| `copilot-fusion` | Copilot CLI 1.0.107 | Fusion, tier standard | 2026-11-08 | 1 | 62% | | 0 | $16.12 | 8.5 h |
+| `copilot-fusion` | Copilot CLI 1.0.107 | Fusion, tier standard | 2026-11-13, 2026-11-13, 2026-11-13 | 3 | 62% ±9 | 67% @3 | 0 | $15.23 | 12.4 h |
 
 | Arm | Job | Where it ran | Params | Median trial |
 |---|---|---|---|---:|
@@ -25,16 +25,20 @@ resolved rate, as `suss leaderboard --lane rebench` does.
 | `copilot-opus` | `20261112T093414Z-1`, `20261112T212852Z-1` | Docker on a PC | version 1.0.107, effort high | 10.8 min, 12.1 min |
 | `copilot-sonnet` | `20261109T221503Z-1`, `20261110T074227Z-1`, `20261110T214213Z-1` | Docker on a PC | version 1.0.107, effort high | 3.9 min, 4.5 min, 4.9 min |
 | `copilot-fusion-high` | `20261111T035703Z-1`, `20261112T010208Z-1` | Docker on a PC | version 1.0.107, `fusion_tier` high | 7.5 min, 6.5 min |
-| `copilot-fusion` | `20261108T124036Z-1` | Modal | version 1.0.107 | 3.7 min |
+| `copilot-fusion` | `20261113T223307Z-1`, `20261113T223410Z-1`, `20261113T223531Z-1` | Docker on Azure VMs | version 1.0.107 | 5.2 min, 4.8 min, 5.6 min |
 
 - **Gaps of a few points may be noise.** One run of an arm moves by a few
   points on its own, and the ± covers one arm's rate, not the gap between two.
-- **Runs on Docker on a PC are slower than on Modal.** Their trials took
-  longer and timed out more often. The jobs table says where each run ran.
-- **`copilot-fusion-high` and `copilot-opus` are ranked on their runs on
-  Docker,** so that all of an arm's runs are on one machine. Their runs on
-  Modal are left out: `copilot-fusion-high`'s `20261108T222220Z-1` resolved
-  59%, and `copilot-opus`'s `20261108T212444Z-1` resolved 62%.
+- **Runs on Docker are slower than on Modal.** Their trials took longer, and
+  on a PC they timed out more often. The jobs table says where each run ran.
+- **`copilot-fusion`, `copilot-fusion-high` and `copilot-opus` are ranked on
+  their runs on Docker,** so that all of an arm's runs are on one kind of
+  machine. Their runs on Modal are left out: `copilot-fusion`'s
+  `20261108T124036Z-1` resolved 62%, `copilot-fusion-high`'s
+  `20261108T222220Z-1` 59%, and `copilot-opus`'s `20261108T212444Z-1` 62%.
+- **`copilot-fusion`'s three runs ran at once, one Azure region each.** Copilot
+  CLI never started on 12 of their trials, refused by Copilot's model router or
+  out of time in setup, and those 12 ran again on a fresh VM.
 - **Three `copilot-opus` trials have no grade, and count as unresolved.**
   Docker Compose failed to start the environment of `vuejs__core-14897` in
   the first run and of `marimo-team__marimo-9754` in the second.
@@ -124,7 +128,8 @@ Run from the directory holding `suss.toml` and `results/`, with `<suss>` the
 checkout of this repository. The `rebench` resolved rates, margins and pass@k
 come from `suss leaderboard`, which ranks every arm under `results/rebench/`.
 `copilot-fusion-high`'s and `copilot-opus`'s come from the PC holding only
-their runs on Docker:
+their runs on Docker, and `copilot-fusion`'s from a directory holding only its
+runs on Azure:
 
 ```bash
 uv run --project <suss> suss leaderboard --lane rebench
