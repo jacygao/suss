@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
-# Run one `suss run` on a fresh Azure VM, copy its results back, and delete the VM.
+# Run one `suss run` on a fresh Azure VM, keep its results, and delete the VM.
 #
 #   scripts/azure-run.sh <region> <arm> <lane> [--check]
 #
-# Run it from a suss checkout with a .env, signed in with `az login`. The VM's
-# resource group is deleted only once results/, checks/ and the run's output
-# are copied back. If the copy or the delete fails, the script exits non-zero
-# and prints the command that deletes the group.
+# Run it from a suss checkout with a .env, signed in with `az login`.
+#
+# With SUSS_RUNS_URL set, in the environment or .env, to a blob container such
+# as https://<account>.blob.core.windows.net/runs, the VM uploads results/ and
+# checks/ there itself, at their paths under the checkout, and only the run's
+# output comes back here. COPY_BACK=1 copies results/ and checks/ back too, as
+# happens without SUSS_RUNS_URL or when the upload fails.
+#
+# The VM's resource group is deleted only once its results are kept. If that
+# or the delete fails, the script exits non-zero and prints the command that
+# deletes the group.
 #
 # SIZE sets the VM size (default Standard_E20as_v5). suss.toml on the VM gets
 # environment = "docker" and the largest concurrency the lane's biggest task
@@ -30,6 +37,24 @@ rg="suss-run-$region"
 log() { printf '%s [%s] %s\n' "$(date +%H:%M:%S)" "$region" "$*"; }
 
 [ -f "$suss/suss.toml" ] && [ -f "$suss/.env" ] || { echo "run from a suss checkout with a .env" >&2; exit 2; }
+
+from_env=$(grep -s '^SUSS_RUNS_URL=' "$suss/.env" | tail -1 | cut -d= -f2- || true)
+runs_url=${SUSS_RUNS_URL:-$from_env}
+runs_url=${runs_url%/}
+copy_all=${COPY_BACK:-}
+scope=
+if [ -n "$runs_url" ]; then
+  case $runs_url in
+    https://*.blob.core.windows.net/*) ;;
+    *) echo "SUSS_RUNS_URL is $runs_url, not https://<account>.blob.core.windows.net/<container>" >&2; exit 2 ;;
+  esac
+  account=${runs_url#https://}
+  account=${account%%.*}
+  # The VM may write to this container and nothing else.
+  scope=$(az storage account show -n "$account" --query id -o tsv)/blobServices/default/containers/${runs_url##*/}
+else
+  copy_all=1
+fi
 
 # The lane's download, as suss.toml names it. It goes to the same path relative
 # to suss on the VM, so it must be relative.
@@ -67,10 +92,15 @@ runcmd:
   - systemctl enable --now docker
   - usermod -aG docker azureuser
   - sudo -u azureuser sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+  - sh -c 'curl -fsSL https://aka.ms/downloadazcopy-v10-linux | tar -xz -C /tmp && install -m 755 /tmp/azcopy_linux_amd64_*/azcopy /usr/local/bin/azcopy'
 EOF
 
 ip=
 copied=
+uploaded=
+assignment=
+# Set once the run starts: before then the VM holds no results to keep.
+launched=
 me=
 
 # Point the VM's SSH rule at this machine's public IP when that has changed,
@@ -86,8 +116,9 @@ allow_me() {
   me=$now
 }
 
-# Copy results/, checks/ and the run's output back. Fails, with nothing marked
-# copied, when SSH or a transfer fails, so the VM is never deleted on a guess.
+# Copy the run's output back, and results/ and checks/ unless the VM uploaded
+# them. Fails, with nothing marked copied, when SSH or a transfer fails, so the
+# VM is never deleted on a guess.
 copy_back() {
   local found dir
   found=$(ssh_ 'cd suss && for d in results checks; do [ -d "$d" ] && echo "$d"; done; [ -f ~/run.log ] && echo run.log; [ -d ~/retried ] && echo retried; true' < /dev/null) || return 1
@@ -95,7 +126,7 @@ copy_back() {
     case $dir in
       run.log) mkdir -p "$suss/logs"; rsync_ "azureuser@$ip:run.log" "$suss/logs/azure-$region-$arm.out" || return 1 ;;
       retried) mkdir -p "$suss/logs"; rsync_ "azureuser@$ip:retried/" "$suss/logs/azure-$region-$arm-retried/" || return 1 ;;
-      *) rsync_ "azureuser@$ip:suss/$dir" "$suss/" || return 1 ;;
+      *) if [ -n "$copy_all" ] || [ -z "$uploaded" ]; then rsync_ "azureuser@$ip:suss/$dir" "$suss/" || return 1; fi ;;
     esac
   done
   copied=1
@@ -104,17 +135,22 @@ copy_back() {
 finish() {
   local code=$? exists
   set +e
-  if [ -n "$ip" ] && [ -z "$copied" ]; then
+  if [ -n "$launched" ] && [ -z "$copied" ]; then
     log "copying results back"
     copy_back || { allow_me && copy_back; }
   fi
   exists=$(az group exists -n "$rg")
   if [ "$exists" = false ]; then
     :
-  elif [ -n "$ip" ] && [ -z "$copied" ]; then
+  elif [ -n "$launched" ] && [ -z "$copied" ]; then
     log "results NOT copied; $rg left running at $ip. Copy them, then: az group delete -n $rg --yes"
     code=1
   else
+    # The VM's role is on the storage account, outside the group.
+    if [ -n "$assignment" ] && ! az role assignment delete --ids "$assignment" -o none; then
+      log "could not remove the VM's storage role; run: az role assignment delete --ids $assignment"
+      code=1
+    fi
     log "deleting $rg"
     if ! az group delete -n "$rg" --yes; then
       log "delete FAILED; $rg is still billing. Run: az group delete -n $rg --yes"
@@ -130,10 +166,20 @@ trap 'exit 130' INT TERM
 me=$(curl -fsS https://api.ipify.org)
 log "creating $size in $rg"
 az group create -n "$rg" -l "$region" -o none
+identity=()
+[ -z "$scope" ] || identity=(--assign-identity "[system]")
 ip=$(az vm create -g "$rg" -n suss-vm --image Ubuntu2404 --size "$size" \
   --os-disk-size-gb 512 --storage-sku Premium_LRS --admin-username azureuser \
   --ssh-key-values "$key.pub" --custom-data "$work/cloud-init.yaml" \
-  --nsg-rule NONE --public-ip-sku Standard --query publicIpAddress -o tsv)
+  --nsg-rule NONE --public-ip-sku Standard ${identity[@]+"${identity[@]}"} \
+  --query publicIpAddress -o tsv)
+if [ -n "$scope" ]; then
+  # A role the VM's own create cannot grant: it reads a container's scope as a
+  # resource in the VM's group.
+  principal=$(az vm show -g "$rg" -n suss-vm --query identity.principalId -o tsv)
+  assignment=$(az role assignment create --assignee-object-id "$principal" --assignee-principal-type ServicePrincipal \
+    --role "Storage Blob Data Contributor" --scope "$scope" --query id -o tsv)
+fi
 az network nsg rule create -g "$rg" --nsg-name suss-vmNSG -n ssh-from-me --priority 1000 \
   --source-address-prefixes "$me/32" --destination-port-ranges 22 --access Allow --protocol Tcp -o none
 log "VM at $ip; waiting for cloud-init"
@@ -292,18 +338,40 @@ EOF
 ssh_ 'cat > ~/run.sh' <<'EOF'
 cd ~/suss
 retries=$1
-shift
+url=$2
+shift 2
 ~/.local/bin/uv run suss run "$@" > ~/run.log 2>&1
 code=$?
 if ! ~/.local/bin/uv run python ~/retry.py "$retries" "$@" >> ~/run.log 2>&1; then
   echo "azure-run: the retry failed; its output is above" >> ~/run.log
   [ "$code" -ne 0 ] || code=1
 fi
+# The VM's identity may take minutes to reach storage, so a failed upload is tried again.
+if [ -n "$url" ]; then
+  export AZCOPY_AUTO_LOGIN_TYPE=MSI
+  for attempt in 1 2 3 4 5; do
+    ok=1
+    for dir in results checks; do
+      if [ -d "$dir" ]; then
+        azcopy copy "$dir" "$url/" --recursive --log-level ERROR --output-level essential >> ~/upload.log 2>&1 || ok=
+      fi
+    done
+    [ -z "$ok" ] || break
+    sleep 60
+  done
+  if [ -n "$ok" ]; then
+    echo "UPLOAD ok" >> ~/run.log
+  else
+    echo "UPLOAD failed; the end of azcopy's output:" >> ~/run.log
+    tail -n 50 ~/upload.log >> ~/run.log
+  fi
+fi
 echo "EXIT $code" >> ~/run.log
 EOF
 
 log "suss run $arm $lane $check, retrying up to $retries times"
-ssh_ "tmux new -d -s run 'bash ~/run.sh $retries $arm $lane $check'" < /dev/null
+launched=1
+ssh_ "tmux new -d -s run 'bash ~/run.sh $retries \"$runs_url\" $arm $lane $check'" < /dev/null
 started=$(date +%s)
 # SSH exits 255 when it cannot reach the VM, and grep 1 or 2 while the run goes on.
 unreachable=0
@@ -325,6 +393,14 @@ ssh_ 'tail -25 ~/run.log' < /dev/null
 status=$(ssh_ 'grep "^EXIT" ~/run.log' < /dev/null | awk '{print $2}')
 
 log "copying results back"
+if [ -n "$runs_url" ]; then
+  if ssh_ 'grep -q "^UPLOAD ok" ~/run.log' < /dev/null; then
+    uploaded=1
+  else
+    log "the upload to $runs_url failed; copying results/ and checks/ back instead"
+  fi
+fi
 copy_back || { log "copy-back failed"; exit 1; }
+[ -z "$uploaded" ] || log "results are in $runs_url; rank them with: scripts/results.sh down <mirror>"
 log "suss run exited $status"
 exit "$status"
