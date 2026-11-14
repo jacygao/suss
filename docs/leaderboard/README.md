@@ -51,13 +51,20 @@ resolved rate, as `swe-drill leaderboard --lane rebench` does.
   in setup, and those 12 ran again on a fresh VM. `copilot-gpt-6.1-sol`'s and
   `copilot-fusion-high`'s runs started three minutes apart, and none of their
   trials needed running again.
-- **Two `copilot-gpt-6.1-sol` trials have no test result, and count as
-  unresolved.** The patches of `mikro-orm__mikro-orm-7799` in the first run and
-  `apache__pulsar-25953` in the third applied, but their verifiers recorded no
-  test result.
-- **Four `copilot-fusion-high` trials have no test result, and count as
-  unresolved.** They are `apache__hugegraph-3037` and `apache__pulsar-25953`
-  in both the second run and the third.
+- **A trial whose grading stopped before any test ran was graded once more,
+  from the same patch.** Four had: `copilot-gpt-6.1-sol`'s
+  `mikro-orm__mikro-orm-7799` in the first run, whose test database did not
+  start, and `apache__pulsar-25953` in its third run and in
+  `copilot-fusion-high`'s second and third, whose Gradle daemon died. Graded
+  again on a VM of their own, three failed their tests, as the rows count
+  them. `copilot-fusion-high`'s second-run `apache__pulsar-25953` stopped the
+  same way again, and counts as unresolved. The regrades are under
+  `regrades/rebench/` in storage, apart from the runs.
+- **Two `copilot-fusion-high` patches do not compile, and count as
+  unresolved.** They are `apache__hugegraph-3037`'s in the second run and the
+  third, which leave its tests nothing to run.
+- **`copilot-opus`'s and `copilot-sonnet`'s runs have not been checked for
+  grading that stopped,** since they are on the PC and not yet in storage.
 - **Three `copilot-opus` trials have no grade, and count as unresolved.**
   Docker Compose failed to start the environment of `vuejs__core-14897` in
   the first run and of `marimo-team__marimo-9754` in the second.
