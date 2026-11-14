@@ -16,8 +16,8 @@ from pathlib import Path
 
 from harbor.models.task.config import EnvironmentConfig
 
-from suss.lanes import rebench, senior
-from suss.lanes.edits import LaneError, add_key
+from swe_drill.lanes import rebench, senior
+from swe_drill.lanes.edits import LaneError, add_key
 
 MIB = 2**20
 
@@ -35,9 +35,9 @@ SEPARATE_VERIFIER = (REBENCH, SENIOR)
 
 
 def check_lane(lane: str) -> None:
-    """Raise LaneError, naming the lanes, for a lane suss does not have."""
+    """Raise LaneError, naming the lanes, for a lane SWE-drill does not have."""
     if lane not in LANES:
-        raise LaneError(f"suss has no lane named {lane}; its lanes are {', '.join(LANES)}")
+        raise LaneError(f"SWE-drill has no lane named {lane}; its lanes are {', '.join(LANES)}")
 
 
 def _directory(lanes: Path, lane: str, check: bool) -> Path:
@@ -130,7 +130,7 @@ def _need(task: Path, toml: dict, key: str) -> int:
     value = _field(toml, "environment", key)
     if value is None:
         raise LaneError(
-            f"{task / 'task.toml'}: no [environment] {key}, so suss cannot tell how many "
+            f"{task / 'task.toml'}: no [environment] {key}, so SWE-drill cannot tell how many "
             "of its trials fit in Docker at once"
         )
     # A bool is an int to Python, and true would count as 1.

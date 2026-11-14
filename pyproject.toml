@@ -1,5 +1,5 @@
 [project]
-name = "suss"
+name = "swe-drill"
 version = "0.1.0"
 description = "Measures and compares how well coding harnesses do specific kinds of coding work."
 readme = "README.md"
@@ -17,7 +17,7 @@ modal = [
 ]
 
 [project.scripts]
-suss = "suss.cli:main"
+swe-drill = "swe_drill.cli:main"
 
 [dependency-groups]
 dev = [

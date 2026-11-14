@@ -1,5 +1,5 @@
 """
-Run SussCopilotCli and SussCopilotCliHve through Harbor's own run, in the
+Run CopilotCli and CopilotCliHve through Harbor's own run, in the
 stand-in environment, with a stand-in `copilot` that records how it was
 started and prints the JSON lines a test gives it.
 
@@ -18,13 +18,14 @@ from pathlib import Path
 import pytest
 from harbor.agents.factory import AgentFactory
 from harbor.agents.installed.base import NonZeroAgentExitCodeError
-from harbor.agents.installed.copilot_cli import CopilotCli
+from harbor.agents.installed.copilot_cli import CopilotCli as HarborCopilotCli
 from harbor.models.agent.context import AgentContext
 from harbor.models.trial.config import AgentConfig as TrialAgentConfig
 
-from suss.agents import SussCopilotCli, SussCopilotCliHve, full_auto_prompt
-from suss.config import ConfigError
-from suss.judge import NpmCopilotCli
+from swe_drill.agents.copilot_cli import CopilotCli
+from swe_drill.agents.hve import CopilotCliHve, full_auto_prompt
+from swe_drill.config import ConfigError
+from swe_drill.copilot import NpmCopilotCli
 
 TOKEN = "github_pat_from_the_env_file"
 INSTRUCTION = "Fix the bug.\n"
@@ -112,15 +113,15 @@ def git(repo: Path, *args: str) -> str:
 
 @pytest.fixture
 def box(tmp_path, local_environment, monkeypatch):
-    """suss.toml and its .env on the host, and a workspace, a home and logs in the sandbox."""
+    """swe-drill.toml and its .env on the host, and a workspace, a home and logs in the sandbox."""
     host = tmp_path / "host"
     download = host / "tasks" / "swe-rebench-07-2026" / "owner__repo-1"
     download.mkdir(parents=True)
     (download / "task.toml").write_text("[agent]\ntimeout_sec = 100\n")
-    (host / "suss.toml").write_text(
+    (host / "swe-drill.toml").write_text(
         'swe_rebench = "tasks/swe-rebench-07-2026"\nenvironment = "docker"\nk = 1\nconcurrency = 1\n'
         "\n"
-        '[arms.copilot-gpt]\nagent = "suss.agents:SussCopilotCli"\nmodel = "gpt-6.1-sol"\n'
+        '[arms.copilot-gpt]\nagent = "swe_drill.agents.copilot_cli:CopilotCli"\nmodel = "gpt-6.1-sol"\n'
         'kwargs = { version = "1.0.105", reasoning_effort = "high" }\n'
     )
     (host / ".env").write_text(f"COPILOT_GITHUB_TOKEN={TOKEN}\nOTHER_KEY=not-for-copilot\n")
@@ -142,7 +143,7 @@ def box(tmp_path, local_environment, monkeypatch):
     local_environment._resolve_user = lambda user: None if user == "root" else user
     # The install downloads from npm's registry, which no test reaches.
     monkeypatch.setattr(NpmCopilotCli, "install", _no_install)
-    monkeypatch.setattr(CopilotCli, "ensure_system_dependencies", _no_install)
+    monkeypatch.setattr(HarborCopilotCli, "ensure_system_dependencies", _no_install)
     return tmp_path
 
 
@@ -162,13 +163,13 @@ def logs(box: Path) -> Path:
     return box / "sandbox" / "logs" / "agent"
 
 
-def agent(box: Path, cls=SussCopilotCli, **kwargs):
+def agent(box: Path, cls=CopilotCli, **kwargs):
     kwargs.setdefault("version", "1.0.105")
     kwargs.setdefault("model_name", "gpt-6.1-sol")
     found = cls(
         arm="copilot-gpt",
         lane="rebench",
-        suss_config=str(box / "host" / "suss.toml"),
+        drill_config=str(box / "host" / "swe-drill.toml"),
         logs=str(logs(box)),
         artifacts=str(box / "sandbox" / "logs" / "artifacts"),
         logs_dir=logs(box),
@@ -179,7 +180,7 @@ def agent(box: Path, cls=SussCopilotCli, **kwargs):
     return found
 
 
-def run(box: Path, env, the_agent=None) -> tuple[SussCopilotCli, AgentContext, list]:
+def run(box: Path, env, the_agent=None) -> tuple[CopilotCli, AgentContext, list]:
     """Both phases and Harbor's post-run parse, with each exec's command and env recorded."""
     the_agent = the_agent or agent(box, reasoning_effort="high")
     seen = []
@@ -236,22 +237,22 @@ def test_copilot_gets_the_env_files_token_alone_whatever_harbors_environment_hol
     passed = [env for command, env in seen if "copilot --prompt" in command]
     assert len(passed) == 1
     assert passed[0]["COPILOT_GITHUB_TOKEN"] == TOKEN
-    assert set(passed[0]) == {"COPILOT_GITHUB_TOKEN", "SUSS_START_TOKEN"}, (
+    assert set(passed[0]) == {"COPILOT_GITHUB_TOKEN", "SWE_DRILL_START_TOKEN"}, (
         "Copilot CLI's command was given a variable beside the arm's token"
     )
     setup = [env for command, env in seen if "copilot --version" in command]
     assert setup and "COPILOT_GITHUB_TOKEN" not in setup[0], "the setup phase was given the token"
 
 
-@pytest.mark.parametrize("cls", [SussCopilotCli, SussCopilotCliHve])
-def test_harbors_preflight_takes_every_kwarg_suss_run_passes(box, cls):
+@pytest.mark.parametrize("cls", [CopilotCli, CopilotCliHve])
+def test_harbors_preflight_takes_every_kwarg_swe_drill_run_passes(box, cls):
     kwargs = {"version": "1.0.105", "reasoning_effort": "high", "arm": "copilot-gpt",
-              "lane": "rebench", "suss_config": str(box / "host" / "suss.toml")}
-    if cls is SussCopilotCliHve:
+              "lane": "rebench", "drill_config": str(box / "host" / "swe-drill.toml")}
+    if cls is CopilotCliHve:
         kwargs["hve_core_commit"] = COMMIT
 
     AgentFactory.run_preflight(TrialAgentConfig(
-        import_path=f"suss.agents:{cls.__name__}", model_name="gpt-6.1-sol", kwargs=kwargs
+        import_path=f"{cls.__module__}:{cls.__name__}", model_name="gpt-6.1-sol", kwargs=kwargs
     ))
 
 
@@ -265,8 +266,8 @@ def test_an_effort_in_harbors_environment_does_not_reach_copilot(box, local_envi
 
 def test_a_model_that_names_a_provider_fails_before_a_sandbox_starts(box):
     with pytest.raises(ConfigError, match="names a provider"):
-        SussCopilotCli(
-            arm="copilot-gpt", lane="rebench", suss_config=str(box / "host" / "suss.toml"),
+        CopilotCli(
+            arm="copilot-gpt", lane="rebench", drill_config=str(box / "host" / "swe-drill.toml"),
             logs_dir=logs(box), model_name="anthropic/claude-sonnet-5.5", version="1.0.105",
         )
 
@@ -330,8 +331,8 @@ def publish(box: Path, agent_file: str = AGENT_FILE, plugin: bool = True) -> Non
         archive.add(root, arcname=root.name)
 
 
-def hve(box: Path, **kwargs) -> SussCopilotCliHve:
-    return agent(box, SussCopilotCliHve, hve_core_commit=COMMIT, reasoning_effort="high", **kwargs)
+def hve(box: Path, **kwargs) -> CopilotCliHve:
+    return agent(box, CopilotCliHve, hve_core_commit=COMMIT, reasoning_effort="high", **kwargs)
 
 
 def test_copilot_cli_is_installed_from_npms_registry_not_githubs_releases(box, local_environment):
@@ -440,7 +441,7 @@ def test_hve_install_fails_on_an_archive_with_no_plugin(box, local_environment):
 @pytest.mark.parametrize("commit", ["main", COMMIT[:12], COMMIT.upper(), 55352])
 def test_hve_refuses_a_commit_that_is_not_a_full_commit(box, commit):
     with pytest.raises(ValueError, match="40 lowercase hex"):
-        agent(box, SussCopilotCliHve, hve_core_commit=commit)
+        agent(box, CopilotCliHve, hve_core_commit=commit)
 
 
 def test_the_full_auto_prompt_is_read_from_its_own_handoff():

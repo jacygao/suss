@@ -1,5 +1,5 @@
 """
-Run SussClaudeCode through Harbor's own run, in the stand-in environment, with
+Run ClaudeCode through Harbor's own run, in the stand-in environment, with
 a stand-in `claude` that records how it was started.
 """
 
@@ -11,12 +11,12 @@ from pathlib import Path
 
 import pytest
 from harbor.agents.factory import AgentFactory
-from harbor.agents.installed.claude_code import ClaudeCode
+from harbor.agents.installed.claude_code import ClaudeCode as HarborClaudeCode
 from harbor.models.agent.context import AgentContext
 from harbor.models.trial.config import AgentConfig as TrialAgentConfig
 
-from suss.agents import SussClaudeCode
-from suss.config import ConfigError
+from swe_drill.agents.claude_code import ClaudeCode
+from swe_drill.config import ConfigError
 
 TOKEN = "sk-ant-oat01-from-the-env-file"
 MODEL = "claude-sonnet-5-5"
@@ -51,15 +51,15 @@ async def _no_install(*args, **kwargs):
 
 @pytest.fixture
 def box(tmp_path, local_environment, monkeypatch):
-    """suss.toml and its .env on the host, and a workspace, a home and logs in the sandbox."""
+    """swe-drill.toml and its .env on the host, and a workspace, a home and logs in the sandbox."""
     host = tmp_path / "host"
     download = host / "tasks" / "swe-rebench-07-2026" / "owner__repo-1"
     download.mkdir(parents=True)
     (download / "task.toml").write_text("[agent]\ntimeout_sec = 100\n")
-    (host / "suss.toml").write_text(
+    (host / "swe-drill.toml").write_text(
         'swe_rebench = "tasks/swe-rebench-07-2026"\nenvironment = "docker"\nk = 1\nconcurrency = 1\n'
         "\n"
-        f'[arms.claude-sonnet]\nagent = "suss.agents:SussClaudeCode"\nmodel = "{MODEL}"\n'
+        f'[arms.claude-sonnet]\nagent = "swe_drill.agents.claude_code:ClaudeCode"\nmodel = "{MODEL}"\n'
         'kwargs = { version = "2.1.311", reasoning_effort = "high" }\n'
     )
     (host / ".env").write_text(f"CLAUDE_CODE_OAUTH_TOKEN={TOKEN}\nOTHER_KEY=not-for-claude\n")
@@ -77,7 +77,7 @@ def box(tmp_path, local_environment, monkeypatch):
     local_environment._persistent_env = {"HOME": str(bin_dir.parent.parent), "PATH": f"{bin_dir}:/usr/bin:/bin"}
     local_environment._resolve_user = lambda user: None if user == "root" else user
     # Harbor's install downloads Claude Code, which no test reaches.
-    monkeypatch.setattr(ClaudeCode, "install", _no_install)
+    monkeypatch.setattr(HarborClaudeCode, "install", _no_install)
     return tmp_path
 
 
@@ -85,13 +85,13 @@ def logs(box: Path) -> Path:
     return box / "sandbox" / "logs" / "agent"
 
 
-def agent(box: Path, **kwargs) -> SussClaudeCode:
+def agent(box: Path, **kwargs) -> ClaudeCode:
     kwargs.setdefault("version", "2.1.311")
     kwargs.setdefault("model_name", MODEL)
-    return SussClaudeCode(
+    return ClaudeCode(
         arm="claude-sonnet",
         lane="rebench",
-        suss_config=str(box / "host" / "suss.toml"),
+        drill_config=str(box / "host" / "swe-drill.toml"),
         logs=str(logs(box)),
         artifacts=str(box / "sandbox" / "logs" / "artifacts"),
         logs_dir=logs(box),
@@ -155,12 +155,12 @@ def test_claude_runs_the_arms_model_and_effort_and_leaves_its_patch(box, local_e
     assert "a known change" in (logs(box) / "model.patch").read_text()
 
 
-def test_harbors_preflight_takes_every_kwarg_suss_run_passes(box):
+def test_harbors_preflight_takes_every_kwarg_swe_drill_run_passes(box):
     kwargs = {"version": "2.1.311", "reasoning_effort": "high", "arm": "claude-sonnet",
-              "lane": "rebench", "suss_config": str(box / "host" / "suss.toml")}
+              "lane": "rebench", "drill_config": str(box / "host" / "swe-drill.toml")}
 
     AgentFactory.run_preflight(TrialAgentConfig(
-        import_path="suss.agents:SussClaudeCode", model_name=MODEL, kwargs=kwargs
+        import_path="swe_drill.agents.claude_code:ClaudeCode", model_name=MODEL, kwargs=kwargs
     ))
 
 

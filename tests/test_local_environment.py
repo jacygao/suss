@@ -60,7 +60,7 @@ def test_exec_with_no_output_gives_none(local_environment):
 def test_exec_honours_cwd_and_env(local_environment, tmp_path):
     result = run(
         local_environment.exec(
-            'pwd -P; echo "$SUSS_PROBE"', cwd=str(tmp_path), env={"SUSS_PROBE": "seen"}
+            'pwd -P; echo "$SWE_DRILL_PROBE"', cwd=str(tmp_path), env={"SWE_DRILL_PROBE": "seen"}
         )
     )
 
@@ -68,7 +68,7 @@ def test_exec_honours_cwd_and_env(local_environment, tmp_path):
 
 
 def test_exec_still_sees_the_inherited_environment(local_environment):
-    result = run(local_environment.exec('echo "$PATH"', env={"SUSS_PROBE": "seen"}))
+    result = run(local_environment.exec('echo "$PATH"', env={"SWE_DRILL_PROBE": "seen"}))
 
     assert result.stdout == f"{os.environ['PATH']}\n"
 
@@ -101,7 +101,7 @@ def test_stop_kills_what_a_timeout_left_running(local_environment, tmp_path):
 
 
 def test_stop_kills_jobs_a_command_put_in_process_groups_of_their_own(local_environment, tmp_path):
-    # As suss's time limit does, with job control.
+    # As SWE-drill's time limit does, with job control.
     pids = shlex.quote(str(tmp_path / "pids"))
     command = f"set -m; sleep 30 & echo $! > {pids}; echo $$ >> {pids}; wait"
     with pytest.raises(RuntimeError):
@@ -131,13 +131,13 @@ def test_upload_file_creates_missing_parents(local_environment, tmp_path):
 def test_upload_dir_copies_contents_into_a_new_target(local_environment, tmp_path):
     source = tmp_path / "claude-code"
     (source / "bin").mkdir(parents=True)
-    (source / "suss-harness.toml").write_text("name = 'claude-code'")
+    (source / "swe-drill-harness.toml").write_text("name = 'claude-code'")
     (source / "bin" / "run").write_text("#!/bin/sh")
-    target = tmp_path / "sandbox" / "opt" / "suss" / "adapter"
+    target = tmp_path / "sandbox" / "opt" / "swe-drill" / "adapter"
 
     run(local_environment.upload_dir(source, str(target)))
 
-    assert (target / "suss-harness.toml").read_text() == "name = 'claude-code'"
+    assert (target / "swe-drill-harness.toml").read_text() == "name = 'claude-code'"
     assert (target / "bin" / "run").read_text() == "#!/bin/sh"
     assert not (target / "claude-code").exists(), "the source dir was nested, not its contents"
 
@@ -145,15 +145,15 @@ def test_upload_dir_copies_contents_into_a_new_target(local_environment, tmp_pat
 def test_upload_dir_merges_into_an_existing_target(local_environment, tmp_path):
     source = tmp_path / "claude-code"
     source.mkdir()
-    (source / "suss-harness.toml").write_text("new")
+    (source / "swe-drill-harness.toml").write_text("new")
     target = tmp_path / "adapter"
     target.mkdir()
-    (target / "suss-harness.toml").write_text("old")
+    (target / "swe-drill-harness.toml").write_text("old")
     (target / "kept").write_text("kept")
 
     run(local_environment.upload_dir(source, str(target)))
 
-    assert (target / "suss-harness.toml").read_text() == "new"
+    assert (target / "swe-drill-harness.toml").read_text() == "new"
     assert (target / "kept").read_text() == "kept"
     assert not (target / "claude-code").exists(), "the source dir was nested, not its contents"
 

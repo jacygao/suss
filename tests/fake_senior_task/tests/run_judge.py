@@ -1,6 +1,6 @@
 """
 A stand-in for a senior task's run_judge.py, with the names and call shapes
-of the real one that suss's judge uses, and none of its model calls.
+of the real one that SWE-drill's judge uses, and none of its model calls.
 
 Each prompt is built inside the function that would send it, through
 llm_tools.run_explore_and_emit or llm_utils.complete_structured, as in the

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Move suss's run records to and from Azure Blob Storage.
+# Move SWE-drill's run records to and from Azure Blob Storage.
 #
 #   scripts/results.sh up <dir>...     upload run directories, such as results/rebench/<arm>/<job>
-#   scripts/results.sh down <mirror>   download what `suss leaderboard` reads into <mirror>
+#   scripts/results.sh down <mirror>   download what `swe-drill leaderboard` reads into <mirror>
 #
-# Run it from a suss checkout, signed in with `az login`. SUSS_RUNS_URL, from
+# Run it from a SWE-drill checkout, signed in with `az login`. SWE_DRILL_RUNS_URL, from
 # the environment or the checkout's .env, names the container, such as
 # https://<account>.blob.core.windows.net/runs. A blob's path is the file's
 # path under the checkout, so <mirror> is laid out as a checkout is, and
-# `suss leaderboard` runs in it.
+# `swe-drill leaderboard` runs in it.
 set -euo pipefail
 
 usage() { echo "usage: scripts/results.sh up <dir>... | down <mirror>" >&2; exit 2; }
@@ -16,15 +16,15 @@ usage() { echo "usage: scripts/results.sh up <dir>... | down <mirror>" >&2; exit
 command=$1
 shift
 
-[ -f suss.toml ] || { echo "run from a suss checkout" >&2; exit 2; }
-from_env=$(grep -s '^SUSS_RUNS_URL=' .env | tail -1 | cut -d= -f2- || true)
-url=${SUSS_RUNS_URL:-$from_env}
-[ -n "$url" ] || { echo "set SUSS_RUNS_URL, in the environment or .env, to the runs container's URL" >&2; exit 2; }
+[ -f swe-drill.toml ] || { echo "run from a SWE-drill checkout" >&2; exit 2; }
+from_env=$(grep -s '^SWE_DRILL_RUNS_URL=' .env | tail -1 | cut -d= -f2- || true)
+url=${SWE_DRILL_RUNS_URL:-$from_env}
+[ -n "$url" ] || { echo "set SWE_DRILL_RUNS_URL, in the environment or .env, to the runs container's URL" >&2; exit 2; }
 url=${url%/}
 command -v azcopy > /dev/null || { echo "azcopy: no such program; install it, for example with brew install azcopy" >&2; exit 2; }
 export AZCOPY_AUTO_LOGIN_TYPE=AZCLI
 
-# The files `suss leaderboard` reads in each job and trial.
+# The files `swe-drill leaderboard` reads in each job and trial.
 READ="result.json;config.json;suss.json;replay.json;report.json"
 
 case $command in
@@ -42,13 +42,13 @@ case $command in
     [ $# -eq 1 ] || usage
     mirror=$1
     mkdir -p "$mirror/results"
-    cp suss.toml "$mirror/"
+    cp swe-drill.toml "$mirror/"
     azcopy sync "$url/results" "$mirror/results" --recursive --include-pattern "$READ" \
       --delete-destination true --log-level ERROR --output-level essential
     # A run removed from storage leaves its directories behind, and
-    # `suss leaderboard` refuses an arm's directory that holds no trial.
+    # `swe-drill leaderboard` refuses an arm's directory that holds no trial.
     find "$mirror/results" -mindepth 1 -depth -type d -empty -delete
-    echo "Rank it with: (cd $mirror && uv run --project $(pwd) suss leaderboard --lane rebench)"
+    echo "Rank it with: (cd $mirror && uv run --project $(pwd) swe-drill leaderboard --lane rebench)"
     ;;
   *) usage ;;
 esac

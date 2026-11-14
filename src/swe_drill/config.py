@@ -1,4 +1,4 @@
-"""The settings one named arm runs with, read from suss.toml and the .env beside it."""
+"""The settings one named arm runs with, read from swe-drill.toml and the .env beside it."""
 
 import math
 import tomllib
@@ -9,11 +9,11 @@ from typing import Any
 
 from harbor.utils.env import get_required_host_vars
 
-from suss import lanes
+from swe_drill import lanes
 
 
 class ConfigError(Exception):
-    """suss.toml or its .env cannot give the settings asked for."""
+    """swe-drill.toml or its .env cannot give the settings asked for."""
 
 
 @dataclass(frozen=True)
@@ -40,7 +40,7 @@ class Judge:
 @dataclass(frozen=True)
 class Config:
     path: Path
-    # rebench's download, as senior_swe_bench is senior's; each None where suss.toml names none.
+    # rebench's download, as senior_swe_bench is senior's; each None where swe-drill.toml names none.
     swe_rebench: Path | None
     environment: str
     k: int
@@ -48,7 +48,7 @@ class Config:
     arm: Arm
     env: dict[str, str]
     senior_swe_bench: Path | None = None
-    # The lane's judge, which only senior has; None where suss.toml sets none.
+    # The lane's judge, which only senior has; None where swe-drill.toml sets none.
     judge: Judge | None = None
 
     def download(self, lane: str) -> Path:
@@ -67,14 +67,14 @@ RETIRED = ("swe_bench_pro", "dataset")
 REQUIRED_IN_ARM = ("agent",)
 # Each would leave a run going on what its author believes it still sets.
 RETIRED_IN_ARM = ("harness", "params")
-# Set by suss on every agent, so an arm's own kwargs cannot take them.
-RESERVED_KWARGS = ("arm", "lane", "suss_config")
+# Set by SWE-drill on every agent, so an arm's own kwargs cannot take them.
+RESERVED_KWARGS = ("arm", "lane", "drill_config")
 JUDGE_KEYS = ("credit_budget", "model", "effort")
 
 
 def load(path: Path, arm: str, lane: str) -> Config:
     """
-    Read the settings `arm` runs with on `lane` from the suss.toml at `path`.
+    Read the settings `arm` runs with on `lane` from the swe-drill.toml at `path`.
 
     Paths in the file resolve from the directory holding it, whatever the
     current directory is. The download of each lane but `lane` is optional.
@@ -83,7 +83,7 @@ def load(path: Path, arm: str, lane: str) -> Config:
     when `k` is not a whole number of at least 1, when the file does not
     define `arm`, when the arm sets `harness` or `params`, has no `agent`, or
     has a `model` or `kwargs` it cannot pass to Harbor, when the top or `arm`
-    sets `max_cost_usd`, when a `[lanes.<lane>]` table names a lane suss does
+    sets `max_cost_usd`, when a `[lanes.<lane>]` table names a lane SWE-drill does
     not have or sets a key other than `judge` on senior, when
     `[lanes.senior.judge]` is not as `_judge` takes it, when any arm sets
     `baseline`, or when a .env line is not NAME=VALUE.
@@ -94,7 +94,7 @@ def load(path: Path, arm: str, lane: str) -> Config:
     retired = [key for key in RETIRED if key in data]
     if retired:
         raise ConfigError(
-            f"{path}: sets {' and '.join(retired)}, which suss no longer reads; name the "
+            f"{path}: sets {' and '.join(retired)}, which SWE-drill no longer reads; name the "
             "directory of downloaded SWE-rebench tasks with swe_rebench"
         )
     required = (DOWNLOADS[lane],) if lane in DOWNLOADS else ()
@@ -111,7 +111,7 @@ def load(path: Path, arm: str, lane: str) -> Config:
     retired = [key for key in RETIRED_IN_ARM if key in table]
     if retired:
         raise ConfigError(
-            f"{path}: [arms.{arm}] sets {' and '.join(retired)}, which suss no longer reads; "
+            f"{path}: [arms.{arm}] sets {' and '.join(retired)}, which SWE-drill no longer reads; "
             "name the arm's Harbor agent class with agent, its model with model, and its "
             "settings with kwargs"
         )
@@ -125,7 +125,7 @@ def load(path: Path, arm: str, lane: str) -> Config:
         (f"[arms.{arm}] sets max_cost_usd", table),
     ):
         if "max_cost_usd" in keys:
-            raise ConfigError(f"{path}: {where}, but suss does not read it")
+            raise ConfigError(f"{path}: {where}, but SWE-drill does not read it")
     lane_tables = _lanes(path, data)
     return Config(
         path=path,
@@ -149,7 +149,7 @@ def _check_agent(path: Path, arm: str, table: dict[str, Any]) -> None:
     """
     Raise ConfigError, naming the file and the arm, for an `agent` that is not
     an import path, a `model` that is not a string, or `kwargs` that are not a
-    table of strings, numbers and booleans, or that take a name suss sets.
+    table of strings, numbers and booleans, or that take a name SWE-drill sets.
     """
     where = f"{path}: [arms.{arm}]"
     agent = table["agent"]
@@ -164,7 +164,7 @@ def _check_agent(path: Path, arm: str, table: dict[str, Any]) -> None:
         raise ConfigError(f"{where}: kwargs must be a table, as [arms.{arm}.kwargs]")
     for key, value in kwargs.items():
         if key in RESERVED_KWARGS:
-            raise ConfigError(f"{where}: kwargs sets {key}, which suss sets on every agent")
+            raise ConfigError(f"{where}: kwargs sets {key}, which SWE-drill sets on every agent")
         if not isinstance(value, (str, int, float, bool)):
             raise ConfigError(
                 f"{where}: kwargs {key} must be a string, a number or a boolean, which Harbor "
@@ -178,7 +178,7 @@ def _path(directory: Path, value: str | None) -> Path | None:
 
 def check_arms(path: Path) -> None:
     """
-    Raise ConfigError, naming the suss.toml at `path`, when any arm sets
+    Raise ConfigError, naming the swe-drill.toml at `path`, when any arm sets
     `baseline`, or when the file is missing or is not TOML.
 
     Nothing else in the file is read, so a file `load` refuses for a run still
@@ -194,8 +194,8 @@ def _refuse_baseline(path: Path, data: dict[str, Any]) -> None:
         # Ignored, it would leave its author believing the arm is still measured against one.
         if isinstance(table, dict) and "baseline" in table:
             raise ConfigError(
-                f"{path}: [arms.{arm}] sets baseline, which suss no longer reads; "
-                "suss leaderboard ranks every arm on its lane"
+                f"{path}: [arms.{arm}] sets baseline, which SWE-drill no longer reads; "
+                "swe-drill leaderboard ranks every arm on its lane"
             )
 
 
@@ -215,7 +215,7 @@ def _lanes(path: Path, data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """
     The file's `[lanes.<lane>]` tables, keyed by lane.
 
-    Raises ConfigError, naming the file, for a lane suss does not have, a key
+    Raises ConfigError, naming the file, for a lane SWE-drill does not have, a key
     other than `judge` on senior in a lane's table, a judge `_judge` refuses,
     or lanes that are not tables.
     """
@@ -225,7 +225,7 @@ def _lanes(path: Path, data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     for name, table in found.items():
         if name not in lanes.LANES:
             raise ConfigError(
-                f"{path}: sets [lanes.{name}], but suss has no lane named {name}; "
+                f"{path}: sets [lanes.{name}], but SWE-drill has no lane named {name}; "
                 f"its lanes are {', '.join(lanes.LANES)}"
             )
         if not isinstance(table, dict):
@@ -233,7 +233,7 @@ def _lanes(path: Path, data: dict[str, Any]) -> dict[str, dict[str, Any]]:
         for key in table:
             if key != "judge" or name != lanes.SENIOR:
                 raise ConfigError(
-                    f"{path}: [lanes.{name}] sets {key}, but suss reads only [lanes.{lanes.SENIOR}.judge]"
+                    f"{path}: [lanes.{name}] sets {key}, but SWE-drill reads only [lanes.{lanes.SENIOR}.judge]"
                 )
         if "judge" in table:
             _judge(path, table["judge"])
@@ -253,7 +253,7 @@ def _judge(path: Path, table: Any) -> Judge:
         raise ConfigError(f"{path}: lanes.{lanes.SENIOR}.judge must be a table, as [lanes.{lanes.SENIOR}.judge]")
     for key in table:
         if key not in JUDGE_KEYS:
-            raise ConfigError(f"{where} sets {key}, but suss reads only {_and(list(JUDGE_KEYS))} there")
+            raise ConfigError(f"{where} sets {key}, but SWE-drill reads only {_and(list(JUDGE_KEYS))} there")
     budget = table.get("credit_budget")
     # TOML reads nan and inf as floats, which Harbor would not parse back as numbers.
     if isinstance(budget, bool) or not isinstance(budget, int | float) or not 0 < budget < math.inf:
@@ -268,7 +268,7 @@ def _judge(path: Path, table: Any) -> Judge:
 
 
 # The task.toml tables whose `${NAME}` values Harbor fills from its own environment
-# in a job suss runs. It reads [solution.env] only for its oracle agent.
+# in a job SWE-drill runs. It reads [solution.env] only for its oracle agent.
 HOST_ENV_TABLES = ("environment", "verifier")
 
 
@@ -334,14 +334,14 @@ def grading_choices(env: Mapping[str, str]) -> dict[str, str]:
 
 
 # The keys senior's own judges and validation agent call their models with.
-# Suss judges senior itself, on a Copilot subscription, so no job is given them.
+# SWE-drill judges senior itself, on a Copilot subscription, so no job is given them.
 GRADING_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PORTKEY_API_KEY")
 TOKEN_NAME = "COPILOT_GITHUB_TOKEN"
 
 
 def check_judge(settings: Config, lane: str) -> None:
     """
-    Refuse a senior run with no judge: no `[lanes.senior.judge]` in suss.toml,
+    Refuse a senior run with no judge: no `[lanes.senior.judge]` in swe-drill.toml,
     or no COPILOT_GITHUB_TOKEN in .env. Every other lane passes.
 
     An empty token counts as unset. Raises ConfigError naming what is missing.
@@ -350,12 +350,12 @@ def check_judge(settings: Config, lane: str) -> None:
         return
     if settings.judge is None:
         raise ConfigError(
-            f"{settings.path}: no [lanes.{lane}.judge], which suss judges {lane} with; set its"
+            f"{settings.path}: no [lanes.{lane}.judge], which SWE-drill judges {lane} with; set its"
             " credit_budget, the AI credits every judge session of a job may spend together"
         )
     if not settings.env.get(TOKEN_NAME):
         raise ConfigError(
-            f"{settings.path.parent / '.env'} sets no {TOKEN_NAME}, which suss judges the trials"
+            f"{settings.path.parent / '.env'} sets no {TOKEN_NAME}, which SWE-drill judges the trials"
             f" of {lane} with"
         )
 

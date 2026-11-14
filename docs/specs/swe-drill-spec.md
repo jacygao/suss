@@ -1,20 +1,20 @@
-# Suss Specification: Measuring and Comparing Coding Harnesses
+# SWE-drill Specification: Measuring and Comparing Coding Harnesses
 
 **Version:** 0.1 (draft)
 
 ## 1. Purpose
 
-**Suss measures and compares how well coding harnesses do specific kinds of
+**SWE-drill measures and compares how well coding harnesses do specific kinds of
 coding work.** A harness is anything that takes a task's instruction and changes
 a repository. Each kind of work is a lane: a set of benchmark tasks and the way
-they are graded. Suss runs the same tasks under several arms, grades every
+they are graded. SWE-drill runs the same tasks under several arms, grades every
 result the same way, and ranks the arms on each lane.
 
 Ranking plain Claude Code against two harnesses that review its change, each
 run three times, prints output like this:
 
 ```
-$ suss leaderboard --lane rebench
+$ swe-drill leaderboard --lane rebench
 arm          runs  resolved rate  pass@k
 peer-review     3         66% ±7  78% @3
 self-review     3         62% ±7  74% @3
@@ -25,15 +25,15 @@ claude-code     3         58% ±8  70% @3
 
 | Dependency | Version | Needed for |
 |---|---|---|
-| Harbor | 0.25.0, exactly | Runs each task in a sandbox, runs each arm's agent in it, and grades the result with the task's own verifier. Suss's agents and verifiers subclass Harbor's classes, so upgrading Harbor is a change of its own, and it is taken only when `uv run pytest`, `SUSS_MODAL_TESTS=1 uv run pytest tests/test_modal_sandbox.py`, a `rebench` check and a `senior` check, both on Modal, pass on the new version, and each check gives the reward it gave on the old one. |
-| Docker | Docker Desktop 4.86.0 or later on macOS. On Linux and Windows, a Docker engine whose kernel has `CONFIG_NFT_FIB_INET`. | The sandboxes, with `environment = "docker"` in `suss.toml`. Without `CONFIG_NFT_FIB_INET`, Harbor refuses every task, because the agent phase has no network. |
-| Modal | 1.5.1 or later, and the account Harbor's `modal` environment uses. `uv sync --extra modal` installs its client into suss's environment, through Harbor's own `modal` extra at the Harbor version above. A plain `uv sync` leaves it out. | The sandboxes, when `environment` is `modal`. Versions before 1.5.1 cannot take a network policy per phase. |
+| Harbor | 0.25.0, exactly | Runs each task in a sandbox, runs each arm's agent in it, and grades the result with the task's own verifier. SWE-drill's agents and verifiers subclass Harbor's classes, so upgrading Harbor is a change of its own, and it is taken only when `uv run pytest`, `SWE_DRILL_MODAL_TESTS=1 uv run pytest tests/test_modal_sandbox.py`, a `rebench` check and a `senior` check, both on Modal, pass on the new version, and each check gives the reward it gave on the old one. |
+| Docker | Docker Desktop 4.86.0 or later on macOS. On Linux and Windows, a Docker engine whose kernel has `CONFIG_NFT_FIB_INET`. | The sandboxes, with `environment = "docker"` in `swe-drill.toml`. Without `CONFIG_NFT_FIB_INET`, Harbor refuses every task, because the agent phase has no network. |
+| Modal | 1.5.1 or later, and the account Harbor's `modal` environment uses. `uv sync --extra modal` installs its client into SWE-drill's environment, through Harbor's own `modal` extra at the Harbor version above. A plain `uv sync` leaves it out. | The sandboxes, when `environment` is `modal`. Versions before 1.5.1 cannot take a network policy per phase. |
 | SWE-rebench | `ibragim-badertdinov/swe-rebench-07-2026` from Harbor Hub, as `harbor download` writes it | The `rebench` lane's tasks. |
 | Senior SWE-Bench | `snorkel-ai/senior-swe-bench-v2026.06` from Harbor Hub, as `harbor download` writes it | The `senior` lane's tasks. |
-| Python | 3.12 | Suss itself, whose agents and verifier Harbor imports. |
-| `uv` | any | Installs suss and Harbor. |
-| Azure CLI | any, signed in with `az login` | `scripts/azure-run.sh`, which runs one `suss run` on an Azure VM's Docker and deletes the VM once its results are kept. |
-| Azure Blob Storage | a container named by `SUSS_RUNS_URL`, in the environment or `.env`, that the signed-in user may write to | Keeping runs off any one machine. A VM uploads its `results/` and `checks/` there, at their paths under the checkout, and `scripts/results.sh down <mirror>` downloads what `suss leaderboard` reads, which then runs in `<mirror>`. |
+| Python | 3.12 | SWE-drill itself, whose agents and verifier Harbor imports. |
+| `uv` | any | Installs SWE-drill and Harbor. |
+| Azure CLI | any, signed in with `az login` | `scripts/azure-run.sh`, which runs one `swe-drill run` on an Azure VM's Docker and deletes the VM once its results are kept. |
+| Azure Blob Storage | a container named by `SWE_DRILL_RUNS_URL`, in the environment or `.env`, that the signed-in user may write to | Keeping runs off any one machine. A VM uploads its `results/` and `checks/` there, at their paths under the checkout, and `scripts/results.sh down <mirror>` downloads what `swe-drill leaderboard` reads, which then runs in `<mirror>`. |
 | `azcopy` | 10 | `scripts/results.sh`, and the VMs' uploads. |
 
 A Docker engine's kernel has the option when this prints `CONFIG_NFT_FIB_INET=y`
@@ -50,9 +50,9 @@ docker run --rm alpine:3.19 sh -c 'zcat /proc/config.gz | grep NFT_FIB_INET'
 | Term | Meaning |
 |---|---|
 | **Task** | One benchmark task: a repository in a sandbox image, an instruction, and hidden tests. |
-| **Lane** | A set of tasks that suss runs and reports as one, such as `rebench`. |
+| **Lane** | A set of tasks that SWE-drill runs and reports as one, such as `rebench`. |
 | **Harness** | What is being measured: a coding agent, with whatever plugins and settings it runs with. |
-| **Agent** | The Harbor agent class an arm runs on: one of Harbor's own, with suss's mixin applied. |
+| **Agent** | The Harbor agent class an arm runs on: one of Harbor's own, with SWE-drill's mixin applied. |
 | **Arm** | An agent and what it runs with: a model, and kwargs such as a version and a reasoning effort. |
 | **Trial** | Harbor's unit of work: one attempt at one task by one arm, in a fresh sandbox. |
 | **Base** | The commit the workspace's `HEAD` names when the trial starts. |
@@ -60,13 +60,13 @@ docker run --rm alpine:3.19 sh -c 'zcat /proc/config.gz | grep NFT_FIB_INET'
 
 ### What a trial does
 
-Every arm runs on a Harbor agent class with `suss.agents.SussMixin` applied
-before it, such as `suss.agents:SussCopilotCli`. Harbor runs it once per trial,
-in two phases. The setup phase has network access. The agent phase reaches only
+Every arm runs on a Harbor agent class with `swe_drill.agents.Adapter`
+applied before it, such as `swe_drill.agents.copilot_cli:CopilotCli`. Harbor
+runs it once per trial, in two phases. The setup phase has network access. The agent phase reaches only
 the hosts the agent class lists in `ALLOWED_HOSTS`, and those its task lists in
 `[agent] allowed_hosts`.
 
-In the setup phase, suss:
+In the setup phase, SWE-drill:
 
 1. **finds the workspace, and records the base and the starting tree.** The
    workspace is the directory the sandbox starts in, which is the image's
@@ -76,17 +76,17 @@ In the setup phase, suss:
    image left them.
 2. **lets the agent install itself**, as its Harbor class does.
 
-In the agent phase, suss:
+In the agent phase, SWE-drill:
 
 3. **runs the agent** on the task's instruction, as its Harbor class does. Every
-   command the agent runs carries `SUSS_START_TOKEN`, set to a new token;
+   command the agent runs carries `SWE_DRILL_START_TOKEN`, set to a new token;
 4. **stops every process carrying that token**, however the run ended;
 5. **captures the patch**, the whole change from the starting tree;
 6. **writes the trial record**, `suss.json`.
 
 The trial's result comes from Harbor's separate verifier, a fresh sandbox
 Harbor starts in the same agent job once the agent's sandbox has stopped. On
-`senior`, suss's judge also scores the patch there.
+`senior`, SWE-drill's judge also scores the patch there.
 
 ### Capturing the patch
 
@@ -101,7 +101,7 @@ made, whether it committed it or not, and none of the changes the image already
 had. The verifier's sandbox starts from the same image, so the patch applies
 there with `git apply`. A file of the starting tree that the agent made git ignore, but
 left in place, stays out of the patch. The copy in `/logs/artifacts/` is the one
-Harbor carries to a verifier in a sandbox of its own, and suss writes it however
+Harbor carries to a verifier in a sandbox of its own, and SWE-drill writes it however
 the run ends.
 
 ### Grading
@@ -110,15 +110,15 @@ Harbor grades each trial in its separate verifier: a fresh sandbox built from
 the task's own `Dockerfile`, which it starts in the same agent job once the
 agent's sandbox has stopped. Each task's copy in the lane sets
 `[verifier] environment_mode = "separate"`. That sandbox holds nothing of the
-agent's but `/logs/artifacts/`. Suss's verifier applies the `model.patch` there
+agent's but `/logs/artifacts/`. SWE-drill's verifier applies the `model.patch` there
 in the workspace, found as the trial found it, puts every test file back as the
 image held it, and runs the task's own `test.sh` there, unchanged. That reward
 is the trial's result.
 
 | Lane | `--verifier` |
 |---|---|
-| `rebench` | `suss.replay:ReplayVerifier` |
-| `senior` | `suss.judge:JudgeVerifier`, which grades as `ReplayVerifier` does and judges the patch first |
+| `rebench` | `swe_drill.replay:ReplayVerifier` |
+| `senior` | `swe_drill.judge:JudgeVerifier`, which grades as `ReplayVerifier` does and judges the patch first |
 
 It applies the patch with:
 
@@ -127,7 +127,7 @@ git apply --verbose model.patch
 ```
 
 Git applies all of the patch or none of it. The patch runs from the starting
-tree, which the verifier's sandbox also starts from, so a patch suss captured
+tree, which the verifier's sandbox also starts from, so a patch SWE-drill captured
 applies there.
 
 A harness cannot change its result by changing the sandbox it worked in, because
@@ -189,20 +189,20 @@ ANTHROPIC_API_KEY = "${ANTHROPIC_API_KEY:-}"
 SSB_OVERRIDE_ALL_JUDGE_MODEL = "${SSB_OVERRIDE_ALL_JUDGE_MODEL:-}"
 ```
 
-Suss runs the agent job's Harbor with each variable the lane's tasks name this
-way in `[verifier.env]` alone that the `.env` beside `suss.toml` sets, with its
+SWE-drill runs the agent job's Harbor with each variable the lane's tasks name this
+way in `[verifier.env]` alone that the `.env` beside `swe-drill.toml` sets, with its
 value there, since Harbor gives `[verifier.env]` to the command that runs
 `test.sh` and to no sandbox. It never passes one as an argument. No job's
-Harbor takes these variables from suss's own environment. So a variable `.env`
+Harbor takes these variables from swe_drill's own environment. So a variable `.env`
 leaves out or leaves empty takes the task's default, and the agent phase gets one only when the arm's agent class gives it to its commands.
 `harbor run` loads a `.env.local` in the directory it runs in, so a run exits
 with an error before it builds any lane or runs any job when one is beside
-`suss.toml`.
+`swe-drill.toml`.
 
 Every `senior` task has Senior SWE-Bench's verifier, which runs LLM judges and,
 on a design task, a validation agent. They call their models with
-`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `PORTKEY_API_KEY`, and suss gives the
-job none of the three, whatever `.env` sets. So they never run, and suss's own
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `PORTKEY_API_KEY`, and SWE-drill gives the
+job none of the three, whatever `.env` sets. So they never run, and SWE-drill's own
 judge scores the patch in their place. The settings that would choose their
 models, and the validation agent's harness, still reach the verifier, and
 `grader` records them:
@@ -229,11 +229,11 @@ fails, and the change is undone. When it cannot be undone, the trial fails
 with no test run.
 
 The prompts, the rubric and the answer schemas are the task's own: the task's
-`tests/run_judge.py` builds them from its `tests/`, on the host. Suss keeps no
+`tests/run_judge.py` builds them from its `tests/`, on the host. SWE-drill keeps no
 copy. An answer that is not valid JSON, or fails its schema, is retried once in
 the same session.
 
-The judge reads `COPILOT_GITHUB_TOKEN` from the `.env` beside `suss.toml`, and
+The judge reads `COPILOT_GITHUB_TOKEN` from the `.env` beside `swe-drill.toml`, and
 gives it to each session's command alone. Harbor's environment, `test.sh` and
 every argument go without it. Before `test.sh` runs, every file under the
 judge's directories in the sandbox that holds the token is deleted, and
@@ -254,7 +254,7 @@ before it applies anything when the task's verifier timeout is no more than
 `judge_seconds` and those 300 together. A judge that Harbor stops at its verifier timeout records
 `failed:cancelled` for each judge it had not finished, and runs no test.
 
-`suss run` gives it the lane's judge from `suss.toml` as `--verifier-kwarg`:
+`swe-drill run` gives it the lane's judge from `swe-drill.toml` as `--verifier-kwarg`:
 
 | Key | Default | |
 |---|---|---|
@@ -262,7 +262,7 @@ before it applies anything when the task's verifier timeout is no more than
 | `model` | `gemini-4-argon` | the judges' model, of neither family the arms use, GPT or Claude |
 | `effort` | `high` | its reasoning effort, empty for a model that takes none |
 
-`suss run` passes none of the others:
+`swe-drill run` passes none of the others:
 
 | Key | Default | |
 |---|---|---|
@@ -310,7 +310,7 @@ and the AI credits the trial's sessions spent:
 
 ### The trial record
 
-Suss writes these files to `/logs/agent/` in the sandbox. Harbor keeps that
+SWE-drill writes these files to `/logs/agent/` in the sandbox. Harbor keeps that
 directory as `agent/` in the trial's directory under `results/`, and the copy of
 `model.patch` in `/logs/artifacts/` as `artifacts/logs/artifacts/model.patch`.
 The agent's own files go there too, such as Copilot CLI's stream,
@@ -324,7 +324,7 @@ The agent's own files go there too, such as Copilot CLI's stream,
 ```json
 {
   "arm": "copilot-gpt",
-  "agent": { "class": "suss.agents:SussCopilotCli", "name": "copilot-cli", "version": "1.0.105" },
+  "agent": { "class": "swe_drill.agents.copilot_cli:CopilotCli", "name": "copilot-cli", "version": "1.0.105" },
   "model": "gpt-6.1-sol",
   "kwargs": { "version": "1.0.105", "reasoning_effort": "high" },
   "grader": { "dataset": "swe-rebench-07-2026" },
@@ -339,7 +339,7 @@ The agent's own files go there too, such as Copilot CLI's stream,
 - `agent` names the arm's agent class, Harbor's name for it, and the version
   the installed agent reports, which `kwargs` may ask for and not get. `model`
   and `kwargs` are what the arm passed Harbor.
-- `grader` names the dataset the trial's task came from. Suss fails a trial on
+- `grader` names the dataset the trial's task came from. SWE-drill fails a trial on
   a lane with no dataset before its sandbox starts.
 - On `senior`, `grader` also holds the litellm requirement the lane's
   `test.sh` installs, and the models and validation harness in the table
@@ -365,36 +365,36 @@ The agent's own files go there too, such as Copilot CLI's stream,
 - `status` is `ok`, `harness-failed` or `timed-out`. A trial runs until its
   task's agent timeout, and is `timed-out` when Harbor stops it there. It is
   `harness-failed` when the agent raises, as Harbor's agents do when their
-  coding agent exits non-zero. Either way, suss stops the agent's processes,
+  coding agent exits non-zero. Either way, SWE-drill stops the agent's processes,
   then captures the patch and writes the record, and the verifier grades it.
 - A trial whose patch cannot be written fails with the capture's error, and is
   not graded, whatever the agent did.
 - `usage` is what the agent reports it spent, or `null` for an agent whose
-  reports suss does not read.
+  reports SWE-drill does not read.
 
 ## 4. Agents
 
-An arm names its agent class in `suss.toml` as `module:Class`. Suss runs only a
-class that applies `suss.agents.SussMixin` before a Harbor agent class, since
+An arm names its agent class in `swe-drill.toml` as `module:Class`. SWE-drill
+runs only a class that applies `swe_drill.agents.Adapter` before a Harbor agent class, since
 only such a class leaves the patch its trial is graded by. Harbor's own agent
 then does everything else: it installs the coding agent, runs it, parses its
 output into `trajectory.json`, and records its tokens in `result.json`.
 
 ### The mixin
 
-`SussMixin` adds to a Harbor agent class what a trial needs:
+`Adapter` adds to a Harbor agent class what a trial needs:
 
 - It records the base and the starting tree before the agent installs.
-- It sets `SUSS_START_TOKEN` on every command the agent runs in the agent phase,
-  and when the run ends it kills every process in the sandbox whose environment
+- It sets `SWE_DRILL_START_TOKEN` on every command the agent runs in the agent
+  phase, and when the run ends it kills every process in the sandbox whose environment
   holds it, as the agent's user, by reading `/proc`. That finds each one
   whatever session or process group it moved to.
 - It captures the patch and writes `suss.json` however the run ends.
-- It takes `arm`, `lane` and `suss_config` as `--ak`, and reads the arm's
-  settings and the `.env` from that `suss.toml` when Harbor constructs it, so a
-  bad config fails before a sandbox starts.
+- It takes `arm`, `lane` and `drill_config` as `--ak`, and reads the arm's
+  settings and the `.env` from that `swe-drill.toml` when Harbor constructs it,
+  so a bad config fails before a sandbox starts.
 - It gives the agent nothing from Harbor's own environment, so no variable of
-  the machine running suss sets one of the agent's flags.
+  the machine running SWE-drill sets one of the agent's flags.
 
 A class names, as class attributes, the hosts its agent phase reaches in
 `ALLOWED_HOSTS`, the arm kwargs it takes in `KWARGS`, those it needs in
@@ -404,9 +404,9 @@ A class names, as class attributes, the hosts its agent phase reaches in
 
 | Agent | Model and kwargs | Hosts | What it does |
 |---|---|---|---|
-| `suss.agents:SussCopilotCli` | a model, required; `version`, required; `reasoning_effort`; `fusion_tier` | `api.github.com`, `api.enterprise.githubcopilot.com` | Harbor's `copilot-cli` agent. Suss installs Copilot CLI at `version` from npm's registry, as the binary in `@github/copilot-<platform>`, which needs no Node, and Harbor's agent runs `copilot --prompt=<instruction> --yolo --deny-tool web_fetch --deny-tool web_search --model=<model> --effort <reasoning_effort> --output-format=json`, denying the web tools because the agent phase's network is an allowlist. Suss adds `--disable-builtin-mcps`, `--no-auto-update`, `--disable-client-telemetry`, `--no-ask-user` and `--excluded-tools web_fetch web_search`. The model is one of Copilot's own, by the name `--model` takes, and Harbor constructs no agent for one that names a provider, as `anthropic/<model>` does, which Harbor would run against that provider's API. Copilot CLI's commands in the agent phase get `COPILOT_GITHUB_TOKEN` from `.env` and no other token: never `GH_TOKEN` or `GITHUB_TOKEN`, and none from Harbor's environment. Harbor constructs it only when `.env` sets that token. With model `fusion`, Copilot picks the model and effort for each task, refuses `--effort`, and takes `fusion_tier`, one of `standard`, `high` or `max`, which suss writes as `fusionTier` to `~/.copilot/settings.json` before the agent runs. Suss refuses `fusion_tier` with any other model. |
-| `suss.agents:SussCopilotCliHve` | as `SussCopilotCli`, and `hve_core_commit`, required | as `SussCopilotCli` | `SussCopilotCli` as Microsoft's hve-core RPI Agent. Its install also downloads hve-core at `hve_core_commit`, a full 40-digit commit, from `https://codeload.github.com/microsoft/hve-core/tar.gz/<commit>` to `$HOME/.local/share/hve-core/<commit>/`, and fails when the archive holds no `plugin.json`, or that commit's `rpi-agent.agent.md` has no "Full Auto" handoff prompt. It adds `--plugin-dir` with that directory and `--agent hve-core:rpi-agent`, and gives as the prompt the Full Auto prompt, a blank line, then the instruction. `model` and `reasoning_effort` apply to the RPI Agent, and its subagents' own files name theirs. RPI keeps its state in the workspace's `.copilot-tracking/`, which suss makes a link to `/logs/agent/copilot-tracking/` and adds to `.git/info/exclude`, so it is kept as it is written and stays out of the patch. The trial is `harness-failed`, with Copilot CLI never started, when the workspace already has `.copilot-tracking`, or its own ignore rules keep git from ignoring it. |
-| `suss.agents:SussClaudeCode` | a model, required; `version`, required; `reasoning_effort` | `api.anthropic.com` | Harbor's `claude-code` agent, on the owner's Claude subscription. It installs Claude Code at `version` with `https://downloads.claude.ai/claude-code-releases/bootstrap.sh`, and runs `claude --verbose --output-format=stream-json --effort <reasoning_effort> --disallowedTools WebSearch,WebFetch --permission-mode=bypassPermissions --print` with the instruction on its standard input and `ANTHROPIC_MODEL` set to the model, disallowing the web tools because the agent phase's network is an allowlist. The model is Anthropic's own, by the name Claude Code's `--model` takes, such as `claude-sonnet-5-5`, and Harbor constructs no agent for one that names a provider. Claude Code's commands in the agent phase get `CLAUDE_CODE_OAUTH_TOKEN` from `.env`, the token `claude setup-token` makes, and no other credential: never `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_BASE_URL`, and none from Harbor's environment. Harbor constructs it only when `.env` sets that token. |
+| `swe_drill.agents.copilot_cli:CopilotCli` | a model, required; `version`, required; `reasoning_effort`; `fusion_tier` | `api.github.com`, `api.enterprise.githubcopilot.com` | Harbor's `copilot-cli` agent. SWE-drill installs Copilot CLI at `version` from npm's registry, as the binary in `@github/copilot-<platform>`, which needs no Node, and Harbor's agent runs `copilot --prompt=<instruction> --yolo --deny-tool web_fetch --deny-tool web_search --model=<model> --effort <reasoning_effort> --output-format=json`, denying the web tools because the agent phase's network is an allowlist. SWE-drill adds `--disable-builtin-mcps`, `--no-auto-update`, `--disable-client-telemetry`, `--no-ask-user` and `--excluded-tools web_fetch web_search`. The model is one of Copilot's own, by the name `--model` takes, and Harbor constructs no agent for one that names a provider, as `anthropic/<model>` does, which Harbor would run against that provider's API. Copilot CLI's commands in the agent phase get `COPILOT_GITHUB_TOKEN` from `.env` and no other token: never `GH_TOKEN` or `GITHUB_TOKEN`, and none from Harbor's environment. Harbor constructs it only when `.env` sets that token. With model `fusion`, Copilot picks the model and effort for each task, refuses `--effort`, and takes `fusion_tier`, one of `standard`, `high` or `max`, which SWE-drill writes as `fusionTier` to `~/.copilot/settings.json` before the agent runs. SWE-drill refuses `fusion_tier` with any other model. |
+| `swe_drill.agents.hve:CopilotCliHve` | as `CopilotCli`, and `hve_core_commit`, required | as `CopilotCli` | `CopilotCli` as Microsoft's hve-core RPI Agent. Its install also downloads hve-core at `hve_core_commit`, a full 40-digit commit, from `https://codeload.github.com/microsoft/hve-core/tar.gz/<commit>` to `$HOME/.local/share/hve-core/<commit>/`, and fails when the archive holds no `plugin.json`, or that commit's `rpi-agent.agent.md` has no "Full Auto" handoff prompt. It adds `--plugin-dir` with that directory and `--agent hve-core:rpi-agent`, and gives as the prompt the Full Auto prompt, a blank line, then the instruction. `model` and `reasoning_effort` apply to the RPI Agent, and its subagents' own files name theirs. RPI keeps its state in the workspace's `.copilot-tracking/`, which SWE-drill makes a link to `/logs/agent/copilot-tracking/` and adds to `.git/info/exclude`, so it is kept as it is written and stays out of the patch. The trial is `harness-failed`, with Copilot CLI never started, when the workspace already has `.copilot-tracking`, or its own ignore rules keep git from ignoring it. |
+| `swe_drill.agents.claude_code:ClaudeCode` | a model, required; `version`, required; `reasoning_effort` | `api.anthropic.com` | Harbor's `claude-code` agent, on the owner's Claude subscription. It installs Claude Code at `version` with `https://downloads.claude.ai/claude-code-releases/bootstrap.sh`, and runs `claude --verbose --output-format=stream-json --effort <reasoning_effort> --disallowedTools WebSearch,WebFetch --permission-mode=bypassPermissions --print` with the instruction on its standard input and `ANTHROPIC_MODEL` set to the model, disallowing the web tools because the agent phase's network is an allowlist. The model is Anthropic's own, by the name Claude Code's `--model` takes, such as `claude-sonnet-5-5`, and Harbor constructs no agent for one that names a provider. Claude Code's commands in the agent phase get `CLAUDE_CODE_OAUTH_TOKEN` from `.env`, the token `claude setup-token` makes, and no other credential: never `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_BASE_URL`, and none from Harbor's environment. Harbor constructs it only when `.env` sets that token. |
 
 The two Copilot CLI agents record its usage from its stream, which Harbor's agent does not
 parse: in `suss.json`'s `usage`, and in Harbor's `agent_result.metadata` for
@@ -419,16 +419,16 @@ shows there. Where Harbor's parse found no token counts, as for a GPT model,
 
 ## 5. Lanes
 
-Suss has two lanes, `rebench` and `senior`. Every task gives the agent a
+SWE-drill has two lanes, `rebench` and `senior`. Every task gives the agent a
 repository at the commit before a real change, and an instruction about that
 change. The task's verifier grades it, and a trial resolves when its reward is
 1. Each lane is measured on its own, and nothing compares one lane with
-another. On `rebench`, `suss leaderboard` ranks the arms by the share of trials
+another. On `rebench`, `swe-drill leaderboard` ranks the arms by the share of trials
 that resolve. `senior` has no leaderboard, and each of its trials keeps its
 judges' rubric and taste scores in `verifier/judge.json`.
 
 Each lane is a directory of copies of its tasks, built from the download that
-its key in `suss.toml` names. Each task's image is built from the `Dockerfile`
+its key in `swe-drill.toml` names. Each task's image is built from the `Dockerfile`
 in its `environment/`, and the build downloads from the network. Its repository
 is in the image's `WORKDIR`.
 
@@ -448,7 +448,7 @@ real change made pass now pass, and the tests that passed before still pass.
 
 Each copy's `task.toml` adds `[verifier] environment_mode = "separate"`. A task
 whose `[verifier]` sets another `environment_mode` or an `environment` of its
-own makes `suss run` exit with an error naming it before it builds any lane or
+own makes `swe-drill run` exit with an error naming it before it builds any lane or
 runs any job. Harbor's `oracle` agent leaves no patch for the separate verifier
 to apply, so an oracle check of the lane runs on the download, whose verifier
 shares the agent's sandbox:
@@ -462,7 +462,7 @@ none, just before it parses the test log. Otherwise the task's own script runs
 its parser with `uv`, which downloads a Python from GitHub on every grade and
 fails the grade when GitHub does not answer. A `test.sh` with no line that is
 exactly `if command -v python3 >/dev/null 2>&1; then`, or with more than one, or
-in a `tests` directory that is a link, makes `suss run` exit with an error
+in a `tests` directory that is a link, makes `swe-drill run` exit with an error
 naming it before it builds any lane or runs any job.
 
 ### `senior`
@@ -482,8 +482,8 @@ The verifier runs the task's tests, a validation agent on the 25 tasks whose
 `metadata.segment` is `design`, and LLM judges. The reward is 1 when the tests
 pass and, on a design task, the validation agent passes the change too. The
 judges' scores never change it. The validation agent and the judges need an API
-key, and suss gives the verifier none, so it writes an empty reward for every
-design task, which makes the trial invalid, and suss's own judge scores
+key, and SWE-drill gives the verifier none, so it writes an empty reward for every
+design task, which makes the trial invalid, and SWE-drill's own judge scores
 every patch. Six design tasks have no tests, so the
 validation agent alone sets their reward: `electric-feat-sync-service-start`,
 `harbor-add-windows-tasks-support`, `plausible-feat-shared-dashboard-deeplink`,
@@ -497,7 +497,7 @@ download amd64 Go or Rust toolchains by name, whatever the host's architecture.
 Each copy's `task.toml` adds `[verifier] environment_mode = "separate"` and the
 judge's 2100 seconds to its `[verifier] timeout_sec`. A task whose `[verifier]`
 sets another `environment_mode`, an `environment` of its own, or a `timeout_sec`
-that is not a positive number makes `suss run` exit with an error naming it
+that is not a positive number makes `swe-drill run` exit with an error naming it
 before it builds any lane or runs any job.
 
 Each copy's `tests/test.sh` installs `litellm>=1.0,<1.106` where the task's
@@ -506,7 +506,7 @@ Every litellm from 1.106.0, on PyPI since 18 October 2026, raises
 `No module named 'mcp'` on every judge call. The verifier still writes a reward
 from the tests, so without the pin no trial's judges would score it and nothing
 would fail. A `test.sh` with no line that is exactly `litellm>=1.0,<2.0`, or
-with more than one, or in a `tests` directory that is a link, makes `suss run`
+with more than one, or in a `tests` directory that is a link, makes `swe-drill run`
 exit with an error naming it before it builds any lane or runs any job.
 
 ### Network
@@ -519,7 +519,7 @@ alone. Every `senior`
 task names 32, such as `pypi.org` and `registry.npmjs.org`, and 19 of them name
 a few more for their repository.
 
-Suss passes each host in the agent class's `ALLOWED_HOSTS` to Harbor as
+SWE-drill passes each host in the agent class's `ALLOWED_HOSTS` to Harbor as
 `--allow-agent-host`, and nothing else. Harbor adds them, trial by trial, to the
 hosts of that trial's own task. A host that one task names stays closed to
 every other task's trials in the same job, and a host the agent and the task
@@ -536,21 +536,21 @@ adds `[agent] network_mode = "no-network"` where `[agent]` sets no
 `network_mode`. A `task.toml` whose `[agent]` sets `no-network` or `allowlist`,
 as every `senior` task's does, is copied unchanged. One whose `[agent]` sets any
 other `network_mode`, or sets `allowed_hosts` with no `network_mode`, makes
-`suss run` exit with an error naming it before it builds any lane or runs any
+`swe-drill run` exit with an error naming it before it builds any lane or runs any
 job. The verifier keeps the task's own network, which a `rebench` copy uses to
 install Python through apt on an image that has none. A `senior` task's verifier has a public
 network, through which the judge reaches Copilot.
 
 ## 6. Commands
 
-### `suss run`
+### `swe-drill run`
 
 ```bash
-suss run <arm> <lane>... [--check] [-- <harbor args>]
-suss run copilot-gpt rebench
+swe-drill run <arm> <lane>... [--check] [-- <harbor args>]
+swe-drill run copilot-gpt rebench
 ```
 
-It reads the arm from `suss.toml` in the current directory. For each lane, it
+It reads the arm from `swe-drill.toml` in the current directory. For each lane, it
 builds `lanes/<lane>/`, a directory of copies of the lane's task directories
 from the directory its key names: `swe_rebench` for `rebench`, and
 `senior_swe_bench` for `senior`. Each copy has
@@ -565,48 +565,48 @@ Then, K times, it runs an agent job, which grades its own trials:
 
 ```bash
 <env>/bin/harbor run -p lanes/rebench -e docker -n 16 -k 1 \
-  -a suss.agents:SussCopilotCli -m gpt-6.1-sol \
+  -a swe_drill.agents.copilot_cli:CopilotCli -m gpt-6.1-sol \
   --ak version=1.0.105 --ak reasoning_effort=high \
-  --ak arm=copilot-gpt --ak suss_config=suss.toml --ak lane=rebench \
+  --ak arm=copilot-gpt --ak drill_config=swe-drill.toml --ak lane=rebench \
   --allow-agent-host api.github.com --allow-agent-host api.enterprise.githubcopilot.com \
-  --verifier suss.replay:ReplayVerifier \
+  --verifier swe_drill.replay:ReplayVerifier \
   --jobs-dir results/rebench/copilot-gpt --job-name <stamp>-1
 ```
 
-On `senior` it judges them too, with the lane's judge from `suss.toml`:
+On `senior` it judges them too, with the lane's judge from `swe-drill.toml`:
 
 ```bash
 <env>/bin/harbor run -y -p lanes/senior -e docker -n 16 -k 1 \
-  -a suss.agents:SussCopilotCli -m gpt-6.1-sol \
+  -a swe_drill.agents.copilot_cli:CopilotCli -m gpt-6.1-sol \
   --ak version=1.0.105 --ak reasoning_effort=high \
-  --ak arm=copilot-gpt --ak suss_config=suss.toml --ak lane=senior \
+  --ak arm=copilot-gpt --ak drill_config=swe-drill.toml --ak lane=senior \
   --allow-agent-host api.github.com --allow-agent-host api.enterprise.githubcopilot.com \
-  --verifier suss.judge:JudgeVerifier --verifier-kwarg credit_budget=2000 \
+  --verifier swe_drill.judge:JudgeVerifier --verifier-kwarg credit_budget=2000 \
   --jobs-dir results/senior/copilot-gpt --job-name <stamp>-1
 ```
 
-`<stamp>` is the time `suss run` started, in UTC, as `20261031T142500Z`. Every
+`<stamp>` is the time `swe-drill run` started, in UTC, as `20261031T142500Z`. Every
 job of the run shares it, and `-1` to `-K` tell its agent jobs apart. `<env>`
-is the Python environment suss is installed in, an absolute path suss forms
-itself. Its `harbor` is the one that can import `suss.agents` and suss's
+is the Python environment SWE-drill is installed in, an absolute path SWE-drill forms
+itself. Its `harbor` is the one that can import `swe_drill.agents` and SWE-drill's
 verifiers, which a `harbor` elsewhere on `PATH` may not be.
 
 When a task in the lane has Harbor fill a variable from Harbor's environment,
 as every `senior` task does, every job of the lane takes `-y`, right after
 `run`. Harbor asks before such a job whether its tasks may load those
 variables, and without a terminal it reads no answer and exits 1 with
-`Aborted.`. Answering yes is safe because Harbor holds only the values suss
+`Aborted.`. Answering yes is safe because Harbor holds only the values SWE-drill
 gives it: those `.env` sets for the verifier alone. `-y` also agrees, without asking, to share an uploaded
 job with an organization you are not a member of.
 
 A run of `senior` exits with an error before it builds any lane or runs any
-job, with `DRY_RUN=1` and `--check` too, when `suss.toml` has no
+job, with `DRY_RUN=1` and `--check` too, when `swe-drill.toml` has no
 `[lanes.senior.judge]`, or `.env` sets no `COPILOT_GITHUB_TOKEN`. A token set to
 an empty value counts as missing:
 
 ```
-$ suss run copilot-gpt senior
-error: /home/me/evals/.env sets no COPILOT_GITHUB_TOKEN, which suss judges the
+$ swe-drill run copilot-gpt senior
+error: /home/me/evals/.env sets no COPILOT_GITHUB_TOKEN, which SWE-drill judges the
 trials of senior with
 ```
 
@@ -614,7 +614,7 @@ Options after `--` go to every agent job. Passing any of these, under any name
 or spelling Harbor accepts, is an error that names it and says why, and runs
 nothing:
 
-- An option suss sets on the agent job, even with suss's own value: `-p`,
+- An option SWE-drill sets on the agent job, even with SWE-drill's own value: `-p`,
   `-e`, `-n`, `-k`, `-a`, `--ak`, `--allow-agent-host`, `--verifier`,
   `--verifier-kwarg`, `--jobs-dir`, `--job-name` and `-y`. Also `-m`, which
   the arm's `model` sets, and `--disable-verification` and its opposite
@@ -636,9 +636,9 @@ nothing:
 - A positional argument, which `harbor run` does not take.
 
 ```
-$ suss run copilot-gpt rebench -- -k 2
-error: -k/--n-attempts can't be passed after --: suss runs one trial per agent
-job, and k in suss.toml sets how many jobs
+$ swe-drill run copilot-gpt rebench -- -k 2
+error: -k/--n-attempts can't be passed after --: SWE-drill runs one trial per agent
+job, and k in swe-drill.toml sets how many jobs
 ```
 
 `DRY_RUN=1` prints the `harbor run` commands instead of running them. Before an
@@ -647,29 +647,29 @@ never a value:
 
 ```
 # from .env: SSB_OVERRIDE_ALL_JUDGE_MODEL
-/home/me/evals/.venv/bin/harbor run -y -p lanes/senior -e docker -n 16 -k 1 -a suss.agents:SussCopilotCli -m gpt-6.1-sol --ak version=1.0.105 --ak reasoning_effort=high --ak arm=copilot-gpt --ak suss_config=suss.toml --ak lane=senior --allow-agent-host api.github.com --allow-agent-host api.enterprise.githubcopilot.com --verifier suss.judge:JudgeVerifier --verifier-kwarg credit_budget=2000 --jobs-dir results/senior/copilot-gpt --job-name 20261031T142500Z-1
+/home/me/evals/.venv/bin/harbor run -y -p lanes/senior -e docker -n 16 -k 1 -a swe_drill.agents.copilot_cli:CopilotCli -m gpt-6.1-sol --ak version=1.0.105 --ak reasoning_effort=high --ak arm=copilot-gpt --ak drill_config=swe-drill.toml --ak lane=senior --allow-agent-host api.github.com --allow-agent-host api.enterprise.githubcopilot.com --verifier swe_drill.judge:JudgeVerifier --verifier-kwarg credit_budget=2000 --jobs-dir results/senior/copilot-gpt --job-name 20261031T142500Z-1
 ```
 
 Each agent job runs whatever the one before it did and whatever Harbor's exit
-code was, and `suss run` exits 0. The one exception is an agent job that leaves
-no trial in its job directory, as when Harbor cannot start at all: `suss run`
+code was, and `swe-drill run` exits 0. The one exception is an agent job that leaves
+no trial in its job directory, as when Harbor cannot start at all: `swe-drill run`
 then prints the job's name and Harbor's exit code, runs nothing more, and exits
 non-zero.
 
 It gives Harbor `results/<lane>/<arm>/` as its jobs directory, so each agent job
-is written there. Results stay there across runs, so `suss leaderboard` ranks
+is written there. Results stay there across runs, so `swe-drill leaderboard` ranks
 an arm run later beside arms graded earlier, without running them again.
 
-`--check` tests that an arm works under suss, for the cost of one trial per
+`--check` tests that an arm works under SWE-drill, for the cost of one trial per
 lane. It builds `lanes/<lane>-check/` with only the lane's first task by name,
 and gives that to its jobs in place of `lanes/<lane>/`, which a full run of the
 lane may be using. It runs one agent job, whatever `k` is, and writes them to `checks/<lane>/<arm>/` instead of `results/`:
 
 ```bash
-suss run copilot-gpt rebench --check
+swe-drill run copilot-gpt rebench --check
 ```
 
-`suss.toml` names where the tasks are, where the sandboxes run, and the arms:
+`swe-drill.toml` names where the tasks are, where the sandboxes run, and the arms:
 
 ```toml
 swe_rebench = "../tasks/swe-rebench-07-2026"
@@ -679,17 +679,17 @@ k = 1
 concurrency = 16
 
 [arms.copilot-sonnet]
-agent = "suss.agents:SussCopilotCli"
+agent = "swe_drill.agents.copilot_cli:CopilotCli"
 model = "claude-sonnet-5.5"
 kwargs = { version = "1.0.105", reasoning_effort = "high" }
 
 [arms.copilot-gpt]
-agent = "suss.agents:SussCopilotCli"
+agent = "swe_drill.agents.copilot_cli:CopilotCli"
 model = "gpt-6.1-sol"
 kwargs = { version = "1.0.105", reasoning_effort = "high" }
 
 [arms.hve-sol]
-agent = "suss.agents:SussCopilotCliHve"
+agent = "swe_drill.agents.hve:CopilotCliHve"
 model = "gpt-6.1-sol"
 kwargs = { version = "1.0.105", reasoning_effort = "high", hve_core_commit = "55352bb8e9f0622ff40f5c6afa80363adaf6b07f" }
 
@@ -698,7 +698,7 @@ credit_budget = 2000
 ```
 
 - `swe_rebench` and `senior_swe_bench` name the directories of tasks that
-  `harbor download` writes, relative to the directory holding `suss.toml`.
+  `harbor download` writes, relative to the directory holding `swe-drill.toml`.
   `swe_rebench` is `<dir>/swe-rebench-07-2026` after
   `harbor download ibragim-badertdinov/swe-rebench-07-2026 -o <dir>`, and
   `senior_swe_bench` is `<dir>/senior-swe-bench-v2026.06` after
@@ -708,27 +708,27 @@ credit_budget = 2000
   or runs any job.
 - `agent` names the arm's agent class, as `module:Class`. `model` is passed as
   `-m`, and each of `kwargs` as `--ak`, of its own type. A class that is not
-  built on `SussMixin`, a kwarg it does not take, or a model or kwarg it needs
-  and the arm leaves out, makes `suss run` exit with an error before it builds
+  built on `Adapter`, a kwarg it does not take, or a model or kwarg it needs
+  and the arm leaves out, makes `swe-drill run` exit with an error before it builds
   any lane or runs any job. Harbor refuses such a kwarg only once the agent job
   has started, and takes any kwarg for an agent class that declares no options:
 
   ```
-  $ suss run copilot-gpt rebench
-  error: /home/me/evals/suss.toml: [arms.copilot-gpt] sets kwargs max_ai_credits,
-  which suss.agents:SussCopilotCli does not take; it takes version,
+  $ swe-drill run copilot-gpt rebench
+  error: /home/me/evals/swe-drill.toml: [arms.copilot-gpt] sets kwargs max_ai_credits,
+  which swe_drill.agents.copilot_cli:CopilotCli does not take; it takes version,
   reasoning_effort, fusion_tier
   ```
 
-  An arm that sets `harness` or `params` makes `suss run` exit with an error
+  An arm that sets `harness` or `params` makes `swe-drill run` exit with an error
   saying to use `agent`, `model` and `kwargs`.
 - `environment` is passed to `harbor run` as `-e`: `docker` runs the sandboxes
   on this machine, and `modal` runs them on Modal. With `modal`, when Modal's
-  client is not installed in suss's environment, `suss run` exits with an error
+  client is not installed in SWE-drill's environment, `swe-drill run` exits with an error
   before it builds a lane or runs any job, with `DRY_RUN=1` and `--check` too:
 
   ```
-  $ suss run copilot-gpt rebench
+  $ swe-drill run copilot-gpt rebench
   error: environment is modal, but Modal's client is not installed: run uv sync
   --extra modal
   ```
@@ -741,13 +741,13 @@ credit_budget = 2000
   of the tasks' own where it is larger. Memory is counted in MiB, as
   `memory_mb` is, and Docker's is rounded down. A task that gives `memory`, as
   every `senior` task does, counts as Harbor reads it: `"8G"` is 8192 MiB. When
-  either does not fit, `suss run` exits with an error before it builds any lane
+  either does not fit, `swe-drill run` exits with an error before it builds any lane
   or runs any job, and does so under `DRY_RUN=1` too. A task that names no
   `cpus`, or neither `memory_mb` nor a `memory` Harbor reads, is an error that
   names it. A `--check` counts only its one task, and one trial at a time.
 
   ```
-  $ suss run copilot-gpt rebench
+  $ swe-drill run copilot-gpt rebench
   error: concurrency = 16 needs 16 CPUs and 65536 MiB for the tasks in rebench,
   but Docker has 10 CPUs and 7934 MiB; set concurrency to 1 or less, or give
   Docker more
@@ -760,7 +760,7 @@ credit_budget = 2000
   judge's defaults where it leaves them out. They are the `--verifier-kwarg`s
   the agent job gives `JudgeVerifier`. A budget that is not a positive, finite
   number, a model or effort that is not a string, or any other key, makes
-  `suss run` exit with an error before it builds any lane or runs any job.
+  `swe-drill run` exit with an error before it builds any lane or runs any job.
 
   ```toml
   [lanes.senior.judge]
@@ -769,41 +769,41 @@ credit_budget = 2000
   effort = "high"
   ```
 
-  A `[lanes.<lane>]` table for a lane suss does not have, or one that sets
-  anything else, but `judge` on `senior`, makes `suss run` exit with an error
+  A `[lanes.<lane>]` table for a lane SWE-drill does not have, or one that sets
+  anything else, but `judge` on `senior`, makes `swe-drill run` exit with an error
   before it builds any lane or runs any job:
 
   ```
-  $ suss run copilot-gpt rebench
-  error: /home/me/evals/suss.toml: sets [lanes.rebnech], but suss has no lane
+  $ swe-drill run copilot-gpt rebench
+  error: /home/me/evals/swe-drill.toml: sets [lanes.rebnech], but SWE-drill has no lane
   named rebnech; its lanes are rebench, senior
   ```
-- `max_cost_usd`, at the top or on the arm, makes `suss run` exit with an error
+- `max_cost_usd`, at the top or on the arm, makes `swe-drill run` exit with an error
   before it builds any lane or runs any job, with `DRY_RUN=1` and `--check` too:
 
   ```
-  $ suss run copilot-gpt rebench
-  error: /home/me/evals/suss.toml: [arms.copilot-gpt] sets max_cost_usd, but suss
+  $ swe-drill run copilot-gpt rebench
+  error: /home/me/evals/swe-drill.toml: [arms.copilot-gpt] sets max_cost_usd, but SWE-drill
   does not read it
   ```
-- `baseline`, on any arm, makes `suss run` and `suss leaderboard` exit with an
-  error naming the arm, before `suss run` builds any lane or runs any job, with
+- `baseline`, on any arm, makes `swe-drill run` and `swe-drill leaderboard` exit with an
+  error naming the arm, before `swe-drill run` builds any lane or runs any job, with
   `DRY_RUN=1` and `--check` too:
 
   ```
-  $ suss run copilot-gpt rebench
-  error: /home/me/evals/suss.toml: [arms.hve-sol] sets baseline, which suss no
-  longer reads; suss leaderboard ranks every arm on its lane
+  $ swe-drill run copilot-gpt rebench
+  error: /home/me/evals/swe-drill.toml: [arms.hve-sol] sets baseline, which SWE-drill no
+  longer reads; swe-drill leaderboard ranks every arm on its lane
   ```
 
-### `suss leaderboard`
+### `swe-drill leaderboard`
 
 ```bash
-suss leaderboard --lane rebench
+swe-drill leaderboard --lane rebench
 ```
 
 It ranks every arm under `results/rebench/` in the current directory, the one
-holding `suss.toml`. Each directory there is an arm, whether or not `suss.toml`
+holding `swe-drill.toml`. Each directory there is an arm, whether or not `swe-drill.toml`
 defines it, and trials under `checks/` never count. It prints one table, best
 resolved rate first, and arms with the same rate by name:
 
@@ -850,18 +850,18 @@ These trials' verifiers judged them invalid, so the leaderboard counts none of t
 `--lane` is required, and only `rebench` has a leaderboard:
 
 ```
-$ suss leaderboard --lane senior
-error: suss leaderboard covers rebench only, not senior
+$ swe-drill leaderboard --lane senior
+error: swe-drill leaderboard covers rebench only, not senior
 ```
 
 It exits with an error, and prints nothing else, when:
 
-- `suss.toml` is missing, or an arm in it sets `baseline`.
+- `swe-drill.toml` is missing, or an arm in it sets `baseline`.
 - `results/rebench/` holds no arm, or an arm with no trials or only invalid
   ones:
 
   ```
-  $ suss leaderboard --lane rebench
+  $ swe-drill leaderboard --lane rebench
   error: every trial of arm copilot-gpt under results/rebench/ is invalid: its
   verifier wrote an empty reward
   ```
@@ -881,23 +881,33 @@ Python 3.12, managed with `uv`.
 ### Structure
 
 ```
-src/suss/
-  agents.py       SussMixin, and the agent classes arms run on
-  sandbox.py      commands in the sandbox, and stopping what they started
-  workspace.py    finding the workspace, and capturing the patch
-  lanes/          building a lane's directory from the downloaded tasks
-    __init__.py   the lanes, the build, and what every lane changes in a copy
-    edits.py      changing one line or key of a task's file, and nothing else
-    rebench.py    what the rebench lane alone leaves out and changes
-    senior.py     what the senior lane alone changes
-  config.py       suss.toml
-  replay.py       ReplayVerifier, which grades a trial in Harbor's separate verifier
-  judge.py        JudgeVerifier, which judges a senior trial there, then grades it
-  leaderboard.py  suss leaderboard
-  cli.py          the suss command
+src/swe_drill/
+  agents/           the agent classes arms run on
+    __init__.py     Adapter, the contract every agent class keeps
+    copilot_cli.py  CopilotCli
+    claude_code.py  ClaudeCode
+    hve.py          CopilotCliHve
+  copilot.py        installing Copilot CLI, for the judge and the Copilot CLI agents
+  sandbox.py        commands in the sandbox, and stopping what they started
+  workspace.py      finding the workspace, and capturing the patch
+  lanes/            building a lane's directory from the downloaded tasks
+    __init__.py     the lanes, the build, and what every lane changes in a copy
+    edits.py        changing one line or key of a task's file, and nothing else
+    rebench.py      what the rebench lane alone leaves out and changes
+    senior.py       what the senior lane alone changes
+  config.py         swe-drill.toml
+  replay.py         ReplayVerifier, which grades a trial in Harbor's separate verifier
+  judge.py          JudgeVerifier, which judges a senior trial there, then grades it
+  leaderboard.py    swe-drill leaderboard
+  cli.py            the swe-drill command
 scripts/
-  azure-run.sh    one suss run on a fresh Azure VM, then the VM deleted
-  results.sh      runs to and from Azure Blob Storage
+  azure-run.sh      one swe-drill run on a fresh Azure VM, then the VM deleted
+  results.sh        runs to and from Azure Blob Storage
 tests/
 docs/specs/
 ```
+
+Each module under `agents/` but `__init__.py` holds one agent class. It may
+import any other module in `src/swe_drill/`, and no module outside those agent
+modules imports one: the rest loads an arm's class only by the import path its
+`agent` names in `swe-drill.toml`.

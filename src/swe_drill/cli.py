@@ -1,4 +1,4 @@
-"""The suss command, and the `harbor run` command lines it runs."""
+"""The swe-drill command, and the `harbor run` command lines it runs."""
 
 import argparse
 import functools
@@ -17,20 +17,20 @@ import typer.main
 from harbor.cli.main import app as harbor_app
 from harbor.cli.utils import parse_kwargs
 
-from suss import agents, config, lanes, leaderboard
-from suss.leaderboard import LeaderboardError
-from suss.config import GRADING_KEYS, TOKEN_NAME, Config, ConfigError, verifier_env
-from suss.lanes import LaneError
+from swe_drill import agents, config, lanes, leaderboard
+from swe_drill.leaderboard import LeaderboardError
+from swe_drill.config import GRADING_KEYS, TOKEN_NAME, Config, ConfigError, verifier_env
+from swe_drill.lanes import LaneError
 
 
-VERIFIER = "suss.replay:ReplayVerifier"
-JUDGE_VERIFIER = "suss.judge:JudgeVerifier"
+VERIFIER = "swe_drill.replay:ReplayVerifier"
+JUDGE_VERIFIER = "swe_drill.judge:JudgeVerifier"
 
 
 @dataclass(frozen=True)
 class Command:
     argv: list[str]
-    # Variables of suss's own environment that Harbor's must not take.
+    # Variables of SWE-drill's own environment that Harbor's must not take.
     withheld: tuple[str, ...] = ()
     # Values from .env that Harbor's environment holds in their place.
     given: Mapping[str, str] = field(default_factory=dict, repr=False)
@@ -64,21 +64,21 @@ def harbor_commands(
     grades each trial itself in Harbor's separate verifier: ReplayVerifier on
     rebench, and on senior JudgeVerifier, given the lane's judge.
 
-    It must run in the directory holding suss.toml, which its relative paths
+    It must run in the directory holding swe-drill.toml, which its relative paths
     resolve from. `allowed_hosts` are those the arm's agent class lists.
     `harbor_args` are added to it. With `check`, it takes the lane's check
     directory and writes under `checks/` instead of `results/`.
 
     `reads` are the variables the lane's tasks read from Harbor's environment,
     as `config.host_variables` gives them. The job does not take them from
-    suss's own environment. It is given those of `verifier_reads` that .env
+    SWE-drill's own environment. It is given those of `verifier_reads` that .env
     sets, which the tasks read in `[verifier.env]` alone and so reach the
     verifier's test.sh and no sandbox. On senior that leaves out GRADING_KEYS,
     and it withholds the judge's token too.
 
     Raises ValueError, with a message for the user, when `harbor_args` include
-    a positional argument, an option suss sets on the job, an option that
-    changes what it runs, `--share` where suss passes `-y`, or anything
+    a positional argument, an option SWE-drill sets on the job, an option that
+    changes what it runs, `--share` where SWE-drill passes `-y`, or anything
     Harbor's parser rejects.
     """
     lane_dir = f"lanes/{lane}-check" if check else f"lanes/{lane}"
@@ -101,7 +101,7 @@ def harbor_commands(
         agent += ["--ak", _kwarg(key, value)]
     agent += [
         "--ak", _kwarg("arm", arm.name),
-        "--ak", _kwarg("suss_config", "suss.toml"),
+        "--ak", _kwarg("drill_config", "swe-drill.toml"),
         "--ak", _kwarg("lane", lane),
     ]
     for host in allowed_hosts:
@@ -148,7 +148,7 @@ def _refuse_sharing(harbor_args: Sequence[str], lane: str) -> None:
     given, _, _ = parser.parse_args(list(harbor_args))
     if given.get("share_org"):
         raise ValueError(
-            f"--share can't be passed after -- on {lane}: suss passes -y there, which would "
+            f"--share can't be passed after -- on {lane}: SWE-drill passes -y there, which would "
             "share the job with an organization you are not a member of without asking"
         )
 
@@ -169,43 +169,43 @@ def _kwarg(key: str, value: str | int | float | bool) -> str:
 
 
 _ALL_TASKS = "a run covers every task in its lanes"
-_NO_SIMULATED_USER = "suss runs the arm's agent alone, with no simulated user"
-_HARBOR_STOPS = "it stops harbor before the job runs; DRY_RUN=1 prints suss's commands instead"
+_NO_SIMULATED_USER = "SWE-drill runs the arm's agent alone, with no simulated user"
+_HARBOR_STOPS = "it stops harbor before the job runs; DRY_RUN=1 prints SWE-drill's commands instead"
 _OWN_MODELS = "the arm's agent reaches its model through the harness's own service, as it ships"
 _GRADED = (
-    "suss grades each trial with its own verifier, which applies the trial's patch, and on"
+    "SWE-drill grades each trial with its own verifier, which applies the trial's patch, and on"
     " senior judges it"
 )
 
 # Every option refused after --, keyed by Harbor's name for it, with where its
-# setting comes from instead, or why suss cannot honour it.
+# setting comes from instead, or why SWE-drill cannot honour it.
 _REFUSED = {
-    # Those suss sets on the job, even one a job leaves out, such as
+    # Those SWE-drill sets on the job, even one a job leaves out, such as
     # --allow-agent-host for an agent that allows no hosts.
-    "path": "suss gives each job its lane's directory",
-    "environment": "set environment in suss.toml",
-    "n_concurrent_trials": "set concurrency in suss.toml",
-    "n_attempts": "suss runs one trial per agent job, and k in suss.toml sets how many jobs",
-    "agent_name": "set the arm's agent in suss.toml",
-    "model_names": "set the arm's model in suss.toml",
-    "agent_kwargs": "set the arm's kwargs in suss.toml",
-    "effort": "set the arm's kwargs in suss.toml",
-    "allow_agent_hosts": "suss allows the hosts the arm's agent class lists in ALLOWED_HOSTS",
+    "path": "SWE-drill gives each job its lane's directory",
+    "environment": "set environment in swe-drill.toml",
+    "n_concurrent_trials": "set concurrency in swe-drill.toml",
+    "n_attempts": "SWE-drill runs one trial per agent job, and k in swe-drill.toml sets how many jobs",
+    "agent_name": "set the arm's agent in swe-drill.toml",
+    "model_names": "set the arm's model in swe-drill.toml",
+    "agent_kwargs": "set the arm's kwargs in swe-drill.toml",
+    "effort": "set the arm's kwargs in swe-drill.toml",
+    "allow_agent_hosts": "SWE-drill allows the hosts the arm's agent class lists in ALLOWED_HOSTS",
     "agent_env": (
         "the arm's agent takes only the variables its class names, from .env, and an --ae"
         " value would reach every command it runs"
     ),
-    "jobs_dir": "suss writes each job under results/<lane>/<arm>/, or checks/ with --check",
-    "job_name": "suss names each job from the run's stamp and its trial number",
-    "disable_verification": "suss grades each trial in the agent job's own verifier, in a fresh sandbox",
+    "jobs_dir": "SWE-drill writes each job under results/<lane>/<arm>/, or checks/ with --check",
+    "job_name": "SWE-drill names each job from the run's stamp and its trial number",
+    "disable_verification": "SWE-drill grades each trial in the agent job's own verifier, in a fresh sandbox",
     "verifier": _GRADED,
     "verifier_import_path": _GRADED,
     "verifier_kwargs": _GRADED,
-    "yes": "suss answers Harbor's question itself, on a lane whose tasks read Harbor's environment",
+    "yes": "SWE-drill answers Harbor's question itself, on a lane whose tasks read Harbor's environment",
     # Those that would change what the agent job runs.
-    "config_path": "a job config file can change anything suss sets on the job",
-    "agent_import_path": "set the arm's agent in suss.toml",
-    "environment_import_path": "set environment in suss.toml",
+    "config_path": "a job config file can change anything SWE-drill sets on the job",
+    "agent_import_path": "set the arm's agent in swe-drill.toml",
+    "environment_import_path": "set environment in swe-drill.toml",
     "dataset_name_version": _ALL_TASKS,
     "registry_url": _ALL_TASKS,
     "registry_path": _ALL_TASKS,
@@ -225,8 +225,8 @@ _REFUSED = {
     "bridge_prompt_path": _NO_SIMULATED_USER,
     "bridge_kwargs": _NO_SIMULATED_USER,
     "install_only": "it skips the agent run, so the verifier would find no patch to grade",
-    "launch": "suss runs each agent job locally, where its verifier reads the trial on the host",
-    "dry_run": "it validates a --launch, and suss runs each agent job locally",
+    "launch": "SWE-drill runs each agent job locally, where its verifier reads the trial on the host",
+    "dry_run": "it validates a --launch, and SWE-drill runs each agent job locally",
     "print_config": _HARBOR_STOPS,
     "diff_sources": "it reuses or regrades another job's trials in place of running the arm's agent",
     "base_url": _OWN_MODELS,
@@ -234,11 +234,11 @@ _REFUSED = {
     "api_format": _OWN_MODELS,
     "skip_model_parsing": _OWN_MODELS,
     "allow_verifier_hosts": (
-        "suss grades each trial with the network its task gives the verifier, and no more"
+        "SWE-drill grades each trial with the network its task gives the verifier, and no more"
     ),
     "env_file": (
         "it would give the agent job every variable its tasks read from Harbor's environment; "
-        "suss gives it only those .env sets that reach its verifier alone"
+        "SWE-drill gives it only those .env sets that reach its verifier alone"
     ),
 }
 
@@ -299,14 +299,14 @@ def _overrides(harbor_args: Sequence[str]) -> dict[str, int]:
                 found[option] = int(given[param.name])
             except ValueError:
                 raise _Stop(
-                    f"suss can't take {option} {given[param.name]!r}: it counts what"
+                    f"SWE-drill can't take {option} {given[param.name]!r}: it counts what"
                     " Docker holds in whole numbers"
                 ) from None
     return found
 
 
 class _Stop(Exception):
-    """An error suss prints as `error: <message>` before it exits non-zero."""
+    """An error SWE-drill prints as `error: <message>` before it exits non-zero."""
 
 
 class _Parser(argparse.ArgumentParser):
@@ -329,14 +329,14 @@ class _Lane:
 
 def harbor_executable() -> Path:
     """
-    The `harbor` installed beside this Python, in suss's own environment.
+    The `harbor` installed beside this Python, in SWE-drill's own environment.
 
-    Harbor imports suss.agents and suss's verifiers in its own process, so only
-    a Harbor that can import suss can run an agent job. One
+    Harbor imports swe_drill.agents and SWE-drill's verifiers in its own process, so only
+    a Harbor that can import swe_drill can run an agent job. One
     installed as a tool of its own cannot, and it may be the one on PATH.
     """
     # Not resolved: the environment's python links to an interpreter outside
-    # it, and the harbor beside that one is not suss's.
+    # it, and the harbor beside that one is not SWE-drill's.
     return Path(sys.executable).parent / "harbor"
 
 
@@ -349,10 +349,10 @@ def main(
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
 ) -> int:
     """
-    Run the suss command on `argv`, the arguments after the program's name,
+    Run the swe-drill command on `argv`, the arguments after the program's name,
     and return its exit code.
 
-    `directory` is where suss.toml is read from, the current directory by
+    `directory` is where swe-drill.toml is read from, the current directory by
     default. `harbor` and `docker` are the programs run.
     """
     try:
@@ -375,19 +375,19 @@ def _parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     if "--" in argv:
         at = argv.index("--")
         argv, harbor_args = argv[:at], argv[at + 1 :]
-    parser = _Parser(prog="suss", allow_abbrev=False)
+    parser = _Parser(prog="swe-drill", allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser(
         "run",
         allow_abbrev=False,
-        usage="suss run <arm> <lane>... [--check] [-- <harbor args>]",
+        usage="swe-drill run <arm> <lane>... [--check] [-- <harbor args>]",
         help="run an arm's agent jobs on one or more lanes",
         description="Run K agent jobs on each lane, each graded in its own verifier, "
         "and on senior judged there too. "
         "Arguments after -- go to every agent job. "
         "With DRY_RUN=1, print the harbor commands instead of running them.",
     )
-    run.add_argument("arm", help="an arm defined in suss.toml")
+    run.add_argument("arm", help="an arm defined in swe-drill.toml")
     run.add_argument("lanes", nargs="+", metavar="lane", help=", ".join(lanes.LANES))
     run.add_argument(
         "--check",
@@ -397,7 +397,7 @@ def _parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     ranking = commands.add_parser(
         "leaderboard",
         allow_abbrev=False,
-        usage="suss leaderboard --lane <lane>",
+        usage="swe-drill leaderboard --lane <lane>",
         help="rank every arm's results on a lane",
         description="Print each arm under results/<lane>/ with its runs, its resolved rate "
         "and pass@k, best resolved rate first. Only rebench has a leaderboard.",
@@ -419,22 +419,22 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
         return _leaderboard(args.lane, harbor_args, directory)
     dry_run = _dry_run()
     run_stamp = stamp(clock())
-    on_lane = {lane: config.load(directory / "suss.toml", args.arm, lane) for lane in args.lanes}
+    on_lane = {lane: config.load(directory / "swe-drill.toml", args.arm, lane) for lane in args.lanes}
     settings = on_lane[args.lanes[0]]
     if settings.environment == "modal":
         _require_modal()
     root = settings.path.parent
-    # harbor run loads it into its own environment, where it would refill what suss withholds.
+    # harbor run loads it into its own environment, where it would refill what SWE-drill withholds.
     if (root / ".env.local").exists():
         raise _Stop(
             f"{root / '.env.local'} exists, and harbor run, which runs in {root}, would load"
-            " it, giving the agent job variables suss keeps from it; move it out"
+            " it, giving the agent job variables SWE-drill keeps from it; move it out"
         )
     agent_class = agents.agent_class(settings.arm.agent, settings.path, args.arm)
     agents.check_arm(agent_class, settings)
     for at, lane in enumerate(args.lanes):
         if lane in args.lanes[:at]:
-            raise _Stop(f"{lane} is named twice: each lane runs once in a suss run")
+            raise _Stop(f"{lane} is named twice: each lane runs once in a swe-drill run")
 
     # Everything that can refuse the run does so here, before any lane is built.
     planned = [
@@ -457,14 +457,14 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
         return 0
 
     for lane in planned:
-        # Harbor builds each task's image when its trial starts, so suss pulls none.
+        # Harbor builds each task's image when its trial starts, so SWE-drill pulls none.
         lanes.build(lane.name, lane.download, root / "lanes", args.check)
         for agent in lane.jobs:
             code = _harbor(agent, root)
             job = root / _option(agent.argv, "--jobs-dir") / _option(agent.argv, "--job-name")
             if not _has_trial(job):
                 raise _Stop(
-                    f"agent job {job.name} on {lane.name} left no trial in {job}, so suss "
+                    f"agent job {job.name} on {lane.name} left no trial in {job}, so SWE-drill "
                     f"runs nothing more. Harbor exited {code}; its output is above."
                 )
     # Whatever each agent job's exit code, which is not its trials' result.
@@ -473,9 +473,9 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
 
 def _leaderboard(lane: str, harbor_args: list[str], directory: Path) -> int:
     if harbor_args:
-        raise _Stop("suss leaderboard takes nothing after --")
+        raise _Stop("swe-drill leaderboard takes nothing after --")
     if lane != lanes.REBENCH:
-        raise _Stop(f"suss leaderboard covers {lanes.REBENCH} only, not {lane}")
+        raise _Stop(f"swe-drill leaderboard covers {lanes.REBENCH} only, not {lane}")
     # Printed whole, after every check, so that an error leaves no partial table.
     print(leaderboard.report(directory), end="")
     return 0
@@ -484,7 +484,7 @@ def _leaderboard(lane: str, harbor_args: list[str], directory: Path) -> int:
 def _require_modal() -> None:
     """
     Raise _Stop, naming the command that installs it, when Modal's client is
-    not installed beside suss, where the harbor suss runs imports it from.
+    not installed beside SWE-drill, where the harbor SWE-drill runs imports it from.
 
     It looks the module up without importing it, so an installed client that
     fails to import is not reported as missing: Harbor's own import of it
@@ -556,7 +556,7 @@ def _docker_capacity(docker: str, root: Path) -> tuple[int, int]:
     except ValueError:
         raise _Stop(
             f"docker info gave {output!r} for the engine's CPUs and memory, "
-            "which suss cannot read as two whole numbers"
+            "which SWE-drill cannot read as two whole numbers"
         ) from None
     return cpus, memory
 
@@ -579,7 +579,7 @@ def _docker_info(docker: str, root: Path, format: str) -> str:
 
 def _harbor(command: Command, cwd: Path) -> int:
     """
-    Run the command on suss's own stdout and stderr, and return its exit code.
+    Run the command on SWE-drill's own stdout and stderr, and return its exit code.
 
     On Ctrl-C, it waits for the command to exit before raising, since the
     terminal sends the command the same interrupt and Harbor records a
@@ -598,7 +598,7 @@ def _harbor(command: Command, cwd: Path) -> int:
 
 
 def _environment(command: Command) -> dict[str, str]:
-    """suss's own environment, less what the command withholds, with what it is given."""
+    """SWE-drill's own environment, less what the command withholds, with what it is given."""
     env = {name: value for name, value in os.environ.items() if name not in command.withheld}
     return {**env, **command.given}
 

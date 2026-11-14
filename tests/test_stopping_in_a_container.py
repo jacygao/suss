@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from harbor.models.agent.context import AgentContext
 
-from test_agents import SussScripted
+from test_agents import Scripted
 
 # node:24 has git, bash and ps, as the task images do.
 IMAGE = "node:24"
@@ -49,15 +49,15 @@ def in_container(env, command: str, user: str | None = None) -> None:
 
 
 def trial(env, user: str | None, arm: str):
-    """suss.toml on the host, and a workspace the agent's user owns in the container."""
+    """swe-drill.toml on the host, and a workspace the agent's user owns in the container."""
     root = Path(env.environment_dir)
     host = root / "host"
     download = host / "tasks" / "swe-rebench-07-2026" / "owner__repo-1"
     download.mkdir(parents=True)
     (download / "task.toml").write_text("")
-    (host / "suss.toml").write_text(
+    (host / "swe-drill.toml").write_text(
         'swe_rebench = "tasks/swe-rebench-07-2026"\nenvironment = "docker"\nk = 1\nconcurrency = 1\n\n'
-        '[arms.unlimited]\nagent = "test_agents:SussScripted"\n'
+        '[arms.unlimited]\nagent = "test_agents:Scripted"\n'
     )
     workspace = root / "workspace"
     logs = root / "logs"
@@ -69,11 +69,11 @@ def trial(env, user: str | None, arm: str):
     )
     env.task_env_config.workdir = str(workspace)
     env.default_user = user
-    agent = SussScripted(
-        arm=arm, lane="rebench", suss_config=str(host / "suss.toml"),
+    agent = Scripted(
+        arm=arm, lane="rebench", drill_config=str(host / "swe-drill.toml"),
         logs=str(logs / "agent"), artifacts=str(logs / "artifacts"), logs_dir=root / "harbor-logs",
     )
-    SussScripted.script = ESCAPES
+    Scripted.script = ESCAPES
     return agent, workspace
 
 
@@ -92,7 +92,7 @@ def left_running(env, commands) -> list[str]:
 
 
 def bystander(env, user: str | None) -> None:
-    """Start a process the agent did not start, as the same user, outside any exec of suss's."""
+    """Start a process the agent did not start, as the same user, outside any exec of SWE-drill's."""
     argv = ["docker", "exec", "-d", *(["-u", user] if user else []), env.container, "setsid", "sleep", "399"]
     subprocess.run(argv, check=True)
 
@@ -105,7 +105,7 @@ def assert_nothing_left(env, workspace: Path) -> None:
     size = late.stat().st_size
     time.sleep(1)
     assert late.stat().st_size == size, "something went on writing to the workspace after the patch"
-    assert left_running(env, ["sleep 399"]), "the stop killed a process suss did not start"
+    assert left_running(env, ["sleep 399"]), "the stop killed a process SWE-drill did not start"
     assert left_running(env, ["sleep infinity"]), "the stop killed the container's PID 1"
 
 

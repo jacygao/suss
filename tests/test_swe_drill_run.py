@@ -21,17 +21,17 @@ from harbor.models.trial.config import EnvironmentConfig as TrialEnvironmentConf
 from harbor.models.trial.config import VerifierConfig as TrialVerifierConfig
 from harbor.trial.network_policy import resolve_trial_network_plan
 
-from suss import cli, lanes
-from test_agents import SussScripted
+from swe_drill import cli, lanes
+from test_agents import Scripted
 
 
-class PeerReview(SussScripted):
-    """The arm's agent class. `suss run` reads its class attributes and never constructs it."""
+class PeerReview(Scripted):
+    """The arm's agent class. `swe-drill run` reads its class attributes and never constructs it."""
 
     ALLOWED_HOSTS = ("api.anthropic.com",)
 
 
-class PeerReviewOnPypi(SussScripted):
+class PeerReviewOnPypi(Scripted):
     ALLOWED_HOSTS = ("api.anthropic.com", "pypi.org")
 
 STANDINS = Path(__file__).resolve().parent / "stand_ins"
@@ -39,14 +39,14 @@ REPO = Path(__file__).resolve().parent.parent
 STARTED = datetime(2026, 10, 31, 14, 25, tzinfo=timezone.utc)
 STAMP = "20261031T142500Z"
 GIB = 2**30
-# A Docker engine with room for every run the fixture's suss.toml asks for.
+# A Docker engine with room for every run the fixture's swe-drill.toml asks for.
 ROOMY = f"16 {64 * GIB}"
 # What a Docker Desktop VM given 8 GB of memory and 10 CPUs reports: a little
 # under 8 GiB, so that it fits one 4096 MiB trial and not two.
 DOCKER_DESKTOP_8GB = "10 8319504384"
 
 # The download's tasks, as it names them. By code point, the first is the one a
-# check runs. One names a docker_image, which suss must still not pull.
+# check runs. One names a docker_image, which SWE-drill must still not pull.
 TASKS = ["ArcadeData__arcadedb-4281", "apache__pulsar-25793", "owner__repo-3"]
 IMAGE = ("apache__pulsar-25793", "ghcr.io/x/pulsar:latest")
 # Three tasks of Senior SWE-Bench v2026.06, as test_lanes.py describes them. By
@@ -55,7 +55,7 @@ SENIOR_TASKS = Path(__file__).resolve().parent / "senior_tasks"
 SENIOR_NAMES = sorted(task.name for task in SENIOR_TASKS.iterdir() if task.is_dir())
 LITELLM = b"litellm>=1.0,<2.0"
 PINNED = b"litellm>=1.0,<1.106"
-# The senior lane's judge, which every suss.toml here sets.
+# The senior lane's judge, which every swe-drill.toml here sets.
 JUDGE = "[lanes.senior.judge]\ncredit_budget = 2000\n"
 
 
@@ -103,7 +103,7 @@ class Project:
             "swe_rebench": "../tasks/swe-rebench-07-2026",
             "senior_swe_bench": "../tasks/senior/senior-swe-bench-v2026.06",
         }
-        (self.directory / "suss.toml").write_text(
+        (self.directory / "swe-drill.toml").write_text(
             "".join(f'{key} = "{named[key]}"\n' for key in downloads)
             + f'environment = "{environment}"\n'
             f"k = {k}\n"
@@ -111,7 +111,7 @@ class Project:
             f"{lane_tables}\n"
             f"{JUDGE}\n"
             "[arms.peer-review]\n"
-            'agent = "test_suss_run:PeerReview"\n'
+            'agent = "test_swe_drill_run:PeerReview"\n'
             f"{arm_extra}\n"
         )
 
@@ -201,9 +201,9 @@ def project(tmp_path, monkeypatch) -> Project:
 # The command
 
 
-def test_the_installed_suss_command_runs():
+def test_the_installed_swe_drill_command_runs():
     result = subprocess.run(
-        ["uv", "run", "suss", "run", "--help"], cwd=REPO, capture_output=True, text=True
+        ["uv", "run", "swe-drill", "run", "--help"], cwd=REPO, capture_output=True, text=True
     )
 
     assert result.returncode == 0, result.stderr
@@ -214,7 +214,7 @@ def test_the_default_harbor_is_the_one_beside_this_python():
     harbor = cli.harbor_executable()
 
     assert harbor == Path(sys.executable).parent / "harbor"
-    assert harbor.is_file(), f"{harbor} is not installed, so it cannot import suss.agents"
+    assert harbor.is_file(), f"{harbor} is not installed, so it cannot import swe_drill.agents"
 
 
 # What runs, and in what order
@@ -230,8 +230,8 @@ def test_the_senior_lane_runs_k_agent_jobs_each_judging_and_grading_its_own_tria
         for record in project.records("harbor")
     ]
     assert runs == [
-        ("lanes/senior", "suss.judge:JudgeVerifier", f"{STAMP}-1"),
-        ("lanes/senior", "suss.judge:JudgeVerifier", f"{STAMP}-2"),
+        ("lanes/senior", "swe_drill.judge:JudgeVerifier", f"{STAMP}-1"),
+        ("lanes/senior", "swe_drill.judge:JudgeVerifier", f"{STAMP}-2"),
     ]
 
 
@@ -243,8 +243,8 @@ def test_the_rebench_lane_runs_k_agent_jobs_each_grading_its_own_trials(project)
         for record in project.records("harbor")
     ]
     assert runs == [
-        ("lanes/rebench", "suss.replay:ReplayVerifier", f"{STAMP}-1"),
-        ("lanes/rebench", "suss.replay:ReplayVerifier", f"{STAMP}-2"),
+        ("lanes/rebench", "swe_drill.replay:ReplayVerifier", f"{STAMP}-1"),
+        ("lanes/rebench", "swe_drill.replay:ReplayVerifier", f"{STAMP}-2"),
     ]
 
 
@@ -312,7 +312,7 @@ def test_each_trials_agent_phase_reaches_its_tasks_hosts_and_its_agents_and_no_o
     )
     write_allowlist_task(project.tasks, "prefect-fix-b", [*SENIOR_HOSTS, "docs.sqlalchemy.org"])
     # pypi.org is the tasks' as well, and must be opened once.
-    toml = project.directory / "suss.toml"
+    toml = project.directory / "swe-drill.toml"
     toml.write_text(toml.read_text().replace(':PeerReview"', ':PeerReviewOnPypi"'))
 
     assert project.run("peer-review", "rebench") == 0
@@ -333,7 +333,7 @@ def test_each_trials_agent_phase_reaches_its_tasks_hosts_and_its_agents_and_no_o
         assert agent_phase_hosts(lane / name, agent) == ["api.anthropic.com", "pypi.org"]
 
 
-def test_swe_rebench_is_read_from_the_directory_holding_suss_toml_not_the_current_one(
+def test_swe_rebench_is_read_from_the_directory_holding_swe_drill_toml_not_the_current_one(
     project, tmp_path
 ):
     # Where swe_rebench would point from the current directory.
@@ -346,12 +346,12 @@ def test_swe_rebench_is_read_from_the_directory_holding_suss_toml_not_the_curren
 
 
 @pytest.mark.parametrize("dry_run", [False, True], ids=["run", "dry-run"])
-def test_an_old_suss_toml_naming_swe_bench_pro_is_refused_before_anything_runs(
+def test_an_old_swe_drill_toml_naming_swe_bench_pro_is_refused_before_anything_runs(
     project, capfd, monkeypatch, dry_run
 ):
     if dry_run:
         monkeypatch.setenv("DRY_RUN", "1")
-    path = project.directory / "suss.toml"
+    path = project.directory / "swe-drill.toml"
     path.write_text(
         'swe_bench_pro = "../SWE-bench_Pro-os"\ndataset = "swe-bench-pro-v2"\n'
         + path.read_text().replace('swe_rebench = "../tasks/swe-rebench-07-2026"\n', "")
@@ -363,7 +363,7 @@ def test_an_old_suss_toml_naming_swe_bench_pro_is_refused_before_anything_runs(
     assert code != 0
     assert out == ""
     assert err == (
-        f"error: {path}: sets swe_bench_pro and dataset, which suss no longer reads; name the "
+        f"error: {path}: sets swe_bench_pro and dataset, which SWE-drill no longer reads; name the "
         "directory of downloaded SWE-rebench tasks with swe_rebench\n"
     )
     assert_nothing_ran(project)
@@ -385,22 +385,22 @@ def test_the_stamp_is_utc_whatever_zone_the_clock_gives(project):
     assert project.job_names()[0] == f"{STAMP}-1"
 
 
-def test_harbor_runs_in_the_directory_holding_suss_toml_not_the_current_one(project):
+def test_harbor_runs_in_the_directory_holding_swe_drill_toml_not_the_current_one(project):
     project.run("peer-review", "rebench")
 
     assert {record["cwd"] for record in project.records()} == {str(project.directory.resolve())}
 
 
 @pytest.mark.parametrize("pythonpath", [None, "/somewhere/else"], ids=["unset", "set"])
-def test_every_job_runs_in_suss_own_environment_unchanged(project, monkeypatch, pythonpath):
-    monkeypatch.setenv("SUSS_TEST_KEY", "kept")
+def test_every_job_runs_in_swe_drill_own_environment_unchanged(project, monkeypatch, pythonpath):
+    monkeypatch.setenv("SWE_DRILL_TEST_KEY", "kept")
     if pythonpath is not None:
         monkeypatch.setenv("PYTHONPATH", pythonpath)
 
     project.run("peer-review", "rebench")
 
     for record in project.records("harbor"):
-        assert record["env"]["SUSS_TEST_KEY"] == "kept"
+        assert record["env"]["SWE_DRILL_TEST_KEY"] == "kept"
         assert record["env"]["PATH"] == os.environ["PATH"]
         assert record["env"]["HOME"] == os.environ["HOME"]
         assert record["env"].get("PYTHONPATH") == pythonpath
@@ -425,7 +425,7 @@ def test_harbors_output_is_shown_as_it_runs(project, capfd):
     assert f"stand-in harbor complained about {STAMP}-1\n" in out + err
 
 
-def test_ctrl_c_waits_for_harbor_to_finish_cancelling_before_suss_stops(tmp_path):
+def test_ctrl_c_waits_for_harbor_to_finish_cancelling_before_swe_drill_stops(tmp_path):
     # Harbor gets the same Ctrl-C from the terminal and records a cancelled
     # trial as it stops, which takes longer than subprocess.run's 0.25 s grace.
     done = tmp_path / "done"
@@ -438,7 +438,7 @@ def test_ctrl_c_waits_for_harbor_to_finish_cancelling_before_suss_stops(tmp_path
     with pytest.raises(KeyboardInterrupt):
         cli._harbor(cli.Command([sys.executable, "-c", script]), tmp_path)
 
-    assert done.read_text() == "ok", "suss stopped before Harbor finished, so Harbor was killed mid-cleanup"
+    assert done.read_text() == "ok", "SWE-drill stopped before Harbor finished, so Harbor was killed mid-cleanup"
 
 
 # When a job fails
@@ -526,7 +526,7 @@ def test_a_k_that_is_not_a_whole_number_of_jobs_is_refused_before_anything_runs(
     ],
     ids=["lane-a-file", "lanes-a-file", "lane-a-link", "check-lane-a-link"],
 )
-def test_a_lane_path_suss_will_not_build_at_is_refused_before_anything_runs(
+def test_a_lane_path_swe_drill_will_not_build_at_is_refused_before_anything_runs(
     project, capfd, monkeypatch, path, kind, dry_run
 ):
     if dry_run:
@@ -588,7 +588,7 @@ def test_a_task_that_sets_the_agents_network_is_refused_before_anything_runs(
     ],
     ids=["not-toml", "environment-not-a-table"],
 )
-def test_a_task_toml_suss_cannot_read_is_an_error_naming_it(project, capfd, contents, message):
+def test_a_task_toml_swe_drill_cannot_read_is_an_error_naming_it(project, capfd, contents, message):
     task = project.tasks / "owner__repo-ggg"
     write_test_sh(task)
     (task / "task.toml").write_text(contents)
@@ -634,14 +634,14 @@ def test_each_lanes_agent_jobs_name_their_lane_to_the_agent(
 
     out, err = capfd.readouterr()
     assert code == 0, err
-    agents = [shlex.split(line) for line in out.splitlines() if "test_suss_run:PeerReview" in line]
+    agents = [shlex.split(line) for line in out.splitlines() if "test_swe_drill_run:PeerReview" in line]
     suffix = "-check" if check else ""
     assert {
         (value(argv, "-p"), tuple(token for flag, token in zip(argv, argv[1:]) if flag == "--ak"))
         for argv in agents
     } == {
-        (f"lanes/rebench{suffix}", ("arm=peer-review", "suss_config=suss.toml", "lane=rebench")),
-        (f"lanes/senior{suffix}", ("arm=peer-review", "suss_config=suss.toml", "lane=senior")),
+        (f"lanes/rebench{suffix}", ("arm=peer-review", "drill_config=swe-drill.toml", "lane=rebench")),
+        (f"lanes/senior{suffix}", ("arm=peer-review", "drill_config=swe-drill.toml", "lane=senior")),
     }
 
 
@@ -658,7 +658,7 @@ def test_an_old_max_cost_usd_is_refused_as_the_spec_shows(project, capfd, monkey
     out, err = capfd.readouterr()
     assert code != 0
     assert err == (
-        f"error: {project.directory / 'suss.toml'}: [arms.peer-review] sets max_cost_usd, but suss "
+        f"error: {project.directory / 'swe-drill.toml'}: [arms.peer-review] sets max_cost_usd, but SWE-drill "
         "does not read it\n"
     )
     assert out == ""
@@ -680,8 +680,8 @@ def test_an_arm_that_sets_baseline_is_refused_naming_it_and_the_key(
     out, err = capfd.readouterr()
     assert code != 0
     assert err == (
-        f"error: {project.directory / 'suss.toml'}: [arms.peer-review] sets baseline, which suss "
-        "no longer reads; suss leaderboard ranks every arm on its lane\n"
+        f"error: {project.directory / 'swe-drill.toml'}: [arms.peer-review] sets baseline, which SWE-drill "
+        "no longer reads; swe-drill leaderboard ranks every arm on its lane\n"
     )
     assert out == ""
     assert_nothing_ran(project)
@@ -690,7 +690,7 @@ def test_an_arm_that_sets_baseline_is_refused_naming_it_and_the_key(
 @pytest.mark.parametrize(
     "dry_run, check", [(False, False), (True, False), (False, True)], ids=["run", "dry-run", "check"]
 )
-def test_a_lane_suss_does_not_have_in_suss_toml_is_refused_as_the_spec_shows(
+def test_a_lane_swe_drill_does_not_have_in_swe_drill_toml_is_refused_as_the_spec_shows(
     project, capfd, monkeypatch, dry_run, check
 ):
     if dry_run:
@@ -702,7 +702,7 @@ def test_a_lane_suss_does_not_have_in_suss_toml_is_refused_as_the_spec_shows(
     out, err = capfd.readouterr()
     assert code != 0
     assert err == (
-        f"error: {project.directory / 'suss.toml'}: sets [lanes.rebnech], but suss has no lane "
+        f"error: {project.directory / 'swe-drill.toml'}: sets [lanes.rebnech], but SWE-drill has no lane "
         "named rebnech; its lanes are rebench, senior\n"
     )
     assert out == ""
@@ -714,8 +714,8 @@ def test_a_refused_argument_after_the_separator_is_printed_as_the_spec_shows(pro
 
     assert code != 0
     assert capfd.readouterr().err == (
-        "error: -k/--n-attempts can't be passed after --: suss runs one trial per agent "
-        "job, and k in suss.toml sets how many jobs\n"
+        "error: -k/--n-attempts can't be passed after --: SWE-drill runs one trial per agent "
+        "job, and k in swe-drill.toml sets how many jobs\n"
     )
     assert_nothing_ran(project)
 
@@ -746,7 +746,7 @@ def test_a_refused_argument_after_the_separator_is_printed_as_the_spec_shows(pro
         "unknown-arm",
     ],
 )
-def test_what_suss_cannot_honour_is_an_error_and_runs_nothing(project, capfd, argv, message):
+def test_what_swe_drill_cannot_honour_is_an_error_and_runs_nothing(project, capfd, argv, message):
     code = project.run(*argv)
 
     err = capfd.readouterr().err
@@ -764,14 +764,14 @@ def test_an_unknown_command_is_an_error(project, capfd):
     assert err.startswith("error: ") and "frobnicate" in err
 
 
-def test_a_missing_suss_toml_is_an_error(project, capfd):
-    (project.directory / "suss.toml").unlink()
+def test_a_missing_swe_drill_toml_is_an_error(project, capfd):
+    (project.directory / "swe-drill.toml").unlink()
 
     code = project.run("peer-review", "rebench")
 
     err = capfd.readouterr().err
     assert code != 0
-    assert err.startswith("error: ") and "suss.toml: no such file" in err
+    assert err.startswith("error: ") and "swe-drill.toml: no such file" in err
 
 
 def test_a_dry_run_value_other_than_1_is_refused(project, capfd, monkeypatch):
@@ -1083,7 +1083,7 @@ def test_a_docker_engine_that_is_not_running_is_an_error_before_any_lane_is_buil
     assert_refused_before_any_lane(project)
 
 
-def test_docker_info_output_suss_cannot_read_is_an_error_quoting_it(project, capfd, monkeypatch):
+def test_docker_info_output_swe_drill_cannot_read_is_an_error_quoting_it(project, capfd, monkeypatch):
     monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", "<no value> <no value>")
 
     code = project.run("peer-review", "rebench")
@@ -1147,9 +1147,9 @@ def test_a_dry_run_prints_each_job_in_run_order_and_runs_nothing(project, capfd,
             jobs = f"results/{lane}/peer-review"
             common = f"{project.harbor} run -p lanes/{lane} -e docker -n 4 -k 1"
             expected.append(
-                f"{common} -a test_suss_run:PeerReview --ak arm=peer-review --ak suss_config=suss.toml "
+                f"{common} -a test_swe_drill_run:PeerReview --ak arm=peer-review --ak drill_config=swe-drill.toml "
                 f"--ak lane={lane} --allow-agent-host api.anthropic.com "
-                f"--verifier suss.replay:ReplayVerifier --jobs-dir {jobs} --job-name {STAMP}-{trial}"
+                f"--verifier swe_drill.replay:ReplayVerifier --jobs-dir {jobs} --job-name {STAMP}-{trial}"
             )
     assert out.splitlines() == expected
 
@@ -1241,7 +1241,7 @@ def write_dotenv(project: Project, text: str) -> None:
     (project.directory / ".env").write_text(text)
 
 
-def test_the_agent_job_takes_no_grading_key_or_token_from_env_or_suss_own_environment(
+def test_the_agent_job_takes_no_grading_key_or_token_from_env_or_swe_drill_own_environment(
     senior, monkeypatch
 ):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "from-the-shell")
@@ -1251,13 +1251,13 @@ def test_the_agent_job_takes_no_grading_key_or_token_from_env_or_suss_own_enviro
     assert senior.run("peer-review", "senior") == 0
 
     for agent in senior.records("harbor"):
-        assert "test_suss_run:PeerReview" in agent["argv"]
+        assert "test_swe_drill_run:PeerReview" in agent["argv"]
         assert not {"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PORTKEY_API_KEY"} & set(agent["env"])
         assert "COPILOT_GITHUB_TOKEN" not in agent["env"], "the judge's token is in Harbor's environment"
         assert agent["env"]["PATH"] == os.environ["PATH"]
 
 
-def test_the_agent_job_gets_an_override_env_sets_and_none_from_suss_own_environment(
+def test_the_agent_job_gets_an_override_env_sets_and_none_from_swe_drill_own_environment(
     senior, monkeypatch
 ):
     monkeypatch.setenv("SSB_OVERRIDE_CLASSIFIER_MODEL", "anthropic/claude-opus-4-6")
@@ -1279,7 +1279,7 @@ def test_a_missing_copilot_token_is_refused_as_the_spec_shows_before_anything_ru
 ):
     if dry_run:
         monkeypatch.setenv("DRY_RUN", "1")
-    # suss's own environment does not count: the verifier reads the token from .env alone.
+    # SWE-drill's own environment does not count: the verifier reads the token from .env alone.
     monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "from-the-shell")
     write_dotenv(senior, dotenv)
 
@@ -1288,7 +1288,7 @@ def test_a_missing_copilot_token_is_refused_as_the_spec_shows_before_anything_ru
     out, err = capfd.readouterr()
     assert code != 0
     assert err == (
-        f"error: {senior.directory / '.env'} sets no COPILOT_GITHUB_TOKEN, which suss judges the"
+        f"error: {senior.directory / '.env'} sets no COPILOT_GITHUB_TOKEN, which SWE-drill judges the"
         " trials of senior with\n"
     )
     assert out == ""
@@ -1304,14 +1304,14 @@ def test_a_senior_run_with_no_judge_is_refused_as_the_spec_shows_before_anything
     if dry_run:
         monkeypatch.setenv("DRY_RUN", "1")
     write_dotenv(senior, JUDGES_KEY)
-    toml = senior.directory / "suss.toml"
+    toml = senior.directory / "swe-drill.toml"
     toml.write_text(toml.read_text().replace(JUDGE, ""))
 
     code = senior.run("peer-review", "senior", *(["--check"] if check else []))
 
     assert code != 0
     assert capfd.readouterr().err == (
-        f"error: {toml}: no [lanes.senior.judge], which suss judges senior with; set its"
+        f"error: {toml}: no [lanes.senior.judge], which SWE-drill judges senior with; set its"
         " credit_budget, the AI credits every judge session of a job may spend together\n"
     )
     assert_nothing_ran(senior)
@@ -1334,8 +1334,8 @@ def test_a_dry_run_names_each_variable_the_agent_job_is_given_and_never_its_valu
     assert len(lines) == 4
     names, agent = lines[:2]
     assert names == "# from .env: SSB_OVERRIDE_ALL_JUDGE_MODEL"
-    assert "test_suss_run:PeerReview" in agent and agent.split()[1:3] == ["run", "-y"]
-    assert "--verifier suss.judge:JudgeVerifier --verifier-kwarg credit_budget=2000" in agent
+    assert "test_swe_drill_run:PeerReview" in agent and agent.split()[1:3] == ["run", "-y"]
+    assert "--verifier swe_drill.judge:JudgeVerifier --verifier-kwarg credit_budget=2000" in agent
 
 
 def test_a_rebench_job_runs_as_before_whatever_env_holds(project, capfd, monkeypatch):
@@ -1372,7 +1372,7 @@ def test_a_run_of_both_lanes_builds_each_from_its_own_download(project, capfd):
     judged = [
         (value(record["argv"], "-p"), "-y" in record["argv"])
         for record in project.records("harbor")
-        if "suss.judge:JudgeVerifier" in record["argv"]
+        if "swe_drill.judge:JudgeVerifier" in record["argv"]
     ]
     assert judged == [("lanes/senior", True)] * 2
 
@@ -1398,7 +1398,7 @@ def test_a_senior_check_builds_the_check_lane_from_its_first_task(project, capfd
         (["rebench"], "swe_rebench"),
     ],
 )
-def test_a_lane_whose_download_suss_toml_does_not_name_is_refused_before_anything_runs(
+def test_a_lane_whose_download_swe_drill_toml_does_not_name_is_refused_before_anything_runs(
     project, capfd, lanes_run, missing
 ):
     write_dotenv(project, JUDGES_KEY)
@@ -1408,7 +1408,7 @@ def test_a_lane_whose_download_suss_toml_does_not_name_is_refused_before_anythin
     code = project.run("peer-review", *lanes_run)
 
     assert code != 0
-    assert capfd.readouterr().err == f"error: {project.directory / 'suss.toml'}: no {missing!r}\n"
+    assert capfd.readouterr().err == f"error: {project.directory / 'swe-drill.toml'}: no {missing!r}\n"
     assert_nothing_ran(project)
 
 
@@ -1426,7 +1426,7 @@ def test_a_run_of_both_lanes_without_the_judges_token_is_refused_naming_senior(p
     code = project.run("peer-review", "rebench", "senior")
 
     assert code != 0
-    assert "which suss judges the trials of senior with" in capfd.readouterr().err
+    assert "which SWE-drill judges the trials of senior with" in capfd.readouterr().err
     assert_nothing_ran(project)
 
 
@@ -1476,8 +1476,8 @@ def test_one_senior_trial_that_does_not_fit_in_docker_is_refused(project, capfd,
 
 
 def use_agent(project: Project, agent: str, extra: str = "") -> None:
-    toml = project.directory / "suss.toml"
-    toml.write_text(toml.read_text().replace('"test_suss_run:PeerReview"', f'"{agent}"') + extra)
+    toml = project.directory / "swe-drill.toml"
+    toml.write_text(toml.read_text().replace('"test_swe_drill_run:PeerReview"', f'"{agent}"') + extra)
 
 
 @pytest.mark.parametrize("dry_run", [False, True], ids=["run", "dry-run"])
@@ -1490,30 +1490,30 @@ def test_an_agent_not_built_on_the_mixin_is_refused_before_anything_runs(project
 
     _, err = capfd.readouterr()
     assert code != 0
-    assert "is not an agent built on suss.agents.SussMixin" in err
+    assert "is not an agent built on swe_drill.agents.Adapter" in err
     assert_nothing_ran(project)
 
 
 def test_an_agent_that_cannot_be_imported_is_refused_naming_it(project, capfd):
-    use_agent(project, "suss.agents:NoSuchAgent")
+    use_agent(project, "swe_drill.agents:NoSuchAgent")
 
     assert project.run("peer-review", "rebench") != 0
 
     _, err = capfd.readouterr()
-    assert "agent = 'suss.agents:NoSuchAgent'" in err and "NoSuchAgent" in err
+    assert "agent = 'swe_drill.agents:NoSuchAgent'" in err and "NoSuchAgent" in err
     assert_nothing_ran(project)
 
 
 def test_a_kwarg_the_agent_does_not_take_is_refused_as_the_spec_shows(project, capfd):
-    use_agent(project, "suss.agents:SussCopilotCli",
+    use_agent(project, "swe_drill.agents.copilot_cli:CopilotCli",
               'model = "gpt-6.1-sol"\nkwargs = { version = "1.0.105", max_ai_credits = 1000 }\n')
 
     assert project.run("peer-review", "rebench") != 0
 
     _, err = capfd.readouterr()
     assert err == (
-        f"error: {project.directory / 'suss.toml'}: [arms.peer-review] sets kwargs max_ai_credits,"
-        " which suss.agents:SussCopilotCli does not take; it takes version, reasoning_effort, fusion_tier\n"
+        f"error: {project.directory / 'swe-drill.toml'}: [arms.peer-review] sets kwargs max_ai_credits,"
+        " which swe_drill.agents.copilot_cli:CopilotCli does not take; it takes version, reasoning_effort, fusion_tier\n"
     )
     assert_nothing_ran(project)
 
@@ -1523,7 +1523,7 @@ def test_a_kwarg_the_agent_does_not_take_is_refused_as_the_spec_shows(project, c
     [('kwargs = { version = "1.0.105" }\n', "sets no model"), ('model = "gpt-6.1-sol"\n', "sets no kwargs version")],
 )
 def test_a_model_or_kwarg_the_agent_needs_is_refused_when_missing(project, capfd, extra, missing):
-    use_agent(project, "suss.agents:SussCopilotCli", extra)
+    use_agent(project, "swe_drill.agents.copilot_cli:CopilotCli", extra)
 
     assert project.run("peer-review", "rebench") != 0
 
@@ -1532,12 +1532,12 @@ def test_a_model_or_kwarg_the_agent_needs_is_refused_when_missing(project, capfd
     assert_nothing_ran(project)
 
 
-@pytest.mark.parametrize("agent", ["suss.agents:SussMixin", "test_suss_run:Project"])
+@pytest.mark.parametrize("agent", ["swe_drill.agents:Adapter", "test_swe_drill_run:Project"])
 def test_a_class_that_is_not_a_harbor_agent_is_refused_before_anything_runs(project, capfd, agent):
     use_agent(project, agent)
 
     assert project.run("peer-review", "rebench") != 0
 
     _, err = capfd.readouterr()
-    assert "is not an agent built on suss.agents.SussMixin" in err
+    assert "is not an agent built on swe_drill.agents.Adapter" in err
     assert_nothing_ran(project)

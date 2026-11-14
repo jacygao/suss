@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from suss.sandbox import run_limited
+from swe_drill.sandbox import run_limited
 
 
 def go(coroutine):
@@ -150,7 +150,7 @@ def test_a_cancelled_command_is_stopped_with_what_it_started(local_environment, 
 
 
 def test_a_command_under_its_limit_keeps_its_exit_code_and_its_variables(local_environment, box):
-    code = limited(local_environment, box, 'echo "$SUSS_TEST_KEY"\nexit 5', 30, {"SUSS_TEST_KEY": "given"})
+    code = limited(local_environment, box, 'echo "$SWE_DRILL_TEST_KEY"\nexit 5', 30, {"SWE_DRILL_TEST_KEY": "given"})
 
     assert code == 5
     assert (box / "logs" / "session.log").read_text() == "given\n"

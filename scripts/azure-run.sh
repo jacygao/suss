@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# Run one `suss run` on a fresh Azure VM, keep its results, and delete the VM.
+# Run one `swe-drill run` on a fresh Azure VM, keep its results, and delete the VM.
 #
 #   scripts/azure-run.sh <region> <arm> <lane> [--check]
 #
-# Run it from a suss checkout with a .env, signed in with `az login`.
+# Run it from a SWE-drill checkout with a .env, signed in with `az login`.
 #
-# With SUSS_RUNS_URL set, in the environment or .env, to a blob container such
+# With SWE_DRILL_RUNS_URL set, in the environment or .env, to a blob container such
 # as https://<account>.blob.core.windows.net/runs, the VM uploads results/ and
 # checks/ there itself, at their paths under the checkout, and only the run's
 # output comes back here. COPY_BACK=1 copies results/ and checks/ back too, as
-# happens without SUSS_RUNS_URL or when the upload fails.
+# happens without SWE_DRILL_RUNS_URL or when the upload fails.
 #
 # The VM's resource group is deleted only once its results are kept. If that
 # or the delete fails, the script exits non-zero and prints the command that
 # deletes the group.
 #
-# SIZE sets the VM size (default Standard_E20as_v5). suss.toml on the VM gets
+# SIZE sets the VM size (default Standard_E20as_v5). swe-drill.toml on the VM gets
 # environment = "docker" and the largest concurrency the lane's biggest task
 # fits in the VM's Docker.
 #
@@ -32,21 +32,21 @@ size=${SIZE:-Standard_E20as_v5}
 retries=${RETRIES:-1}
 case $retries in ''|*[!0-9]*) echo "RETRIES is $retries, not a whole number" >&2; exit 2 ;; esac
 key=${SSH_KEY:-$HOME/.ssh/suss-azure}
-suss=$(pwd)
+checkout=$(pwd)
 rg="suss-run-$region"
 log() { printf '%s [%s] %s\n' "$(date +%H:%M:%S)" "$region" "$*"; }
 
-[ -f "$suss/suss.toml" ] && [ -f "$suss/.env" ] || { echo "run from a suss checkout with a .env" >&2; exit 2; }
+[ -f "$checkout/swe-drill.toml" ] && [ -f "$checkout/.env" ] || { echo "run from a SWE-drill checkout with a .env" >&2; exit 2; }
 
-from_env=$(grep -s '^SUSS_RUNS_URL=' "$suss/.env" | tail -1 | cut -d= -f2- || true)
-runs_url=${SUSS_RUNS_URL:-$from_env}
+from_env=$(grep -s '^SWE_DRILL_RUNS_URL=' "$checkout/.env" | tail -1 | cut -d= -f2- || true)
+runs_url=${SWE_DRILL_RUNS_URL:-$from_env}
 runs_url=${runs_url%/}
 copy_all=${COPY_BACK:-}
 scope=
 if [ -n "$runs_url" ]; then
   case $runs_url in
     https://*.blob.core.windows.net/*) ;;
-    *) echo "SUSS_RUNS_URL is $runs_url, not https://<account>.blob.core.windows.net/<container>" >&2; exit 2 ;;
+    *) echo "SWE_DRILL_RUNS_URL is $runs_url, not https://<account>.blob.core.windows.net/<container>" >&2; exit 2 ;;
   esac
   account=${runs_url#https://}
   account=${account%%.*}
@@ -56,23 +56,23 @@ else
   copy_all=1
 fi
 
-# The lane's download, as suss.toml names it. It goes to the same path relative
-# to suss on the VM, so it must be relative.
-download=$(cd "$suss" && uv run -q python - "$lane" <<'EOF'
+# The lane's download, as swe-drill.toml names it. It goes to the same path relative
+# to the checkout on the VM, so it must be relative.
+download=$(cd "$checkout" && uv run -q python - "$lane" <<'EOF'
 import sys, tomllib
-from suss.config import DOWNLOADS
+from swe_drill.config import DOWNLOADS
 lane = sys.argv[1]
 if lane not in DOWNLOADS:
-    sys.exit(f"suss has no lane named {lane}; its lanes are {', '.join(DOWNLOADS)}")
-value = tomllib.load(open("suss.toml", "rb")).get(DOWNLOADS[lane])
+    sys.exit(f"SWE-drill has no lane named {lane}; its lanes are {', '.join(DOWNLOADS)}")
+value = tomllib.load(open("swe-drill.toml", "rb")).get(DOWNLOADS[lane])
 if value is None:
-    sys.exit(f"suss.toml names no {DOWNLOADS[lane]}")
+    sys.exit(f"swe-drill.toml names no {DOWNLOADS[lane]}")
 if value.startswith("/"):
-    sys.exit(f"{DOWNLOADS[lane]} is absolute; azure-run.sh needs it relative to suss.toml")
+    sys.exit(f"{DOWNLOADS[lane]} is absolute; azure-run.sh needs it relative to swe-drill.toml")
 print(value)
 EOF
 )
-[ -d "$suss/$download" ] || { echo "$download: no such directory" >&2; exit 2; }
+[ -d "$checkout/$download" ] || { echo "$download: no such directory" >&2; exit 2; }
 
 if [ "$(az group exists -n "$rg")" != false ]; then
   echo "$rg already exists, or Azure could not say: a run is going there, or an earlier one left it" >&2
@@ -121,12 +121,12 @@ allow_me() {
 # VM is never deleted on a guess.
 copy_back() {
   local found dir
-  found=$(ssh_ 'cd suss && for d in results checks; do [ -d "$d" ] && echo "$d"; done; [ -f ~/run.log ] && echo run.log; [ -d ~/retried ] && echo retried; true' < /dev/null) || return 1
+  found=$(ssh_ 'cd swe-drill && for d in results checks; do [ -d "$d" ] && echo "$d"; done; [ -f ~/run.log ] && echo run.log; [ -d ~/retried ] && echo retried; true' < /dev/null) || return 1
   for dir in $found; do
     case $dir in
-      run.log) mkdir -p "$suss/logs"; rsync_ "azureuser@$ip:run.log" "$suss/logs/azure-$region-$arm.out" || return 1 ;;
-      retried) mkdir -p "$suss/logs"; rsync_ "azureuser@$ip:retried/" "$suss/logs/azure-$region-$arm-retried/" || return 1 ;;
-      *) if [ -n "$copy_all" ] || [ -z "$uploaded" ]; then rsync_ "azureuser@$ip:suss/$dir" "$suss/" || return 1; fi ;;
+      run.log) mkdir -p "$checkout/logs"; rsync_ "azureuser@$ip:run.log" "$checkout/logs/azure-$region-$arm.out" || return 1 ;;
+      retried) mkdir -p "$checkout/logs"; rsync_ "azureuser@$ip:retried/" "$checkout/logs/azure-$region-$arm-retried/" || return 1 ;;
+      *) if [ -n "$copy_all" ] || [ -z "$uploaded" ]; then rsync_ "azureuser@$ip:swe-drill/$dir" "$checkout/" || return 1; fi ;;
     esac
   done
   copied=1
@@ -192,22 +192,22 @@ until ssh_ true < /dev/null 2> /dev/null; do
 done
 ssh_ 'cloud-init status --wait > /dev/null' < /dev/null
 
-log "copying suss, $download and .env"
-git -C "$suss" ls-files -z | rsync_ --from0 --files-from=- "$suss/" "azureuser@$ip:suss/"
-ssh_ "mkdir -p suss/$(printf %q "$download")" < /dev/null
-rsync_ "$suss/$download/" "azureuser@$ip:suss/$download/"
-ssh_ 'umask 077; cat > suss/.env' < "$suss/.env"
+log "copying the checkout, $download and .env"
+git -C "$checkout" ls-files -z | rsync_ --from0 --files-from=- "$checkout/" "azureuser@$ip:swe-drill/"
+ssh_ "mkdir -p swe-drill/$(printf %q "$download")" < /dev/null
+rsync_ "$checkout/$download/" "azureuser@$ip:swe-drill/$download/"
+ssh_ 'umask 077; cat > swe-drill/.env' < "$checkout/.env"
 
 ssh_ bash -s "$lane" <<'EOF'
 set -e
-cd suss
+cd swe-drill
 ~/.local/bin/uv sync -q
 ~/.local/bin/uv run -q python - "$1" <<'PY'
 import re, subprocess, sys, tomllib
 from pathlib import Path
-from suss import lanes
-from suss.config import DOWNLOADS
-download = Path(tomllib.load(open("suss.toml", "rb"))[DOWNLOADS[sys.argv[1]]]).resolve()
+from swe_drill import lanes
+from swe_drill.config import DOWNLOADS
+download = Path(tomllib.load(open("swe-drill.toml", "rb"))[DOWNLOADS[sys.argv[1]]]).resolve()
 tasks = [task for task in download.iterdir() if (task / "task.toml").is_file()]
 cpus, memory_mb = lanes.needs(lanes.read_tasks(tasks))
 info = subprocess.check_output(["docker", "info", "--format", "{{.NCPU}} {{.MemTotal}}"], text=True)
@@ -216,17 +216,17 @@ n = min(docker_cpus // cpus, docker_bytes // (memory_mb * 1024 * 1024))
 if n < 1:
     sys.exit(f"one trial of {sys.argv[1]} does not fit this VM")
 # Only the top-level keys, which all come before the first table.
-text = open("suss.toml").read()
+text = open("swe-drill.toml").read()
 table = re.search(r"(?m)^[ \t]*\[", text)
 head, rest = (text[: table.start()], text[table.start() :]) if table else (text, "")
 for key, value in (("environment", '"docker"'), ("concurrency", str(n))):
     head, found = re.subn(rf"""(?m)^[ \t]*(["']?){key}\1[ \t]*=.*$""", f"{key} = {value}", head)
     if found != 1:
-        sys.exit(f"suss.toml has {found} top-level {key} keys, not 1")
-open("suss.toml", "w").write(head + rest)
-data = tomllib.load(open("suss.toml", "rb"))
+        sys.exit(f"swe-drill.toml has {found} top-level {key} keys, not 1")
+open("swe-drill.toml", "w").write(head + rest)
+data = tomllib.load(open("swe-drill.toml", "rb"))
 if (data["environment"], data["concurrency"]) != ("docker", n):
-    sys.exit("suss.toml did not take environment = docker and the concurrency")
+    sys.exit("swe-drill.toml did not take environment = docker and the concurrency")
 print(f"concurrency = {n}")
 PY
 EOF
@@ -236,7 +236,7 @@ ssh_ 'cat > ~/retry.py' <<'EOF'
 Run again, up to argv[1] times, each trial whose agent never worked on its task.
 
 Each such trial is set aside under ~/retried/<attempt>/, and its job resumed
-with the environment suss gives the job's `harbor run`. A trial the resume
+with the environment SWE-drill gives the job's `harbor run`. A trial the resume
 made no replacement for is put back, so it still counts as unresolved. Exits
 1 when a resume failed or a trial was put back.
 """
@@ -246,7 +246,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from suss import cli, config
+from swe_drill import cli, config
 
 # Harbor raises these before the agent starts on the task.
 SETUP = {
@@ -292,7 +292,7 @@ def main():
     retries, arm, lane = int(sys.argv[1]), sys.argv[2], sys.argv[3]
     check = "--check" in sys.argv[4:]
     harbor = Path(sys.executable).parent / "harbor"
-    settings = config.load(Path("suss.toml"), arm, lane)
+    settings = config.load(Path("swe-drill.toml"), arm, lane)
     job_command = cli._plan(settings, (), lane, "retry", [], check, harbor).jobs[0]
     env = cli._environment(job_command)
     failed = False
@@ -336,11 +336,11 @@ def main():
 main()
 EOF
 ssh_ 'cat > ~/run.sh' <<'EOF'
-cd ~/suss
+cd ~/swe-drill
 retries=$1
 url=$2
 shift 2
-~/.local/bin/uv run suss run "$@" > ~/run.log 2>&1
+~/.local/bin/uv run swe-drill run "$@" > ~/run.log 2>&1
 code=$?
 if ! ~/.local/bin/uv run python ~/retry.py "$retries" "$@" >> ~/run.log 2>&1; then
   echo "azure-run: the retry failed; its output is above" >> ~/run.log
@@ -369,7 +369,7 @@ fi
 echo "EXIT $code" >> ~/run.log
 EOF
 
-log "suss run $arm $lane $check, retrying up to $retries times"
+log "swe-drill run $arm $lane $check, retrying up to $retries times"
 launched=1
 ssh_ "tmux new -d -s run 'bash ~/run.sh $retries \"$runs_url\" $arm $lane $check'" < /dev/null
 started=$(date +%s)
@@ -402,5 +402,5 @@ if [ -n "$runs_url" ]; then
 fi
 copy_back || { log "copy-back failed"; exit 1; }
 [ -z "$uploaded" ] || log "results are in $runs_url; rank them with: scripts/results.sh down <mirror>"
-log "suss run exited $status"
+log "swe-drill run exited $status"
 exit "$status"

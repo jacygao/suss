@@ -30,10 +30,10 @@ from harbor.utils.env import resolve_env_vars
 from harbor.verifier.factory import VerifierFactory
 from harbor.verifier.verifier import Verifier
 
-import suss.judge
-import suss.replay
-from suss.judge import CreditLedger, JudgePaths, JudgeVerifier, extract_json
-from suss.replay import ReplayError, ReplayVerifier
+import swe_drill.judge
+import swe_drill.replay
+from swe_drill.judge import CreditLedger, JudgePaths, JudgeVerifier, extract_json
+from swe_drill.replay import ReplayError, ReplayVerifier
 from test_replay import edit_line, git, go, patch_of
 
 HERE = Path(__file__).resolve().parent
@@ -96,7 +96,7 @@ def found(monkeypatch, workspace):
     async def find_workspace(*args, **kwargs):
         return str(workspace)
 
-    monkeypatch.setattr(suss.replay, "find_workspace", find_workspace)
+    monkeypatch.setattr(swe_drill.replay, "find_workspace", find_workspace)
 
 
 @pytest.fixture
@@ -118,7 +118,7 @@ def box(tmp_path, monkeypatch, found) -> Path:
         if failure.exists():
             raise RuntimeError(failure.read_text())
 
-    monkeypatch.setattr(suss.judge, "install_copilot", install_copilot)
+    monkeypatch.setattr(swe_drill.judge, "install_copilot", install_copilot)
     scenario = tmp_path / "copilot"
     scenario.mkdir()
     (scenario / "version").write_text("1.0.105")
@@ -180,7 +180,7 @@ def judge_verifier(
         (paths.agent_dir / "model.patch").write_bytes(patch)
     kwargs.setdefault("credit_budget", 1000)
     return VerifierFactory.create_verifier_from_config(
-        VerifierConfig(import_path="suss.judge:JudgeVerifier"),
+        VerifierConfig(import_path="swe_drill.judge:JudgeVerifier"),
         task=Task(box / "lanes" / "senior" / TASK),
         trial_paths=paths,
         environment=environment,
@@ -254,7 +254,7 @@ def replayed_input(box: Path, workspace: Path, patch: bytes, environment, tested
     artifacts.mkdir(parents=True)
     (artifacts / "model.patch").write_bytes(patch)
     verifier = VerifierFactory.create_verifier_from_config(
-        VerifierConfig(import_path="suss.replay:ReplayVerifier"),
+        VerifierConfig(import_path="swe_drill.replay:ReplayVerifier"),
         task=Task(box / "lanes" / "senior" / TASK),
         trial_paths=paths,
         environment=environment,
@@ -275,7 +275,7 @@ def test_harbor_loads_it_with_gemini_4_argon_at_high_effort_by_default(tmp_path,
     paths = TrialPaths(tmp_path / "agent-job" / TRIAL)
     paths.mkdir()
     config = VerifierConfig(
-        import_path="suss.judge:JudgeVerifier", kwargs=parse_kwargs(["credit_budget=80"])
+        import_path="swe_drill.judge:JudgeVerifier", kwargs=parse_kwargs(["credit_budget=80"])
     )
 
     verifier = VerifierFactory.create_verifier_from_config(
@@ -657,7 +657,7 @@ def test_a_task_whose_verifier_timeout_cannot_hold_the_judge_is_refused_before_a
     toml.write_text(toml.read_text().replace("timeout_sec = 2700.0", "timeout_sec = 600.0"))
     verifier = judge_verifier(box, local_environment, a_patch(workspace))
 
-    with pytest.raises(suss.judge.JudgeError, match="600 seconds"):
+    with pytest.raises(swe_drill.judge.JudgeError, match="600 seconds"):
         verify(verifier)
 
     assert calls(box) == [], "a judge session ran that Harbor's verifier timeout would cut off"
@@ -895,7 +895,7 @@ def test_a_workspace_that_cannot_be_put_back_fails_the_trial_and_runs_no_test(
 
     monkeypatch.setattr(verifier, "_restore", leaves_it)
 
-    with pytest.raises(suss.judge.JudgeError, match="put back"):
+    with pytest.raises(swe_drill.judge.JudgeError, match="put back"):
         verify(verifier)
     assert recorded(verifier)["rubric_status"] == "failed:repo_changed"
     assert tested == []
@@ -910,7 +910,7 @@ def test_a_restore_that_raises_fails_the_trial(box, workspace, local_environment
 
     monkeypatch.setattr(verifier, "_restore", stuck)
 
-    with pytest.raises(suss.judge.JudgeError, match="put back"):
+    with pytest.raises(swe_drill.judge.JudgeError, match="put back"):
         verify(verifier)
 
 
@@ -934,7 +934,7 @@ def test_a_cancel_during_cleanup_still_puts_the_test_files_back_and_fails_the_tr
         run = asyncio.create_task(verifier.verify())
         await entered.wait()
         run.cancel()
-        with pytest.raises(suss.judge.JudgeError, match="put back"):
+        with pytest.raises(swe_drill.judge.JudgeError, match="put back"):
             await run
 
     go(cancel_during_cleanup())

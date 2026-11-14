@@ -8,10 +8,10 @@ import pytest
 from harbor.models.task.config import NetworkMode, TaskConfig, VerifierEnvironmentMode
 from harbor.models.task.verifier_mode import resolve_task_verifier_mode
 
-from suss import lanes
-from suss.lanes import LaneError
+from swe_drill import lanes
+from swe_drill.lanes import LaneError
 
-SPEC = Path(__file__).resolve().parent.parent / "docs" / "specs" / "suss-spec.md"
+SPEC = Path(__file__).resolve().parent.parent / "docs" / "specs" / "swe-drill-spec.md"
 
 def test_the_lanes_are_the_specs():
     section = SPEC.read_text().split("\n## 5. Lanes\n", 1)[1].split("\n## ", 1)[0]
@@ -21,11 +21,11 @@ def test_the_lanes_are_the_specs():
 
 
 @pytest.mark.parametrize("lane", ["pro-go", "pro-hard51", "rebench-check", "Rebench", "Senior"])
-def test_a_lane_suss_does_not_have_is_an_error_naming_its_lanes(lane: str):
+def test_a_lane_swe_drill_does_not_have_is_an_error_naming_its_lanes(lane: str):
     with pytest.raises(LaneError) as error:
         lanes.check_lane(lane)
 
-    assert str(error.value) == f"suss has no lane named {lane}; its lanes are rebench, senior"
+    assert str(error.value) == f"SWE-drill has no lane named {lane}; its lanes are rebench, senior"
 
 
 @pytest.mark.parametrize("lane", ["rebench", "senior"])
