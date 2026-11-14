@@ -1,13 +1,13 @@
-# Suss leaderboard
+# SWE-drill leaderboard
 
-Every harness run suss has records for, a section for each lane. The lanes
+Every harness run SWE-drill has records for, a section for each lane. The lanes
 measure different things, so their numbers never compare across lanes.
 
 ## `rebench`
 
 SWE-rebench's July 2026 snapshot: 108 GitHub issues from open-source
 repositories, each graded by its own hidden tests. The table ranks arms by
-resolved rate, as `suss leaderboard --lane rebench` does.
+resolved rate, as `swe-drill leaderboard --lane rebench` does.
 
 | Arm | Harness | Model | Date | Runs | Resolved rate | pass@k | Timed out | Cost per run, USD at pay-as-you-go prices | Agent time per run, sum of trials |
 |---|---|---|---|---:|---:|---:|---:|---:|---:|
@@ -52,14 +52,14 @@ resolved rate, as `suss leaderboard --lane rebench` does.
   Docker Compose failed to start the environment of `vuejs__core-14897` in
   the first run and of `marimo-team__marimo-9754` in the second.
   `kubernetes-sigs__kueue-11559` hit Harbor's own agent timeout in the second
-  run, which left no suss record and no test result, so Timed out leaves it
+  run, which left no suss.json and no test result, so Timed out leaves it
   out.
 
 ## `senior`
 
 Senior SWE-Bench `v2026.06`: 50 tasks, 25 investigate tasks graded by their
 tests and 25 design tasks graded by senior's validation agent. No design task
-has a reward yet, since that agent needs API credit. Suss's judge scores every
+has a reward yet, since that agent needs API credit. SWE-drill's judge scores every
 patch for quality with senior's rubric and taste judges.
 
 ### Correctness
@@ -85,7 +85,7 @@ patch for quality with senior's rubric and taste judges.
   brackets is the tasks that have criteria. **Practice alignment** and
   **relative taste** run from 1 to 5. **Patch bloat** is the patch's source
   lines over the reference fix's, with test and doc files left out of both.
-- **These are suss's scores, not senior's published ones,** and taste moves by
+- **These are SWE-drill's scores, not senior's published ones,** and taste moves by
   up to a point between judgings, so treat a gap under about 0.5 as noise.
 
 ### The runs
@@ -113,7 +113,7 @@ patch for quality with senior's rubric and taste judges.
 
 ## Retired lane: SWE-bench Pro
 
-SWE-bench Pro, which suss no longer runs: Sonnet 5.5 on plain Copilot CLI
+SWE-bench Pro, which SWE-drill no longer runs: Sonnet 5.5 on plain Copilot CLI
 resolved 98% of `pro-go`, leaving no room to tell harnesses apart.
 
 | Lane | Arm | Harness | Model | Date | Tasks | Resolved | Unresolved | Invalid | Timed out | Harness failed | Resolved share | AI credits | Agent time, sum of trials | Elapsed |
@@ -133,16 +133,16 @@ resolved 98% of `pro-go`, leaving no room to tell harnesses apart.
 
 ## How this page was made
 
-Run from the directory holding `suss.toml` and `results/`, with `<suss>` the
+Run from the directory holding `swe-drill.toml` and `results/`, with `<checkout>` the
 checkout of this repository. The `rebench` resolved rates, margins and pass@k
-come from `suss leaderboard`, which ranks every arm under `results/rebench/`.
+come from `swe-drill leaderboard`, which ranks every arm under `results/rebench/`.
 `copilot-fusion-high`'s and `copilot-opus`'s come from the PC holding only
 their runs on Docker. Every other arm's come from a mirror of the runs kept in
 Azure Blob Storage:
 
 ```bash
 scripts/results.sh down <mirror>
-(cd <mirror> && uv run --project <suss> suss leaderboard --lane rebench)
+(cd <mirror> && uv run --project <checkout> swe-drill leaderboard --lane rebench)
 ```
 
 The `rebench` counts, credits and times come from each trial's records, with
@@ -156,14 +156,14 @@ jq -s 'map(.agent_result.cost_usd // empty) | add' <job>/*/result.json      # Cl
 jq -s 'map(.run_seconds) | add / 3600' <job>/*/agent/suss.json
 ```
 
-Suss no longer takes the `pro-*` lanes, and `suss compare` took two arms or
+SWE-drill no longer takes the `pro-*` lanes, and `suss compare` took two arms or
 more. Their shares come from the `compare` module of commit `b210cc1`, the last
-before suss ran `rebench` alone, called on the one arm:
+before SWE-drill ran `rebench` alone, called on the one arm:
 
 ```bash
 mkdir -p /tmp/suss-b210cc1
-git -C <suss> archive b210cc1 | tar -x -C /tmp/suss-b210cc1
-uv run --project <suss> python -c 'import sys; sys.path.insert(0, "/tmp/suss-b210cc1/src")
+git -C <checkout> archive b210cc1 | tar -x -C /tmp/suss-b210cc1
+uv run --project <checkout> python -c 'import sys; sys.path.insert(0, "/tmp/suss-b210cc1/src")
 from pathlib import Path; from suss import compare
 print(compare.report(Path("."), sys.argv[1], ["copilot-sonnet"]), end="")' pro-go
 ```
