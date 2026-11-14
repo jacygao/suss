@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SWE-drill leaderboard</title>
+<meta name="description" content="Coding harnesses run through the same benchmarks, graded the same way, and ranked.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="bar">
+  <div class="bar-in">
+    <a class="brand" href="#rebench">SWE-drill</a>
+    <nav class="tabs" aria-label="Lanes">
+      <a href="#rebench" data-lane="rebench">rebench</a>
+      <a href="#senior" data-lane="senior">senior</a>
+    </nav>
+    <span class="muted small" id="updated"></span>
+  </div>
+</header>
+<main class="wrap" id="app" aria-live="polite">
+  <p class="muted">Loading the leaderboard…</p>
+</main>
+<footer class="wrap foot muted small">
+  SWE-drill runs coding harnesses through the same benchmark tasks, grades every result the same way, and ranks the arms on each lane. Lanes measure different things, so their numbers never compare across lanes.
+</footer>
+<script src="app.js"></script>
+</body>
+</html>

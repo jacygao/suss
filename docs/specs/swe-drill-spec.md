@@ -903,6 +903,9 @@ src/swe_drill/
 scripts/
   azure-run.sh      one swe-drill run on a fresh Azure VM, then the VM deleted
   results.sh        runs to and from Azure Blob Storage
+site/               the leaderboard page, static, drawn from leaderboard.json
+.github/workflows/
+  pages.yml         publishes site/ to GitHub Pages, when started by hand
 tests/
 docs/specs/
 ```

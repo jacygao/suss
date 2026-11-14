@@ -3,6 +3,9 @@
 Every harness run SWE-drill has records for, a section for each lane. The lanes
 measure different things, so their numbers never compare across lanes.
 
+`site/` draws the same numbers as a web page, from `site/leaderboard.json`. A
+change to a row here changes that file in the same commit.
+
 ## `rebench`
 
 SWE-rebench's July 2026 snapshot: 108 GitHub issues from open-source
