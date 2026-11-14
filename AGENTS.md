@@ -17,3 +17,16 @@ language and the `src/` layout.
 ```bash
 uv run pytest
 ```
+
+## Arms
+
+Name an arm `<agent>-<model>`: the harness's short name, then the model's id
+as it carries its version, such as `copilot-gpt-6.1-sol` for Copilot CLI on
+`gpt-6.1-sol`. A setting that makes another arm of the same pair goes last:
+`copilot-fusion-high`. A name with a dot is quoted in `suss.toml`:
+
+```toml
+[arms."copilot-gpt-6.1-sol"]
+```
+
+An arm named before this keeps its name until it next runs.

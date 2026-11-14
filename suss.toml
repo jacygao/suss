@@ -9,7 +9,7 @@ agent = "suss.agents:SussCopilotCli"
 model = "claude-sonnet-5.5"
 kwargs = { version = "1.0.107", reasoning_effort = "high" }
 
-[arms.copilot-gpt]
+[arms."copilot-gpt-6.1-sol"]
 agent = "suss.agents:SussCopilotCli"
 model = "gpt-6.1-sol"
 kwargs = { version = "1.0.107", reasoning_effort = "high" }
