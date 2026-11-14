@@ -207,7 +207,7 @@
             "median": 5.9
           }
         ],
-        "note": "Grading stopped before any test on two trials, mikro-orm__mikro-orm-7799 and apache__pulsar-25953; graded once more from the same patch, both failed their tests. Its run on Modal, as copilot-gpt, which resolved 67%, is left out."
+        "note": "Grading stopped before any test on two trials, mikro-orm__mikro-orm-7799 in the first run and apache__pulsar-25953 in the third; graded once more from the same patch, both failed their tests. Its run on Modal, as copilot-gpt, which resolved 67%, is left out."
       }
     ]
   },
