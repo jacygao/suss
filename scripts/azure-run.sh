@@ -79,10 +79,11 @@ allow_me() {
   local now
   now=$(curl -fsS --max-time 10 https://api.ipify.org) || return 1
   [ "$now" != "$me" ] || return 1
-  me=$now
-  log "this machine's IP is now $me; letting it reach the VM"
+  log "this machine's IP is now $now; letting it reach the VM"
+  # `me` changes only once the rule does, so a failed update is tried again.
   az network nsg rule update -g "$rg" --nsg-name suss-vmNSG -n ssh-from-me \
-    --source-address-prefixes "$me/32" -o none
+    --source-address-prefixes "$now/32" -o none || return 1
+  me=$now
 }
 
 # Copy results/, checks/ and the run's output back. Fails, with nothing marked
@@ -262,19 +263,27 @@ def main():
             break
         aside = Path.home() / "retried" / str(attempt)
         for job, found in chosen.items():
-            (aside / job).mkdir(parents=True, exist_ok=True)
-            for trial in found:
-                shutil.move(str(trial), str(aside / trial))
-            print(f"azure-run: attempt {attempt} at {len(found)} trials in {job} whose agent never worked on the task", flush=True)
-            if subprocess.call([str(harbor), "jobs", "resume", "-p", str(job)], env=env) != 0:
-                print(f"azure-run: harbor jobs resume failed on {job}", flush=True)
-                failed = True
-            made = {task(t) for t in trials(job)}
-            for trial in found:
-                if task(trial) not in made:
-                    shutil.move(str(aside / trial), str(trial))
-                    print(f"azure-run: put back {trial.name}, which the resume did not run again", flush=True)
+            moved = []
+            try:
+                (aside / job).mkdir(parents=True, exist_ok=True)
+                for trial in found:
+                    shutil.move(str(trial), str(aside / trial))
+                    moved.append(trial)
+                print(f"azure-run: attempt {attempt} at {len(found)} trials in {job} whose agent never worked on the task", flush=True)
+                if subprocess.call([str(harbor), "jobs", "resume", "-p", str(job)], env=env) != 0:
+                    print(f"azure-run: harbor jobs resume failed on {job}", flush=True)
                     failed = True
+            except Exception as error:
+                print(f"azure-run: the retry of {job} failed: {error}", flush=True)
+                failed = True
+            finally:
+                # Whatever failed, a set-aside trial with no replacement goes back.
+                made = {task(t) for t in trials(job)}
+                for trial in moved:
+                    if task(trial) not in made:
+                        shutil.move(str(aside / trial), str(trial))
+                        print(f"azure-run: put back {trial.name}, which the resume did not run again", flush=True)
+                        failed = True
     sys.exit(1 if failed else 0)
 
 
