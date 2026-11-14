@@ -1,3 +1,4 @@
+import hashlib
 import re
 import shutil
 import subprocess
@@ -8,7 +9,7 @@ import pytest
 from harbor.models.task.config import NetworkMode, TaskConfig, VerifierEnvironmentMode
 from harbor.models.task.verifier_mode import resolve_task_verifier_mode
 
-from swe_drill import lanes
+from swe_drill import lanes, validate
 from swe_drill.lanes import LaneError
 
 SPEC = Path(__file__).resolve().parent.parent / "docs" / "specs" / "swe-drill-spec.md"
@@ -539,17 +540,38 @@ def test_check_buildable_passes_a_lane_a_build_would_replace(tmp_path: Path):
 
 # Three tasks of Senior SWE-Bench v2026.06, each with tests/test.sh as the
 # download holds it, its task.toml with stand-ins for the narrative that
-# describes the fix, and every other file a stand-in:
+# describes the fix, and every other file a stand-in but those named below:
 # - paperless-ngx-perf-workflow-queries, an investigate task, graded by tests;
 # - harbor-add-agent-file-retention, a design task with tests, whose agent
 #   timeout is 14400 seconds;
-# - prefect-feat-dbt-per-node-hardening, a design task with no tests.
+# - prefect-feat-dbt-per-node-hardening, a design task with no tests, with
+#   senior's tests/run_validate.py and tests/ssb_lib/ as the download holds
+#   them.
+# Each design task's validation_spec.toml has its own [settings] alone.
 SENIOR_TASKS = Path(__file__).resolve().parent / "senior_tasks"
 INVESTIGATE = "paperless-ngx-perf-workflow-queries"
 DESIGN = "harbor-add-agent-file-retention"
 NO_TESTS = "prefect-feat-dbt-per-node-hardening"
 LITELLM = b"litellm>=1.0,<2.0"
 PINNED = b"litellm>=1.0,<1.106"
+# The lines of senior's test.sh that run the validation agent, and what each
+# senior copy runs in their place.
+VALIDATION_LINES = [
+    (
+        b'    _va_harness="${SSB_OVERRIDE_VA_HARNESS:-${FORCE_VA_HARNESS:-miniswe}}"',
+        b"    _va_harness=claude_code",
+    ),
+    (
+        b"            bash /tests/ssb_lib/scripts/install-claude-code.sh || { : > /logs/verifier/reward.txt;"
+        b" rm -f /logs/verifier/reward.json; exit 0; }",
+        b'            echo "SWE-drill runs the validation agent through the Copilot CLI its judge installed"',
+    ),
+    (
+        b'        "$_SYS_PYTHON" /tests/run_validate.py || _validation_exit=$?',
+        b'        "$_SYS_PYTHON" /tests/swe_drill_validate.py || _validation_exit=$?',
+    ),
+]
+VALIDATE = "tests/swe_drill_validate.py"
 
 
 def make_senior(root: Path) -> Path:
@@ -580,6 +602,9 @@ def test_the_senior_fixtures_have_the_shapes_they_stand_for():
     assert (SENIOR_TASKS / DESIGN / "tests" / "verify").is_dir()
     assert (SENIOR_TASKS / NO_TESTS / "tests" / "validate").is_dir()
     assert not (SENIOR_TASKS / NO_TESTS / "tests" / "verify").exists()
+    for old, _ in VALIDATION_LINES:
+        assert shared.splitlines().count(old) == 1, old
+    assert (SENIOR_TASKS / NO_TESTS / "tests" / "run_validate.py").is_file()
 
 
 def test_the_senior_lane_holds_a_copy_of_each_task_and_nothing_else(tmp_path: Path):
@@ -593,7 +618,7 @@ def test_the_senior_lane_holds_a_copy_of_each_task_and_nothing_else(tmp_path: Pa
 
 
 @pytest.mark.parametrize("name", [INVESTIGATE, DESIGN, NO_TESTS])
-def test_each_senior_copy_differs_from_its_task_in_its_verifier_and_the_litellm_line_alone(
+def test_each_senior_copy_differs_from_its_task_in_its_verifier_test_sh_and_validation_alone(
     tmp_path: Path, name: str
 ):
     source = make_senior(tmp_path / "source")
@@ -601,14 +626,46 @@ def test_each_senior_copy_differs_from_its_task_in_its_verifier_and_the_litellm_
     built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / name
 
     original, copied = every_file(source / name), every_file(built)
-    assert copied.keys() == original.keys()
+    assert copied.keys() == original.keys() | {VALIDATE}
     changed = [path for path in original if copied[path] != original[path]]
     assert changed == ["task.toml", "tests/test.sh"]
+    assert copied[VALIDATE] == Path(validate.__file__).read_bytes()
     before = original["tests/test.sh"].splitlines(keepends=True)
     after = copied["tests/test.sh"].splitlines(keepends=True)
     assert len(after) == len(before)
     changed = [(old, new) for old, new in zip(before, after) if old != new]
-    assert changed == [(LITELLM + b"\n", PINNED + b"\n")]
+    assert changed == [(LITELLM + b"\n", PINNED + b"\n")] + [
+        (old + b"\n", new + b"\n") for old, new in VALIDATION_LINES
+    ]
+
+
+def test_a_design_copy_keeps_seniors_runner_byte_for_byte(tmp_path: Path):
+    source = make_senior(tmp_path / "source")
+
+    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / NO_TESTS
+
+    runner = "tests/run_validate.py"
+    assert hashlib.sha256((built / runner).read_bytes()).hexdigest() == hashlib.sha256(
+        (source / NO_TESTS / runner).read_bytes()
+    ).hexdigest()
+    assert (built / VALIDATE).is_file()
+
+
+@pytest.mark.parametrize("line", range(len(VALIDATION_LINES)))
+@pytest.mark.parametrize("count", [0, 2])
+def test_a_test_sh_without_one_of_each_validation_line_is_refused_naming_it(
+    tmp_path: Path, line: int, count: int
+):
+    source = make_senior(tmp_path / "source")
+    test_sh = source / DESIGN / "tests" / "test.sh"
+    old = VALIDATION_LINES[line][0]
+    test_sh.write_bytes(test_sh.read_bytes().replace(old + b"\n", (old + b"\n") * count))
+
+    with pytest.raises(LaneError) as error:
+        lanes.check_buildable(lanes.SENIOR, source, tmp_path / "lanes")
+
+    assert str(error.value).startswith(f"{test_sh}: has {count} lines that are {old.decode().strip()}")
+    assert "validation agent" in str(error.value)
 
 
 def test_a_senior_copy_keeps_its_modes_and_is_rebuilt_over_a_read_only_tests_directory(
@@ -654,9 +711,10 @@ def test_a_test_sh_with_crlf_lines_keeps_them(tmp_path: Path):
 
     built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / INVESTIGATE
 
-    assert (built / "tests" / "test.sh").read_bytes() == test_sh.read_bytes().replace(
-        LITELLM + b"\r\n", PINNED + b"\r\n"
-    )
+    expected = test_sh.read_bytes().replace(LITELLM + b"\r\n", PINNED + b"\r\n")
+    for old, new in VALIDATION_LINES:
+        expected = expected.replace(old + b"\r\n", new + b"\r\n")
+    assert (built / "tests" / "test.sh").read_bytes() == expected
 
 
 @pytest.mark.parametrize(
@@ -955,11 +1013,15 @@ def test_the_judges_margin_is_its_limit_and_its_cleanup():
     assert lanes.senior.JUDGE_MARGIN_SECONDS == lanes.senior.JUDGE_SECONDS + lanes.senior.JUDGE_CLEANUP_SECONDS == 2100
 
 
+# A design task's validation agent may take its first run's va_timeout_sec and
+# its retry's, which is at least 600 seconds, and its review judge two reviews
+# of two sessions of 300 seconds each.
 @pytest.mark.parametrize(
-    "name, timeout", [(INVESTIGATE, 600.0), (DESIGN, 1800.0), (NO_TESTS, 1200.0)]
+    "name, timeout, validation",
+    [(INVESTIGATE, 600.0, 0), (DESIGN, 1800.0, 1500 + 1500 + 1200), (NO_TESTS, 1200.0, 1800 + 1800 + 1200)],
 )
-def test_each_senior_verifier_timeout_gains_the_judges_margin_and_nothing_else_changes(
-    tmp_path: Path, name: str, timeout: float
+def test_each_senior_verifier_timeout_gains_the_judges_and_validations_margin_and_nothing_else_changes(
+    tmp_path: Path, name: str, timeout: float, validation: int
 ):
     source = make_senior(tmp_path / "source")
 
@@ -967,14 +1029,44 @@ def test_each_senior_verifier_timeout_gains_the_judges_margin_and_nothing_else_c
 
     original = toml_of(source / name)
     assert original["verifier"]["timeout_sec"] == timeout
+    raised = timeout + 2100 + validation
     expected = {
         **original,
-        "verifier": {**original["verifier"], "environment_mode": "separate", "timeout_sec": timeout + 2100},
+        "verifier": {**original["verifier"], "environment_mode": "separate", "timeout_sec": raised},
     }
-    assert toml_of(built) == expected, "the verifier cannot hold both the judge and the task's tests"
+    assert toml_of(built) == expected, "the verifier cannot hold the judge, the validation and the task's tests"
     before = (source / name / "task.toml").read_text().splitlines()
     after = (built / "task.toml").read_text().splitlines()
-    assert [line for line in after if line not in before] == [SEPARATE, f"timeout_sec = {timeout + 2100}"]
+    assert [line for line in after if line not in before] == [SEPARATE, f"timeout_sec = {raised}"]
+
+
+@pytest.mark.parametrize(
+    "settings, validation",
+    [("", 900 + 900), ("va_timeout_sec = 300\n", 300 + 600), ("va_timeout_sec = 300\nretry_timeout_sec = 700\n", 300 + 700)],
+    ids=["defaults", "short-retry-floored", "retry-set"],
+)
+def test_a_design_tasks_margin_follows_its_validation_settings_as_run_validate_reads_them(
+    tmp_path: Path, settings: str, validation: int
+):
+    source = make_senior(tmp_path / "source")
+    spec = source / DESIGN / "tests" / "validate" / "validation_spec.toml"
+    spec.write_text(f'stack_profile = "python-library"\n\n[settings]\n{settings}')
+
+    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / DESIGN
+
+    assert toml_of(built)["verifier"]["timeout_sec"] == 1800.0 + 2100 + validation + 1200
+
+
+@pytest.mark.parametrize("text", ['[settings]\nva_timeout_sec = "long"\n', "[settings\n"], ids=["not-a-number", "not-toml"])
+def test_a_validation_spec_whose_timeouts_cannot_be_read_is_refused_naming_it(tmp_path: Path, text: str):
+    source = make_senior(tmp_path / "source")
+    spec = source / DESIGN / "tests" / "validate" / "validation_spec.toml"
+    spec.write_text(text)
+
+    with pytest.raises(LaneError) as error:
+        lanes.check_buildable(lanes.SENIOR, source, tmp_path / "lanes")
+
+    assert str(error.value).startswith(f"{spec}: ")
 
 
 def test_the_shortest_senior_verifier_timeout_leaves_its_tests_their_own_time(tmp_path: Path):

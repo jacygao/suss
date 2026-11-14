@@ -200,19 +200,21 @@ with an error before it builds any lane or runs any job when one is beside
 `swe-drill.toml`.
 
 Every `senior` task has Senior SWE-Bench's verifier, which runs LLM judges and,
-on a design task, a validation agent. They call their models with
-`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `PORTKEY_API_KEY`, and SWE-drill gives the
-job none of the three, whatever `.env` sets. So they never run, and SWE-drill's own
-judge scores the patch in their place. The settings that would choose their
-models, and the validation agent's harness, still reach the verifier, and
-`grader` records them:
+on a design task, a validation agent. Senior's judges call their models with
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `PORTKEY_API_KEY`, and SWE-drill gives
+the job none of the three, whatever `.env` sets. So they never run, and
+SWE-drill's own judge scores the patch in their place. The validation agent and
+its review judge run through Copilot CLI, with no key. The settings that would
+choose senior's judges' models still reach the verifier, and `grader` records
+them beside the validation agent's:
 
 | Grades with | In `grader` as | Chosen by | Default |
 |---|---|---|---|
 | the rubric and taste judges' model | `judge_model` | `SSB_OVERRIDE_ALL_JUDGE_MODEL` | `anthropic/claude-sonnet-4-6` |
 | the patch classifier's model | `classifier_model` | `SSB_OVERRIDE_CLASSIFIER_MODEL` | `anthropic/claude-haiku-4-5-20251001` |
-| the validation agent's harness | `validation_harness` | `SSB_OVERRIDE_VA_HARNESS`, else `FORCE_VA_HARNESS` | `miniswe` |
-| the validation agent's model | `validation_model` | `SSB_OVERRIDE_VA_MODEL`, else `FORCE_VA_MODEL` | `anthropic/claude-sonnet-4-6` |
+| the validation agent's harness | `validation_harness` | nothing | `copilot-cli` |
+| the validation agent's and its review judge's model | `validation_model` | `validation_model` in `[lanes.senior.judge]` | `gemini-4-argon` |
+| their reasoning effort | `validation_effort` | `validation_effort` in `[lanes.senior.judge]` | `high` |
 
 ### Judging
 
@@ -248,8 +250,9 @@ is `skipped:budget`.
 The judge stops after `judge_seconds`, its install included, and has 300
 seconds more to put the workspace back. Each `senior` task's copy in the lane
 adds 2100 seconds, the default `judge_seconds` and those 300, to its
-`[verifier] timeout_sec`, or to Harbor's default of 600 where it sets none, so
-its tests keep the time the task gives them. `JudgeVerifier` fails a trial
+`[verifier] timeout_sec`, or to Harbor's default of 600 where it sets none, and
+a design task's copy adds the validation agent's time too, so its tests keep
+the time the task gives them. `JudgeVerifier` fails a trial
 before it applies anything when the task's verifier timeout is no more than
 `judge_seconds` and those 300 together. A judge that Harbor stops at its verifier timeout records
 `failed:cancelled` for each judge it had not finished, and runs no test.
@@ -261,6 +264,8 @@ before it applies anything when the task's verifier timeout is no more than
 | `credit_budget` | required | the AI credits every judge session of the job may spend together |
 | `model` | `gemini-4-argon` | the judges' model, of neither family the arms use, GPT or Claude |
 | `effort` | `high` | its reasoning effort, empty for a model that takes none |
+| `validation_model` | `gemini-4-argon` | the model of senior's validation agent and its review judge |
+| `validation_effort` | `high` | their reasoning effort, empty for a model that takes none |
 
 `swe-drill run` passes none of the others:
 
@@ -268,10 +273,10 @@ before it applies anything when the task's verifier timeout is no more than
 |---|---|---|
 | `classifier_model` | `claude-haiku-4.5` | the model of senior's patch classifier, which the taste judge needs |
 | `copilot_version` | `1.0.105` | the Copilot CLI release it installs, as Harbor's `copilot-cli` agent installs it |
-
 | `dotenv` | `.env` | the file that sets `COPILOT_GITHUB_TOKEN` |
 | `session_seconds` | 1200 | when a session is stopped |
 | `judge_seconds` | 1800 | when the judge is stopped |
+| `validation_credits` | 200 | the AI credits each validation session may spend, passed as `--max-ai-credits` |
 
 It writes `judge.json` in the trial's `verifier/`, and each session's logs in
 `verifier/judge/`. Beside each session's own record, `judge.json` holds the
@@ -308,6 +313,69 @@ and the AI credits the trial's sessions spent:
   patch bloat comes from senior's code, not a judge, so it can be recorded
   beside a taste judge that failed.
 
+### Validating
+
+On a `senior` design task, one with `tests/validate/validation_spec.toml`,
+`test.sh` runs senior's validation agent through Copilot CLI. Each copy holds
+`tests/swe_drill_validate.py`, a copy of `src/swe_drill/validate.py`, and its
+`test.sh` runs that where the task's runs `tests/run_validate.py`, which the
+copy keeps byte for byte. It runs `run_validate.py` with its two model calls
+made as Copilot CLI sessions:
+
+- **The validation agent**, which writes and repairs the story scripts, runs in
+  the repository with every tool but `web_fetch` and `web_search`, until the
+  `va_timeout_sec`, or for a retry the `retry_timeout_sec`, that
+  `run_validate.py` gives it.
+- **The review judge**, whose verdict decides a retry or a discard, runs in an
+  empty directory with `view` alone, for at most 300 seconds, and answers with
+  the `submit_review` JSON. Senior's own `parse_response` and `should_discard`
+  read it. An answer they cannot read is retried once in the same session.
+  When the retry cannot be read either, `run_validate.py` exits 2.
+
+Every session runs on `validation_model` at `validation_effort`, with
+`--max-ai-credits` set to `validation_credits`. `run_validate.py` runs as
+senior's `claude_code` harness, and reads whether the agent ran from the
+`cc_output.txt` and `cc_result_subtype.txt` its session writes. An agent session
+that fails or times out is recorded in `validation_results.json` as
+`validation_agent_infrastructure_failure`. Unless the stories gave a verdict
+anyway, `run_validate.py` then exits 2. On exit 2 `test.sh` writes an empty
+reward, which makes the trial invalid rather than 0.
+
+Before `test.sh`, `JudgeVerifier` writes `settings.json`, and a file holding the
+token, to `/opt/swe-drill-judge/validation/`, and gives `test.sh` that directory
+in `SWE_DRILL_VALIDATION`. The task's own tests run while the file is there. The
+validation deletes it as it reads it, before any session, and gives the token
+to Copilot CLI's environment alone, with
+`--secret-env-vars COPILOT_GITHUB_TOKEN`, so no story script and no command the
+agent runs has it. However `test.sh` ends, the directory is removed, and every
+file under the judge's directories and `/logs/verifier` that holds the token is
+deleted, in the sandbox and in the trial's `verifier/`. Where Copilot CLI could
+not be installed, or `.env` sets no token, `settings.json` says why, and the
+validation exits 2 before any session.
+
+It writes `validation.json` in the trial's `verifier/` as each session ends,
+and each session's logs in `verifier/copilot-validation/`:
+
+```json
+{
+  "validation_agent": { "client": "copilot-cli", "version": "1.0.105", "model": "gemini-4-argon", "effort": "high" },
+  "status": "ok",
+  "sessions": [
+    { "name": "agent-1", "kind": "agent", "status": "ok", "seconds": 131.2, "credits": 20.4 },
+    { "name": "review-1", "kind": "review", "status": "ok", "seconds": 41.0, "credits": 7.1 },
+    { "name": "review-2", "kind": "review", "status": "ok", "seconds": 38.6, "credits": 7.0 }
+  ],
+  "credits": 34.5,
+  "exit": 0
+}
+```
+
+- A session's status is `ok` or `failed:<why>`, as `failed:timeout`,
+  `failed:exit_1` or, for a review answer, `failed:no_json`. A validation that
+  could not start is `failed:setup`, with its `error`.
+- `credits` is the AI credits the trial's validation sessions spent, and
+  `exit` is what `run_validate.py` exited with.
+
 ### The trial record
 
 SWE-drill writes these files to `/logs/agent/` in the sandbox. Harbor keeps that
@@ -343,10 +411,11 @@ The agent's own files go there too, such as Copilot CLI's stream,
   a lane with no dataset before its sandbox starts.
 - On `senior`, `grader` also holds the litellm requirement the lane's
   `test.sh` installs, and the models and validation harness in the table
-  above. Each is what the verifier is given: the value `.env` sets, where the
-  lane's tasks read that setting, or else the default. A setting `.env` leaves
-  empty takes the default. A trial is judged by the judge its `judge.json`
-  names, whatever `judge_model` says.
+  above. Each is what the verifier is given: for senior's judges, the value
+  `.env` sets, where the lane's tasks read that setting, or else the default,
+  and for the validation agent, what `[lanes.senior.judge]` sets, or else the
+  default. A setting `.env` leaves empty takes the default. A trial is judged
+  by the judge its `judge.json` names, whatever `judge_model` says.
 
   ```json
   {
@@ -355,8 +424,9 @@ The agent's own files go there too, such as Copilot CLI's stream,
       "litellm": "litellm>=1.0,<1.106",
       "judge_model": "anthropic/claude-sonnet-4-6",
       "classifier_model": "anthropic/claude-haiku-4-5-20251001",
-      "validation_harness": "miniswe",
-      "validation_model": "anthropic/claude-sonnet-4-6"
+      "validation_harness": "copilot-cli",
+      "validation_model": "gemini-4-argon",
+      "validation_effort": "high"
     }
   }
   ```
@@ -480,11 +550,11 @@ from 12 repositories:
 
 The verifier runs the task's tests, a validation agent on the 25 tasks whose
 `metadata.segment` is `design`, and LLM judges. The reward is 1 when the tests
-pass and, on a design task, the validation agent passes the change too. The
-judges' scores never change it. The validation agent and the judges need an API
-key, and SWE-drill gives the verifier none, so it writes an empty reward for every
-design task, which makes the trial invalid, and SWE-drill's own judge scores
-every patch. Six design tasks have no tests, so the
+pass and, on a design task, the validation agent passes every story too. The
+judges' scores never change it. Senior's judges need an API key, and SWE-drill
+gives the verifier none, so SWE-drill's own judge scores every patch in their
+place. The validation agent runs through Copilot CLI. Six design tasks have no
+tests, so the
 validation agent alone sets their reward: `electric-feat-sync-service-start`,
 `harbor-add-windows-tasks-support`, `plausible-feat-shared-dashboard-deeplink`,
 `posthog-feat-prompt-versioning`, `posthog-feat-schema-ingestion-block` and
@@ -495,19 +565,34 @@ The agent timeout is 7200 seconds in 46 tasks and 14400 in the other four. The
 download amd64 Go or Rust toolchains by name, whatever the host's architecture.
 
 Each copy's `task.toml` adds `[verifier] environment_mode = "separate"` and the
-judge's 2100 seconds to its `[verifier] timeout_sec`. A task whose `[verifier]`
-sets another `environment_mode`, an `environment` of its own, or a `timeout_sec`
-that is not a positive number makes `swe-drill run` exit with an error naming it
-before it builds any lane or runs any job.
+judge's 2100 seconds to its `[verifier] timeout_sec`. A design task's copy adds
+the validation agent's time as well, read from its `validation_spec.toml`'s
+`[settings]` as `run_validate.py` reads it: `va_timeout_sec`, 900 where it sets
+none, the retry's `retry_timeout_sec`, or else `va_timeout_sec`, but never less
+than 600, and 1200 for two reviews of two 300-second sessions. The 25 design
+tasks gain 3000 to 6000 seconds this way. A task whose `[verifier]` sets another
+`environment_mode`, an `environment` of its own, or a `timeout_sec` that is not
+a positive number, or whose `validation_spec.toml` is not TOML or sets either
+timeout to anything but a positive number, makes `swe-drill run` exit with an
+error naming it before it builds any lane or runs any job.
 
-Each copy's `tests/test.sh` installs `litellm>=1.0,<1.106` where the task's
-installs `litellm>=1.0,<2.0`.
+Each copy's `tests/test.sh` changes four lines of the task's, and the copy adds
+`tests/swe_drill_validate.py`:
+
+| The task's line | The copy's |
+|---|---|
+| `litellm>=1.0,<2.0` | `litellm>=1.0,<1.106` |
+| `_va_harness="${SSB_OVERRIDE_VA_HARNESS:-${FORCE_VA_HARNESS:-miniswe}}"` | `_va_harness=claude_code` |
+| `bash /tests/ssb_lib/scripts/install-claude-code.sh \|\| { … exit 0; }` | an `echo` that installs nothing |
+| `"$_SYS_PYTHON" /tests/run_validate.py \|\| _validation_exit=$?` | `"$_SYS_PYTHON" /tests/swe_drill_validate.py \|\| _validation_exit=$?` |
+
 Every litellm from 1.106.0, on PyPI since 18 October 2026, raises
 `No module named 'mcp'` on every judge call. The verifier still writes a reward
 from the tests, so without the pin no trial's judges would score it and nothing
-would fail. A `test.sh` with no line that is exactly `litellm>=1.0,<2.0`, or
-with more than one, or in a `tests` directory that is a link, makes `swe-drill run`
-exit with an error naming it before it builds any lane or runs any job.
+would fail. A `test.sh` with no line that is exactly one of the task's lines
+above, indentation included, or with more than one, or in a `tests` directory
+that is a link, makes `swe-drill run` exit with an error naming it before it
+builds any lane or runs any job.
 
 ### Network
 
@@ -557,7 +642,8 @@ from the directory its key names: `swe_rebench` for `rebench`, and
 `[agent] network_mode = "no-network"` added to its `task.toml` where its
 `[agent]` sets no `network_mode`, and the separate verifier its lane describes.
 On `senior` it also has `litellm>=1.0,<1.106` in place of `litellm>=1.0,<2.0`
-in its `tests/test.sh`. A build removes what an
+in its `tests/test.sh`, which runs the validation agent through Copilot CLI
+with the `tests/swe_drill_validate.py` the copy adds. A build removes what an
 earlier build of the lane left. Harbor builds each task's image from its
 `Dockerfile` when its trial starts.
 
@@ -756,10 +842,11 @@ credit_budget = 2000
   When a single trial does not fit, the error says so and offers no
   `concurrency`.
 - `[lanes.senior.judge]` gives the judge a `senior` run is judged with:
-  `credit_budget`, which it requires, and `model` and `effort`, which take the
-  judge's defaults where it leaves them out. They are the `--verifier-kwarg`s
+  `credit_budget`, which it requires, and `model`, `effort`,
+  `validation_model` and `validation_effort`, which take the judge's defaults
+  where it leaves them out. They are the `--verifier-kwarg`s
   the agent job gives `JudgeVerifier`. A budget that is not a positive, finite
-  number, a model or effort that is not a string, or any other key, makes
+  number, any of the other four that is not a string, or any other key, makes
   `swe-drill run` exit with an error before it builds any lane or runs any job.
 
   ```toml
@@ -767,6 +854,8 @@ credit_budget = 2000
   credit_budget = 2000
   model = "gpt-6.1-sol"
   effort = "high"
+  validation_model = "gemini-4-argon"
+  validation_effort = "high"
   ```
 
   A `[lanes.<lane>]` table for a lane SWE-drill does not have, or one that sets
@@ -898,6 +987,7 @@ src/swe_drill/
   config.py         swe-drill.toml
   replay.py         ReplayVerifier, which grades a trial in Harbor's separate verifier
   judge.py          JudgeVerifier, which judges a senior trial there, then grades it
+  validate.py       senior's run_validate.py through Copilot CLI, copied into each senior task
   leaderboard.py    swe-drill leaderboard
   cli.py            the swe-drill command
 scripts/

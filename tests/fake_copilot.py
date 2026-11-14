@@ -1,6 +1,7 @@
 """
-A stand-in for Copilot CLI's `copilot -p`, which answers each judge session
-from a scenario a test writes, and records how it was started.
+A stand-in for Copilot CLI's `copilot -p`, which answers each judge session,
+and each session of senior's validation agent and its review judge, from a
+scenario a test writes, and records how it was started.
 
 It is copied into each test's sandbox with the scenario directory as its
 first line's argument, so concurrent tests never share one. The session it
@@ -13,13 +14,21 @@ first call's, as Copilot CLI does.
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 SCENARIO_DIR = Path(sys.argv.pop(1))
-KINDS = (("classify_files", "classify"), ("submit_taste_scores", "taste"), ("submit_scores", "rubric"))
+# The validation agent is told by how SWE-drill's prompt for it ends.
+KINDS = (
+    ("# How to work in this session", "agent"),
+    ("submit_review", "review"),
+    ("classify_files", "classify"),
+    ("submit_taste_scores", "taste"),
+    ("submit_scores", "rubric"),
+)
 
 
 def options(argv: list[str]) -> dict[str, list[str]]:
@@ -46,6 +55,9 @@ def main() -> int:
         return 0
     flags = options(argv)
     prompt = flags["-p"][0]
+    # A prompt too long for one argument is passed as a file the session reads.
+    pointed = re.match(r"Your instructions are in (\S+?)\. ", prompt)
+    instructions = Path(pointed.group(1)).read_text() if pointed else prompt
     scenarios = json.loads((SCENARIO_DIR / "scenario.json").read_text())
     states = Path(os.environ["COPILOT_HOME"]) / "session-state"
     resumed = (flags.get("--resume") or [None])[0]
@@ -61,7 +73,7 @@ def main() -> int:
             kind, unplaced = None, f"No session {resumed} in {states}"
         scenario = scenarios.get(kind, {}).get("retry", {})
     else:
-        kind = next((kind for marker, kind in KINDS if marker in prompt), None)
+        kind = next((kind for marker, kind in KINDS if marker in instructions), None)
         unplaced = None if kind else "The prompt names no tool the stand-in knows"
         scenario = scenarios.get(kind, {})
     token = os.environ.get("COPILOT_GITHUB_TOKEN", "")
@@ -80,6 +92,7 @@ def main() -> int:
         "auto_update": os.environ.get("COPILOT_AUTO_UPDATE"),
         "status": status,
         "prompt": prompt,
+        "instructions": instructions,
     }
     with open(SCENARIO_DIR / "calls.jsonl", "a") as calls:
         calls.write(json.dumps(record) + "\n")
@@ -93,6 +106,9 @@ def main() -> int:
         (log_dir / "process.log").write_text(f"token={token}\n")
     if scenario.get("write"):
         Path(scenario["write"]).write_text("the judge wrote this\n")
+    for path, content in scenario.get("files", {}).items():
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text(content)
     if scenario.get("run"):
         subprocess.run(scenario["run"], shell=True, check=True)
 

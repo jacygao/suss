@@ -23,7 +23,7 @@ from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 from harbor.utils.import_path import import_symbol
 
-from swe_drill import config, lanes, sandbox
+from swe_drill import config, judge, lanes, sandbox, validate
 from swe_drill.config import ConfigError
 from swe_drill.workspace import (
     ARTIFACTS_DIR,
@@ -289,11 +289,12 @@ def grader(settings: config.Config, lane: str) -> dict[str, str]:
     """
     What grades a trial of `lane`, a lane in DATASETS: its dataset.
 
-    On senior it adds the litellm requirement the lane's test.sh installs, and
-    the models and validation harness the regrade's verifier will use. Those
-    follow from the variables `swe-drill run` gives the regrade's Harbor, which only
-    the settings the lane's tasks read can reach. Raises LaneError when a
-    task.toml in the download cannot be read.
+    On senior it adds the litellm requirement the lane's test.sh installs, the
+    models senior's own judges would use, and the validation agent the lane
+    runs through Copilot CLI with its model and effort. The judges' models
+    follow from the variables `swe-drill run` gives the agent job's Harbor,
+    which only the settings the lane's tasks read can reach. Raises LaneError
+    when a task.toml in the download cannot be read.
     """
     found = {"dataset": DATASETS[lane]}
     if lane == lanes.SENIOR:
@@ -301,6 +302,14 @@ def grader(settings: config.Config, lane: str) -> dict[str, str]:
         reads = config.host_variables(lanes.read_tasks(lanes.lane_tasks(lane, download)))
         found["litellm"] = lanes.senior.PINNED_LITELLM.decode()
         found |= config.grading_choices(config.verifier_env(settings, reads))
+        lane_judge = settings.judge or config.Judge(credit_budget=0)
+        found["validation_harness"] = validate.CLIENT
+        found["validation_model"] = (
+            judge.MODEL if lane_judge.validation_model is None else lane_judge.validation_model
+        )
+        found["validation_effort"] = (
+            judge.EFFORT if lane_judge.validation_effort is None else lane_judge.validation_effort
+        )
     return found
 
 

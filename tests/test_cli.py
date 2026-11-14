@@ -171,7 +171,11 @@ def test_a_senior_agent_job_judges_and_grades_its_trials_in_swe_drill_verifier_w
 ):
     settings = with_dotenv(tmp_path, {"ANTHROPIC_API_KEY": "sk-ant-1", "COPILOT_GITHUB_TOKEN": "gh-1"})
     settings = dataclasses.replace(
-        settings, judge=Judge(credit_budget=2000.5, model="gpt-6.1-sol", effort="")
+        settings,
+        judge=Judge(
+            credit_budget=2000.5, model="gpt-6.1-sol", effort="", validation_model="claude-sonnet-5.5",
+            validation_effort="medium",
+        ),
     )
 
     agent = harbor_commands(
@@ -186,13 +190,17 @@ def test_a_senior_agent_job_judges_and_grades_its_trials_in_swe_drill_verifier_w
         "--allow-agent-host", "api.anthropic.com", "--allow-agent-host", "api.deepseek.com",
         "--verifier", "swe_drill.judge:JudgeVerifier",
         "--verifier-kwarg", "credit_budget=2000.5", "--verifier-kwarg", "model=gpt-6.1-sol",
-        "--verifier-kwarg", "effort=",
+        "--verifier-kwarg", "effort=", "--verifier-kwarg", "validation_model=claude-sonnet-5.5",
+        "--verifier-kwarg", "validation_effort=medium",
         "--jobs-dir", "results/senior/peer-review", "--job-name", f"{STAMP}-2",
         "--max-retries", "1",
     ]
     assert parse_kwargs(
         [token for flag, token in zip(agent.argv, agent.argv[1:]) if flag == "--verifier-kwarg"]
-    ) == {"credit_budget": 2000.5, "model": "gpt-6.1-sol", "effort": ""}
+    ) == {
+        "credit_budget": 2000.5, "model": "gpt-6.1-sol", "effort": "", "validation_model": "claude-sonnet-5.5",
+        "validation_effort": "medium",
+    }
     assert not any("gh-1" in token for token in agent.argv), "the judge's token is an argument"
 
 
