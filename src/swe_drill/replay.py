@@ -22,7 +22,7 @@ from harbor.environments.base import BaseEnvironment
 from harbor.models.verifier.result import VerifierResult
 from harbor.verifier.verifier import Verifier
 
-from suss.workspace import ARTIFACTS_DIR, PATCH_NAME, find_workspace, read_start_tree
+from swe_drill.workspace import ARTIFACTS_DIR, PATCH_NAME, find_workspace, read_start_tree
 
 RECORD_NAME = "replay.json"
 APPLY_METHOD = "git apply --verbose"
@@ -171,7 +171,7 @@ async def _apply(environment: BaseEnvironment, target: str, workspace: str) -> d
     printed.
 
     Git applies the whole patch or none of it. The patch runs from the starting
-    tree this sandbox holds, so a patch suss captured applies whole. The output
+    tree this sandbox holds, so a patch SWE-drill captured applies whole. The output
     follows a line naming the command, stderr too. The patch is read from a
     file, since exec passes text, which corrupts bytes that are not valid UTF-8.
     """

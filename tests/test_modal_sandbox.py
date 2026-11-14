@@ -1,8 +1,8 @@
 """
-Run exec's timeout, and suss's stop, in a real Modal sandbox started as
+Run exec's timeout, and SWE-drill's stop, in a real Modal sandbox started as
 Harbor starts one.
 
-Modal bills for the sandbox, so these run only with SUSS_MODAL_TESTS=1, Modal's
+Modal bills for the sandbox, so these run only with SWE_DRILL_MODAL_TESTS=1, Modal's
 client installed and a Modal token. The stand-in in conftest.py copies what
 these show, and the rest of the suite runs against it. A Harbor or Modal
 upgrade that changes the behaviour fails here, and only here.
@@ -17,13 +17,13 @@ import pytest
 from harbor.models.task.config import EnvironmentConfig
 from harbor.models.trial.paths import TrialPaths
 
-from suss import sandbox as sandbox_commands
+from swe_drill import sandbox as sandbox_commands
 
 WORKSPACE = "/app"
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("SUSS_MODAL_TESTS") != "1" or importlib.util.find_spec("modal") is None,
-    reason="set SUSS_MODAL_TESTS=1, with Modal's client installed, to run in a billed sandbox",
+    os.environ.get("SWE_DRILL_MODAL_TESTS") != "1" or importlib.util.find_spec("modal") is None,
+    reason="set SWE_DRILL_MODAL_TESTS=1, with Modal's client installed, to run in a billed sandbox",
 )
 
 
@@ -41,11 +41,11 @@ def sandbox(loop, tmp_path_factory):
     root = tmp_path_factory.mktemp("modal-sandbox")
     environment = ModalEnvironment(
         environment_dir=root,
-        environment_name="suss-tests",
-        session_id="suss-tests",
+        environment_name="swe-drill-tests",
+        session_id="swe-drill-tests",
         trial_paths=TrialPaths(root / "trial"),
         task_env_config=EnvironmentConfig(docker_image="debian:bookworm-slim"),
-        app_name="suss-tests",
+        app_name="swe-drill-tests",
         # Short lives, so that a run killed before its teardown bills minutes, not a day.
         sandbox_timeout_secs=300,
         sandbox_idle_timeout_secs=60,
@@ -89,12 +89,12 @@ def test_exec_at_timeout_returns_minus_one_and_kills_only_the_shell(loop, sandbo
     )
 
 
-SCRIPT = "/opt/suss-test/run.sh"
-LOG = "/opt/suss-test/run.log"
+SCRIPT = "/opt/swe-drill-test/run.sh"
+LOG = "/opt/swe-drill-test/run.log"
 
 
 def start_run(loop, env, script: str, max_seconds: int) -> int | None:
-    loop.run_until_complete(env.exec(f"rm -rf /opt/suss-test; mkdir -p /opt/suss-test {WORKSPACE}"))
+    loop.run_until_complete(env.exec(f"rm -rf /opt/swe-drill-test; mkdir -p /opt/swe-drill-test {WORKSPACE}"))
     loop.run_until_complete(
         env.exec(f"printf '%s\\n' {shlex.quote('#!/bin/sh')} {shlex.quote(script)} > {SCRIPT} && chmod +x {SCRIPT}")
     )

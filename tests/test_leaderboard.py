@@ -16,8 +16,8 @@ from harbor.trial.errors import VerifierTimeoutError
 from harbor.verifier.factory import VerifierFactory
 from harbor.verifier.verifier import RewardFileEmptyError
 
-from suss import cli, leaderboard, replay
-from suss.leaderboard import Trial, margin, read_trials
+from swe_drill import cli, leaderboard, replay
+from swe_drill.leaderboard import Trial, margin, read_trials
 
 LANE = "rebench"
 ARM = "claude-code"
@@ -246,7 +246,7 @@ def test_reads_whether_the_verifier_applied_the_patch_from_what_replay_verifier_
     (task / "instruction.md").write_text("Fix it.\n")
     (task / "task.toml").write_text('[verifier]\nenvironment_mode = "separate"\n')
     verifier = VerifierFactory.create_verifier_from_config(
-        VerifierConfig(import_path="suss.replay:ReplayVerifier"),
+        VerifierConfig(import_path="swe_drill.replay:ReplayVerifier"),
         task=Task(task), trial_paths=TrialPaths(trial), environment=local_environment,
         skip_tests_upload=True, artifacts=str(artifacts),
     )
@@ -636,11 +636,11 @@ def test_ten_thousand_resamples_over_256_tasks_take_under_a_second():
     assert time.perf_counter() - start < 1.0
 
 
-SUSS_TOML = """\
+SWE_DRILL_TOML = """\
 environment = "docker"
 
 [arms.alpha]
-agent = "suss.agents:SussCopilotCli"
+agent = "swe_drill.agents.copilot_cli:CopilotCli"
 """
 
 UNRECORDED = "unrecorded"
@@ -680,7 +680,7 @@ def regrade_of(root: Path, arm: str, task: str, i: int) -> Path:
 @pytest.fixture
 def results(tmp_path) -> Path:
     """Three arms: alpha with two runs, which resolve different tasks, and beta and gamma with one."""
-    (tmp_path / "suss.toml").write_text(SUSS_TOML)
+    (tmp_path / "swe-drill.toml").write_text(SWE_DRILL_TOML)
     write_arm(tmp_path, "alpha", {"t1": [T, F], "t2": [F, T], "t3": [F, F]})
     write_arm(tmp_path, "beta", {"t1": [T], "t2": [T], "t3": [F]})
     write_arm(tmp_path, "gamma", {"t1": [UNRECORDED], "t2": [F], "t3": [T]})
@@ -707,7 +707,7 @@ def row(out: str, arm: str) -> list[str]:
 
 
 def test_pass_at_k_counts_a_task_that_any_run_resolved(tmp_path, capsys):
-    (tmp_path / "suss.toml").write_text(SUSS_TOML)
+    (tmp_path / "swe-drill.toml").write_text(SWE_DRILL_TOML)
     # Run 1 resolves only A, run 2 only B, and neither resolves C.
     write_arm(tmp_path, "alpha", {"A": [T, F], "B": [F, T], "C": [F, F]})
 
@@ -718,7 +718,7 @@ def test_pass_at_k_counts_a_task_that_any_run_resolved(tmp_path, capsys):
 
 
 def test_the_rate_is_over_trials_not_tasks(tmp_path, capsys):
-    (tmp_path / "suss.toml").write_text(SUSS_TOML)
+    (tmp_path / "swe-drill.toml").write_text(SWE_DRILL_TOML)
     # t1 has 3 runs and t2 one: the rate over trials is 3/4, a mean over tasks 1/2.
     write_arm(tmp_path, "alpha", {"t1": [T, T, T], "t2": [F]})
 
@@ -729,7 +729,7 @@ def test_the_rate_is_over_trials_not_tasks(tmp_path, capsys):
 
 
 def test_arms_with_the_same_rate_go_by_name(tmp_path, capsys):
-    (tmp_path / "suss.toml").write_text(SUSS_TOML)
+    (tmp_path / "swe-drill.toml").write_text(SWE_DRILL_TOML)
     write_arm(tmp_path, "zeta", {"t1": [T], "t2": [F]})
     write_arm(tmp_path, "eta", {"t1": [F], "t2": [T]})
     write_arm(tmp_path, "omega", {"t1": [T], "t2": [T]})
@@ -754,7 +754,7 @@ INVALID = "These trials' verifiers judged them invalid, so the leaderboard count
 
 
 def test_an_invalid_trial_counts_nowhere_and_is_named(tmp_path, tmp_path_factory, capsys):
-    (tmp_path / "suss.toml").write_text(SUSS_TOML)
+    (tmp_path / "swe-drill.toml").write_text(SWE_DRILL_TOML)
     # t4's one trial is in run 1, so with it invalid alpha has no trial of t4 to count.
     write_arm(tmp_path, "alpha", {"t1": [T, F], "t2": [F, T], "t3": [F, F], "t4": [F]})
     gone = without(tmp_path, tmp_path_factory.mktemp("gone"), [("alpha", "t3", 2), ("alpha", "t4", 1)])
@@ -834,7 +834,7 @@ def test_nothing_under_checks_counts(results, capsys):
 
 
 def test_an_arm_whose_name_starts_with_a_dot_is_ranked(tmp_path, capsys):
-    (tmp_path / "suss.toml").write_text(SUSS_TOML)
+    (tmp_path / "swe-drill.toml").write_text(SWE_DRILL_TOML)
     write_arm(tmp_path, ".experiment", {"t1": [T], "t2": [F]})
 
     code, out, err = run_leaderboard(tmp_path, capsys)
@@ -844,7 +844,7 @@ def test_an_arm_whose_name_starts_with_a_dot_is_ranked(tmp_path, capsys):
 
 
 def test_no_arm_under_results_is_an_error(tmp_path, capsys):
-    (tmp_path / "suss.toml").write_text(SUSS_TOML)
+    (tmp_path / "swe-drill.toml").write_text(SWE_DRILL_TOML)
     write_arm(tmp_path, "alpha", {"t1": [T]})
     shutil.move(tmp_path / "results", tmp_path / "checks")
 
@@ -863,26 +863,26 @@ def test_an_arm_with_no_trials_is_an_error_and_prints_nothing_else(results, caps
     assert (out, err) == ("", f"error: no results for arm omega under results/{LANE}/\n")
 
 
-def test_no_suss_toml_is_an_error(results, capsys):
-    (results / "suss.toml").unlink()
+def test_no_swe_drill_toml_is_an_error(results, capsys):
+    (results / "swe-drill.toml").unlink()
 
     code, out, err = run_leaderboard(results, capsys)
 
     assert code != 0
     assert out == ""
-    assert err.startswith("error: ") and "suss.toml: no such file" in err
+    assert err.startswith("error: ") and "swe-drill.toml: no such file" in err
 
 
 def test_an_arm_that_sets_baseline_is_an_error_naming_it_and_the_key(results, capsys):
-    (results / "suss.toml").write_text(SUSS_TOML + '\n[arms.beta]\nbaseline = "alpha"\n')
+    (results / "swe-drill.toml").write_text(SWE_DRILL_TOML + '\n[arms.beta]\nbaseline = "alpha"\n')
 
     code, out, err = run_leaderboard(results, capsys)
 
     assert code != 0
     assert out == ""
     assert err == (
-        f"error: {results / 'suss.toml'}: [arms.beta] sets baseline, which suss no longer "
-        "reads; suss leaderboard ranks every arm on its lane\n"
+        f"error: {results / 'swe-drill.toml'}: [arms.beta] sets baseline, which SWE-drill no longer "
+        "reads; swe-drill leaderboard ranks every arm on its lane\n"
     )
 
 
@@ -892,7 +892,7 @@ def test_a_lane_other_than_rebench_is_an_error(results, capsys, lane):
 
     out, err = capsys.readouterr()
     assert code != 0
-    assert (out, err) == ("", f"error: suss leaderboard covers rebench only, not {lane}\n")
+    assert (out, err) == ("", f"error: swe-drill leaderboard covers rebench only, not {lane}\n")
 
 
 def test_the_lane_is_required(results, capsys):
@@ -907,7 +907,7 @@ def test_arguments_after_the_separator_are_refused(results, capsys):
     code, out, err = run_leaderboard(results, capsys, "--", "-k", "2")
 
     assert code != 0
-    assert (out, err) == ("", "error: suss leaderboard takes nothing after --\n")
+    assert (out, err) == ("", "error: swe-drill leaderboard takes nothing after --\n")
 
 
 def regrade_applies_nothing(root: Path, arm: str, task: str, i: int) -> Path:

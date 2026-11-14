@@ -1,9 +1,9 @@
 """
-Run whole trials through suss's agents, in the stand-in environment.
+Run whole trials through SWE-drill's agents, in the stand-in environment.
 
-SussMixin is tested on Scripted, a Harbor installed agent whose run is a shell
+Adapter is tested on Scripted, a Harbor installed agent whose run is a shell
 script the test writes, so what the mixin does is seen apart from any coding
-agent. The host holds suss.toml and its .env. The sandbox is a directory beside
+agent. The host holds swe-drill.toml and its .env. The sandbox is a directory beside
 it, with its workspace and its logs and artifacts directories as siblings.
 """
 
@@ -23,12 +23,12 @@ from harbor.cli.utils import parse_kwargs
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
-from suss import lanes
-from suss.agents import SussMixin
-from suss.sandbox import MARKER
-from suss.workspace import WorkspaceError
+from swe_drill import lanes
+from swe_drill.agents import Adapter
+from swe_drill.sandbox import MARKER
+from swe_drill.workspace import WorkspaceError
 
-SPEC = Path(__file__).resolve().parent.parent / "docs" / "specs" / "suss-spec.md"
+SPEC = Path(__file__).resolve().parent.parent / "docs" / "specs" / "swe-drill-spec.md"
 INSTRUCTION = "Fix the naïve café bug ✓\n`$HOME` \"$(id)\" 'it's'\nEOF\n\n"
 KNOWN_CHANGE = 'echo "a known change" >> hello.txt'
 
@@ -82,7 +82,7 @@ class Scripted(BaseInstalledAgent):
         await self.exec_as_agent(environment, self.script)
 
 
-class SussScripted(SussMixin, Scripted):
+class Scripted(Adapter, Scripted):
     KWARGS = ("rounds",)
 
 
@@ -96,11 +96,11 @@ class Trial:
     artifacts: Path
     host_logs: Path
 
-    def agent(self, cls=SussScripted, arm: str = "fake", config: str | None = None, **kwargs):
+    def agent(self, cls=Scripted, arm: str = "fake", config: str | None = None, **kwargs):
         return cls(
             arm=arm,
             lane="rebench",
-            suss_config=config if config is not None else str(self.config),
+            drill_config=config if config is not None else str(self.config),
             logs=str(self.logs),
             artifacts=str(self.artifacts),
             logs_dir=self.host_logs,
@@ -126,7 +126,7 @@ class Trial:
 def trial(tmp_path, local_environment) -> Trial:
     host = tmp_path / "the host"
     host.mkdir()
-    config = host / "suss.toml"
+    config = host / "swe-drill.toml"
     config.write_text(
         'swe_rebench = "tasks/swe-rebench-07-2026"\n'
         'environment = "docker"\n'
@@ -134,7 +134,7 @@ def trial(tmp_path, local_environment) -> Trial:
         "concurrency = 1\n"
         "\n"
         "[arms.fake]\n"
-        'agent = "test_agents:SussScripted"\n'
+        'agent = "test_agents:Scripted"\n'
         "kwargs = { rounds = 3 }\n"
     )
     (host / ".env").write_text("COPILOT_GITHUB_TOKEN=from-the-env-file\n")
@@ -178,7 +178,7 @@ def test_a_whole_trial_leaves_the_patch_and_a_record_with_the_specs_fields(
     assert set(record) == set(spec_trial_record()), "suss.json's keys are not the spec's"
     assert record["arm"] == "fake"
     assert record["agent"] == {
-        "class": "test_agents:SussScripted", "name": "scripted", "version": "scripted 0.0.7",
+        "class": "test_agents:Scripted", "name": "scripted", "version": "scripted 0.0.7",
     }
     assert record["kwargs"] == {}
     assert record["grader"] == {"dataset": "swe-rebench-07-2026"}
@@ -215,7 +215,7 @@ def test_a_run_that_exits_non_zero_is_harness_failed_its_change_captured_and_its
     local_environment, trial
 ):
     agent = trial.agent()
-    SussScripted.script = f"{KNOWN_CHANGE}\nexit 3"
+    Scripted.script = f"{KNOWN_CHANGE}\nexit 3"
     go(agent.setup(environment=local_environment))
 
     with pytest.raises(NonZeroAgentExitCodeError):
@@ -256,7 +256,7 @@ STILL_WORKING = (
 
 def cancel_mid_run(trial: Trial, env, agent) -> None:
     """Cancel run once the agent has made its change, as Harbor's agent timeout does."""
-    SussScripted.script = STILL_WORKING
+    Scripted.script = STILL_WORKING
 
     async def scenario():
         await agent.setup(environment=env)
@@ -295,7 +295,7 @@ def test_a_cancelled_run_leaves_nothing_writing_to_the_workspace(local_environme
 
 def test_harbors_agent_timeout_still_sees_the_cancel(local_environment, trial):
     agent = trial.agent()
-    SussScripted.script = STILL_WORKING
+    Scripted.script = STILL_WORKING
 
     async def under_harbors_timeout():
         await agent.setup(environment=local_environment)
@@ -315,7 +315,7 @@ def end_normally(trial: Trial, env) -> None:
 
 def end_at_harbors_timeout(trial: Trial, env) -> None:
     agent = trial.agent()
-    SussScripted.script = f"{KNOWN_CHANGE}\nsleep 30"
+    Scripted.script = f"{KNOWN_CHANGE}\nsleep 30"
 
     async def under_harbors_timeout():
         await agent.setup(environment=env)
@@ -337,7 +337,7 @@ def end_by_raising(trial: Trial, env) -> None:
         return result
 
     agent = trial.agent()
-    SussScripted.script = KNOWN_CHANGE
+    Scripted.script = KNOWN_CHANGE
     go(agent.setup(environment=env))
     env.exec = failing_after_run
     try:
@@ -371,7 +371,7 @@ def test_a_patch_that_cannot_be_written_fails_the_trial_rather_than_the_agent(
     blocked.write_text("")
     agent = trial.agent()
     agent.sandbox_logs = str(blocked / "agent")
-    SussScripted.script = script
+    Scripted.script = script
     go(agent.setup(environment=local_environment))
 
     with pytest.raises(WorkspaceError):
@@ -399,13 +399,13 @@ def test_a_trial_that_starts_outside_a_repository_fails_naming_the_directory(
 
 
 @pytest.mark.parametrize(
-    "key, value", [("arm", 2026), ("arm", True), ("lane", 7), ("suss_config", 1.5)]
+    "key, value", [("arm", 2026), ("arm", True), ("lane", 7), ("drill_config", 1.5)]
 )
 def test_an_ak_value_harbor_parsed_as_json_is_refused_by_name(trial, key, value):
-    given = {"arm": "fake", "lane": "rebench", "suss_config": str(trial.config), key: value}
+    given = {"arm": "fake", "lane": "rebench", "drill_config": str(trial.config), key: value}
 
     with pytest.raises(TypeError) as raised:
-        SussScripted(**given, logs_dir=trial.host_logs)
+        Scripted(**given, logs_dir=trial.host_logs)
 
     assert key in str(raised.value)
     assert repr(value) in str(raised.value)
@@ -414,7 +414,7 @@ def test_an_ak_value_harbor_parsed_as_json_is_refused_by_name(trial, key, value)
 @pytest.mark.parametrize("value", [2026, True, ["x"], {"it's": "a \"name\""}])
 def test_the_quoting_an_error_suggests_gives_harbor_a_string(trial, value):
     with pytest.raises(TypeError) as raised:
-        SussScripted(arm=value, lane="rebench", suss_config=str(trial.config), logs_dir=trial.host_logs)
+        Scripted(arm=value, lane="rebench", drill_config=str(trial.config), logs_dir=trial.host_logs)
 
     suggested = shlex.split(str(raised.value).split("--ak ")[-1])
     assert len(suggested) == 1, f"the suggestion is not one shell word: {suggested}"
@@ -423,13 +423,13 @@ def test_the_quoting_an_error_suggests_gives_harbor_a_string(trial, value):
 
 def test_a_trial_on_a_lane_with_no_grader_fails_before_a_sandbox_starts(trial):
     with pytest.raises(lanes.LaneError, match="grader"):
-        SussScripted(arm="fake", lane="nowhere", suss_config=str(trial.config), logs_dir=trial.host_logs)
+        Scripted(arm="fake", lane="nowhere", drill_config=str(trial.config), logs_dir=trial.host_logs)
 
 
 def test_harbors_own_construction_writes_the_patch_where_harbor_collects_it(trial):
     # Harbor passes these keywords, and the arm's own --ak values.
-    agent = SussScripted(
-        arm="fake", lane="rebench", suss_config=str(trial.config),
+    agent = Scripted(
+        arm="fake", lane="rebench", drill_config=str(trial.config),
         logs_dir=trial.host_logs, model_name=None, logger=None, extra_env={},
     )
 
@@ -439,23 +439,23 @@ def test_harbors_own_construction_writes_the_patch_where_harbor_collects_it(tria
 def test_harbors_own_environment_does_not_reach_the_agent(trial, monkeypatch):
     from harbor.agents.installed.base import CliFlag
 
-    class Flagged(SussScripted):
-        CLI_FLAGS = [CliFlag("effort", cli="--effort", env_fallback="SUSS_TEST_EFFORT")]
+    class Flagged(Scripted):
+        CLI_FLAGS = [CliFlag("effort", cli="--effort", env_fallback="SWE_DRILL_TEST_EFFORT")]
 
-    monkeypatch.setenv("SUSS_TEST_EFFORT", "max")
+    monkeypatch.setenv("SWE_DRILL_TEST_EFFORT", "max")
 
-    assert Flagged(arm="fake", lane="rebench", suss_config=str(trial.config),
+    assert Flagged(arm="fake", lane="rebench", drill_config=str(trial.config),
                    logs_dir=trial.host_logs).build_cli_flags() == ""
 
 
 def test_a_cancel_during_the_stop_still_captures_the_patch_then_raises(local_environment, trial):
     agent = trial.agent()
-    SussScripted.script = KNOWN_CHANGE
+    Scripted.script = KNOWN_CHANGE
     exec_as_given = local_environment.exec
     stopping = asyncio.Event()
 
     async def slow_stop(command, **kwargs):
-        if "suss_kill_marked" in command and not stopping.is_set():
+        if "drill_kill_marked" in command and not stopping.is_set():
             stopping.set()
             await asyncio.sleep(2)
         return await exec_as_given(command, **kwargs)
@@ -482,14 +482,14 @@ def test_a_cancel_during_the_stop_still_captures_the_patch_then_raises(local_env
 
 
 def test_a_cancel_whose_cleanup_passes_its_limit_is_raised_as_the_cancel(local_environment, trial, monkeypatch):
-    monkeypatch.setattr("suss.agents.CLEANUP_SECONDS", 0.5)
+    monkeypatch.setattr("swe_drill.agents.CLEANUP_SECONDS", 0.5)
     agent = trial.agent()
-    SussScripted.script = KNOWN_CHANGE
+    Scripted.script = KNOWN_CHANGE
     exec_as_given = local_environment.exec
     stopping = asyncio.Event()
 
     async def stuck_capture(command, **kwargs):
-        if "suss_kill_marked" in command:
+        if "drill_kill_marked" in command:
             stopping.set()
         if "git" in command and "add -A" in command and stopping.is_set():
             await asyncio.sleep(30)

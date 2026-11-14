@@ -1,10 +1,10 @@
 """
-Commands suss runs in a trial's sandbox: uploads, and commands it can stop
+Commands SWE-drill runs in a trial's sandbox: uploads, and commands it can stop
 together with every process they started.
 
 Stopping cannot rely on exec's own timeout or on cancelling it. Docker's stops
 only the client on the host, and Modal's kills only the wrapping shell, so
-either leaves the command running in the sandbox. Every command suss means to
+either leaves the command running in the sandbox. Every command SWE-drill means to
 stop therefore carries MARKER, set to a token of its own, and a stop kills
 every process whose environment holds it, found through /proc.
 """
@@ -21,9 +21,9 @@ from harbor.environments.base import BaseEnvironment
 
 # Every process a marked command starts inherits it, whatever session or
 # process group it moves to.
-MARKER = "SUSS_START_TOKEN"
+MARKER = "SWE_DRILL_START_TOKEN"
 # What the in-sandbox limit prints when it stopped the command.
-TIMED_OUT = "suss: stopped at the time limit"
+TIMED_OUT = "swe-drill: stopped at the time limit"
 # exec's own timeout sits this far past the limit, as a backstop for a sandbox
 # where the limit cannot run.
 EXEC_TIMEOUT_GRACE_SECONDS = 30
@@ -39,7 +39,7 @@ STOP_PASSES = 50
 
 
 class SandboxError(Exception):
-    """A command suss needs in the sandbox failed. The message names it and carries its output."""
+    """A command SWE-drill needs in the sandbox failed. The message names it and carries its output."""
 
 
 def new_token() -> str:
@@ -119,7 +119,7 @@ async def run_limited(
     started inside the sandbox, then raises the CancelledError. The command
     runs as the environment's default user. The log's directory must exist.
     """
-    # The shell writes the log, not suss, so the log holds what was printed
+    # The shell writes the log, not SWE-drill, so the log holds what was printed
     # before a timeout, when exec returns no output at all. It also holds
     # stderr whether or not the environment merges it into stdout.
     command = shlex.join(argv) + f" > {shlex.quote(log_path)} 2>&1"
@@ -182,7 +182,7 @@ def _limited(command: str, seconds: float | None, group_file: str, token: str) -
             "on_timeout() {",
             f"  echo {shlex.quote(TIMED_OUT)}",
             '  kill -KILL -- "-$run" 2> /dev/null',
-            f"  suss_kill_marked {token}",
+            f"  drill_kill_marked {token}",
             f"  rm -f {group}",
             "  exit 137",
             "}",
@@ -208,7 +208,7 @@ def _limited(command: str, seconds: float | None, group_file: str, token: str) -
 # A bash function that kills every process whose environment holds MARKER set
 # to the token it is given. It reads /proc with bash alone, since an image need
 # not have ps, grep or tr. A process that has exited reads as empty there.
-_KILL_MARKED = f"""suss_kill_marked() {{
+_KILL_MARKED = f"""drill_kill_marked() {{
   local pass p v found
   for ((pass = 0; pass < {STOP_PASSES}; pass++)); do
     found=
@@ -235,7 +235,7 @@ async def stop_marked(env: BaseEnvironment, token: str) -> None:
     STOP_SECONDS. A stop that fails leaves those processes running, but the
     caller still has a patch to capture and a trial to record.
     """
-    await _quietly(env, f"{_KILL_MARKED}\nsuss_kill_marked {token}", None)
+    await _quietly(env, f"{_KILL_MARKED}\ndrill_kill_marked {token}", None)
 
 
 async def _stop(env: BaseEnvironment, group_file: str, token: str) -> None:
@@ -245,7 +245,7 @@ async def _stop(env: BaseEnvironment, group_file: str, token: str) -> None:
         f"{_KILL_MARKED}\n"
         f"[ -f {group} ] && while read -r g; do kill -KILL -- \"-$g\"; done"
         f" < {group} 2> /dev/null; rm -f {group}\n"
-        f"suss_kill_marked {token}"
+        f"drill_kill_marked {token}"
     )
     await _quietly(env, command, None)
 

@@ -12,7 +12,7 @@ import subprocess
 import pytest
 
 from conftest import require_docker
-from suss.workspace import WorkspaceError, find_workspace
+from swe_drill.workspace import WorkspaceError, find_workspace
 
 # node:24 has git and bash. /app and /testbed exist too, so looking for either
 # is caught.
@@ -22,7 +22,7 @@ RUN mkdir -p /gleam/src /app /testbed && cd /gleam \\
  && git init -q && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
 WORKDIR /gleam
 """
-INSIDE_IT = "FROM suss-test/workdir:gleam\nWORKDIR /gleam/src\n"
+INSIDE_IT = "FROM swe-drill-test/workdir:gleam\nWORKDIR /gleam/src\n"
 
 
 def build(tag: str, dockerfile: str) -> str:
@@ -40,8 +40,8 @@ def build(tag: str, dockerfile: str) -> str:
 def images() -> dict[str, str]:
     require_docker()
     return {
-        "gleam": build("suss-test/workdir:gleam", REPOSITORY),
-        "gleam/src": build("suss-test/workdir:gleam-src", INSIDE_IT),
+        "gleam": build("swe-drill-test/workdir:gleam", REPOSITORY),
+        "gleam/src": build("swe-drill-test/workdir:gleam-src", INSIDE_IT),
     }
 
 

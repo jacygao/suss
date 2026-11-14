@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from suss.workspace import (
+from swe_drill.workspace import (
     WorkspaceError,
     capture_patch,
     find_workspace,

@@ -15,7 +15,7 @@ from harbor.models.trial.paths import TrialPaths
 
 class LocalEnvironment(BaseEnvironment):
     """
-    Harbor's environment, run on this machine, so suss's parts can be tested
+    Harbor's environment, run on this machine, so SWE-drill's parts can be tested
     without a sandbox.
 
     It returns what Harbor's Docker environment returns, and fails where Docker

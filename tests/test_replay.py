@@ -21,8 +21,8 @@ from harbor.models.verifier.result import VerifierResult
 from harbor.verifier.factory import VerifierFactory
 from harbor.verifier.verifier import Verifier
 
-import suss.replay
-from suss.replay import ReplayError, ReplayVerifier, is_test_file
+import swe_drill.replay
+from swe_drill.replay import ReplayError, ReplayVerifier, is_test_file
 
 TASK = "gleam-lang__gleam-5797"
 # Git sees no NUL as text, and writes these bytes into the patch raw, where
@@ -64,12 +64,12 @@ def found(monkeypatch, workspace) -> list[tuple]:
         calls.append((args, kwargs))
         return str(workspace)
 
-    monkeypatch.setattr(suss.replay, "find_workspace", find_workspace)
+    monkeypatch.setattr(swe_drill.replay, "find_workspace", find_workspace)
     return calls
 
 
 def patch_of(workspace: Path, change) -> bytes:
-    """The patch SussMixin would capture for `change`, leaving the workspace at its base."""
+    """The patch Adapter would capture for `change`, leaving the workspace at its base."""
     change(workspace)
     git(workspace, "add", "-A")
     patch = subprocess.run(
@@ -520,7 +520,7 @@ def replay_verifier(tmp_path: Path, environment) -> ReplayVerifier:
     paths = TrialPaths(tmp_path / "agent-job" / AGENT_TRIAL)
     paths.mkdir()
     return VerifierFactory.create_verifier_from_config(
-        VerifierConfig(import_path="suss.replay:ReplayVerifier"),
+        VerifierConfig(import_path="swe_drill.replay:ReplayVerifier"),
         task=a_task(tmp_path),
         trial_paths=paths,
         environment=environment,

@@ -1,19 +1,19 @@
 """
 What the senior lane changes in each task's copy, beyond what every lane does.
 
-Each copy's verifier has room for suss's judge, and its tests/test.sh pins
+Each copy's verifier has room for SWE-drill's judge, and its tests/test.sh pins
 litellm below the first release that fails every judge call.
 """
 
 import tomllib
 from pathlib import Path
 
-from suss.lanes.edits import TEST_SH, LaneError, add_key, read_test_sh, replace_key
+from swe_drill.lanes.edits import TEST_SH, LaneError, add_key, read_test_sh, replace_key
 
 # Every senior task can be graded.
 UNGRADEABLE: tuple[str, ...] = ()
 
-# How long suss's judge may take on a senior trial, its install included: about
+# How long SWE-drill's judge may take on a senior trial, its install included: about
 # three times the longest the judge has taken on one.
 JUDGE_SECONDS = 1800
 # How long putting the workspace back may take once the judge has stopped.

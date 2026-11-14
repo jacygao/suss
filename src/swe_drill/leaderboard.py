@@ -1,5 +1,5 @@
 """
-suss leaderboard: reading every arm's trials under `results/rebench/`, each
+swe-drill leaderboard: reading every arm's trials under `results/rebench/`, each
 graded by its own verifier, and the table the command prints.
 
 Reading never raises on what a trial left or failed to leave. One whose
@@ -14,7 +14,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from suss import config, lanes
+from swe_drill import config, lanes
 
 LANE = lanes.REBENCH
 
@@ -228,8 +228,8 @@ class Standing:
 
 def report(directory: Path) -> str:
     """
-    What `suss leaderboard --lane rebench` prints, run in `directory`, the
-    directory holding suss.toml.
+    What `swe-drill leaderboard --lane rebench` prints, run in `directory`, the
+    directory holding swe-drill.toml.
 
     Each arm is a directory under `results/rebench/`. An invalid trial counts
     nowhere, so a task whose every trial in an arm is invalid is not one of
@@ -238,12 +238,12 @@ def report(directory: Path) -> str:
     result, then the invalid trials, each list by arm in the table's order,
     then by job and task.
 
-    Raises ConfigError when suss.toml is missing or an arm in it sets
+    Raises ConfigError when swe-drill.toml is missing or an arm in it sets
     `baseline`, and LeaderboardError when no arm has results, an arm has no
     trials or only invalid ones, or a trial's verifier applied none of its
     patch or could not apply it.
     """
-    config.check_arms(Path(directory) / "suss.toml")
+    config.check_arms(Path(directory) / "swe-drill.toml")
     trials = _read(directory)
     standings = sorted(
         (_standing(arm, found) for arm, found in trials.items()),

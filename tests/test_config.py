@@ -3,29 +3,29 @@ from pathlib import Path
 
 import pytest
 
-from suss import config, lanes
+from swe_drill import config, lanes
 
-SPEC = Path(__file__).resolve().parent.parent / "docs" / "specs" / "suss-spec.md"
+SPEC = Path(__file__).resolve().parent.parent / "docs" / "specs" / "swe-drill-spec.md"
 
 
-def spec_suss_toml() -> str:
-    """The example suss.toml from the spec, so the code and the spec cannot drift apart."""
+def spec_swe_drill_toml() -> str:
+    """The example swe-drill.toml from the spec, so the code and the spec cannot drift apart."""
     blocks = re.findall(r"```toml\n(.*?)```", SPEC.read_text(), re.DOTALL)
     examples = [block for block in blocks if "[arms." in block]
-    assert len(examples) == 1, f"expected one example suss.toml in {SPEC}, found {len(examples)}"
+    assert len(examples) == 1, f"expected one example swe-drill.toml in {SPEC}, found {len(examples)}"
     return examples[0]
 
 
 @pytest.fixture
 def spec_config(tmp_path: Path) -> Path:
-    path = tmp_path / "suss.toml"
-    path.write_text(spec_suss_toml())
+    path = tmp_path / "swe-drill.toml"
+    path.write_text(spec_swe_drill_toml())
     return path
 
 
 def write_config(directory: Path, text: str) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / "suss.toml"
+    path = directory / "swe-drill.toml"
     path.write_text(text)
     return path
 
@@ -53,10 +53,10 @@ def test_reads_each_arm_of_the_spec_example(spec_config: Path):
     hve = config.load(spec_config, "hve-sol", "rebench").arm
 
     assert (sonnet.name, sonnet.agent, sonnet.model) == (
-        "copilot-sonnet", "suss.agents:SussCopilotCli", "claude-sonnet-5.5",
+        "copilot-sonnet", "swe_drill.agents.copilot_cli:CopilotCli", "claude-sonnet-5.5",
     )
     assert sonnet.kwargs == {"version": "1.0.105", "reasoning_effort": "high"}
-    assert (hve.agent, hve.model) == ("suss.agents:SussCopilotCliHve", "gpt-6.1-sol")
+    assert (hve.agent, hve.model) == ("swe_drill.agents.hve:CopilotCliHve", "gpt-6.1-sol")
     assert hve.kwargs == {
         "version": "1.0.105",
         "reasoning_effort": "high",
@@ -64,7 +64,7 @@ def test_reads_each_arm_of_the_spec_example(spec_config: Path):
     }
 
 
-def test_a_lane_suss_does_not_have_is_an_error_naming_it(tmp_path: Path):
+def test_a_lane_swe_drill_does_not_have_is_an_error_naming_it(tmp_path: Path):
     path = write_config(
         tmp_path,
         TOP + '[lanes.senoir]\n[arms.a]\nagent = "m:A"\n',
@@ -74,11 +74,11 @@ def test_a_lane_suss_does_not_have_is_an_error_naming_it(tmp_path: Path):
         config.load(path, "a", "rebench")
 
     assert str(error.value) == (
-        f"{path}: sets [lanes.senoir], but suss has no lane named senoir; its lanes are rebench, senior"
+        f"{path}: sets [lanes.senoir], but SWE-drill has no lane named senoir; its lanes are rebench, senior"
     )
 
 
-def test_a_key_suss_does_not_read_on_a_lane_is_an_error_naming_it(tmp_path: Path):
+def test_a_key_swe_drill_does_not_read_on_a_lane_is_an_error_naming_it(tmp_path: Path):
     path = write_config(
         tmp_path, TOP + '[lanes.rebench]\nmax_cost_usd = 20\n[arms.a]\nagent = "m:A"\n'
     )
@@ -87,7 +87,7 @@ def test_a_key_suss_does_not_read_on_a_lane_is_an_error_naming_it(tmp_path: Path
         config.load(path, "a", "rebench")
 
     assert str(error.value) == (
-        f"{path}: [lanes.rebench] sets max_cost_usd, but suss reads only [lanes.senior.judge]"
+        f"{path}: [lanes.rebench] sets max_cost_usd, but SWE-drill reads only [lanes.senior.judge]"
     )
 
 
@@ -103,7 +103,7 @@ def test_lanes_that_are_not_tables_are_an_error(tmp_path: Path, text: str):
     assert str(path) in str(error.value) and "table" in str(error.value)
 
 
-def test_paths_resolve_from_the_directory_holding_suss_toml(
+def test_paths_resolve_from_the_directory_holding_swe_drill_toml(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     path = write_config(tmp_path / "project", TOP + '[arms.a]\nagent = "m:A"\n')
@@ -119,18 +119,18 @@ def test_paths_resolve_from_the_directory_holding_suss_toml(
     ).resolve()
 
 
-def test_paths_resolve_from_suss_toml_given_by_a_relative_path(
+def test_paths_resolve_from_swe_drill_toml_given_by_a_relative_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     write_config(tmp_path / "project", TOP + '[arms.a]\nagent = "m:A"\n')
     monkeypatch.chdir(tmp_path)
 
-    settings = config.load(Path("project/suss.toml"), "a", "rebench")
+    settings = config.load(Path("project/swe-drill.toml"), "a", "rebench")
 
     assert settings.swe_rebench == (tmp_path / "tasks" / "swe-rebench-07-2026").resolve()
 
 
-def test_reads_the_env_file_beside_suss_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_reads_the_env_file_beside_swe_drill_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     path = write_config(tmp_path / "project", TOP + '[arms.a]\nagent = "m:A"\n')
     (tmp_path / "project" / ".env").write_text(
         "ANTHROPIC_API_KEY=sk-ant-123\n\nDEEPSEEK_API_KEY=ds-456\n"
@@ -190,8 +190,8 @@ def test_an_arm_the_file_does_not_define_is_an_error_naming_both(spec_config: Pa
     assert str(spec_config) in str(error.value)
 
 
-def test_a_missing_suss_toml_is_an_error_naming_it(tmp_path: Path):
-    path = tmp_path / "suss.toml"
+def test_a_missing_swe_drill_toml_is_an_error_naming_it(tmp_path: Path):
+    path = tmp_path / "swe-drill.toml"
 
     with pytest.raises(config.ConfigError) as error:
         config.load(path, "a", "rebench")
@@ -204,8 +204,8 @@ def test_a_missing_suss_toml_is_an_error_naming_it(tmp_path: Path):
     [b"k = \n", b"k = 1\nk = 2\n", b'environment = "\xff"\n'],
     ids=["no-value", "duplicate-key", "not-utf-8"],
 )
-def test_a_suss_toml_that_is_not_toml_is_an_error_naming_it(tmp_path: Path, content: bytes):
-    path = tmp_path / "suss.toml"
+def test_a_swe_drill_toml_that_is_not_toml_is_an_error_naming_it(tmp_path: Path, content: bytes):
+    path = tmp_path / "swe-drill.toml"
     path.write_bytes(content)
 
     with pytest.raises(config.ConfigError) as error:
@@ -271,19 +271,19 @@ def test_each_lane_reads_the_download_its_own_key_names(spec_config: Path):
     ],
     ids=["swe_bench_pro", "dataset", "both"],
 )
-def test_a_key_suss_no_longer_reads_is_an_error_naming_it(tmp_path: Path, old: str, named: str):
+def test_a_key_swe_drill_no_longer_reads_is_an_error_naming_it(tmp_path: Path, old: str, named: str):
     path = write_config(tmp_path, old + TOP + '[arms.a]\nagent = "m:A"\n')
 
     with pytest.raises(config.ConfigError) as error:
         config.load(path, "a", "rebench")
 
     assert str(error.value) == (
-        f"{path}: sets {named}, which suss no longer reads; name the directory of "
+        f"{path}: sets {named}, which SWE-drill no longer reads; name the directory of "
         "downloaded SWE-rebench tasks with swe_rebench"
     )
 
 
-def test_an_old_suss_toml_without_swe_rebench_is_refused_for_its_old_keys(tmp_path: Path):
+def test_an_old_swe_drill_toml_without_swe_rebench_is_refused_for_its_old_keys(tmp_path: Path):
     old = TOP.replace(
         'swe_rebench = "../tasks/swe-rebench-07-2026"\n',
         'swe_bench_pro = "../SWE-bench_Pro-os"\ndataset = "swe-bench-pro-v2"\n',
@@ -325,7 +325,7 @@ def test_max_cost_usd_is_refused(
     with pytest.raises(config.ConfigError) as error:
         config.load(path, "a", "rebench")
 
-    assert str(error.value) == f"{path}: {where}, but suss does not read it"
+    assert str(error.value) == f"{path}: {where}, but SWE-drill does not read it"
 
 
 BASELINE = "\n[arms.b]\nagent = \"m:B\"\nbaseline = \"a\"\n"
@@ -339,7 +339,7 @@ def test_an_arm_that_sets_baseline_is_refused_naming_it_and_the_key(tmp_path: Pa
         config.load(path, arm, "rebench")
 
     assert str(error.value) == (
-        f"{path}: [arms.b] sets baseline, which suss no longer reads; suss leaderboard "
+        f"{path}: [arms.b] sets baseline, which SWE-drill no longer reads; swe-drill leaderboard "
         "ranks every arm on its lane"
     )
 
@@ -359,8 +359,8 @@ def test_check_arms_needs_none_of_what_a_run_needs(tmp_path: Path):
 
 
 def test_check_arms_refuses_a_missing_file(tmp_path: Path):
-    with pytest.raises(config.ConfigError, match="suss.toml: no such file"):
-        config.check_arms(tmp_path / "suss.toml")
+    with pytest.raises(config.ConfigError, match="swe-drill.toml: no such file"):
+        config.check_arms(tmp_path / "swe-drill.toml")
 
 
 def test_check_arms_refuses_a_file_that_is_not_toml(tmp_path: Path):
@@ -411,7 +411,7 @@ def test_the_variables_tasks_read_from_harbors_environment_are_those_their_templ
         Path("one"): {"verifier": {"env": SENIOR_VERIFIER_ENV}},
         Path("two"): {
             "environment": {"env": {"BUILD_TOKEN": "${BUILD_TOKEN}", "LANG": "C"}},
-            # Harbor reads [solution.env] only for its oracle agent, which suss never runs.
+            # Harbor reads [solution.env] only for its oracle agent, which SWE-drill never runs.
             "solution": {"env": {"SOLUTION_ONLY": "${SOLUTION_ONLY}"}},
         },
     }
@@ -482,7 +482,7 @@ def test_a_senior_run_with_no_judge_is_refused_naming_the_table(tmp_path: Path):
         config.check_judge(settings, "senior")
 
     assert str(error.value) == (
-        f"{settings.path}: no [lanes.senior.judge], which suss judges senior with; set its"
+        f"{settings.path}: no [lanes.senior.judge], which SWE-drill judges senior with; set its"
         " credit_budget, the AI credits every judge session of a job may spend together"
     )
 
@@ -495,7 +495,7 @@ def test_a_senior_run_with_no_copilot_token_is_refused_naming_it(tmp_path: Path,
         config.check_judge(settings, "senior")
 
     assert str(error.value) == (
-        f"{tmp_path / '.env'} sets no COPILOT_GITHUB_TOKEN, which suss judges the trials of senior with"
+        f"{tmp_path / '.env'} sets no COPILOT_GITHUB_TOKEN, which SWE-drill judges the trials of senior with"
     )
 
 
@@ -523,12 +523,12 @@ def test_a_judge_with_no_positive_credit_budget_is_an_error(tmp_path: Path, text
         senior(tmp_path, text)
 
 
-def test_a_judge_key_suss_does_not_read_is_an_error_naming_it(tmp_path: Path):
+def test_a_judge_key_swe_drill_does_not_read_is_an_error_naming_it(tmp_path: Path):
     with pytest.raises(config.ConfigError) as error:
         senior(tmp_path, JUDGE + "classifier = 1\n")
 
     assert str(error.value) == (
-        f"{tmp_path / 'suss.toml'}: [lanes.senior.judge] sets classifier, but suss reads only"
+        f"{tmp_path / 'swe-drill.toml'}: [lanes.senior.judge] sets classifier, but SWE-drill reads only"
         " credit_budget, model and effort there"
     )
 
@@ -547,7 +547,7 @@ def test_a_judge_on_another_lane_is_an_error(tmp_path: Path):
         config.load(path, "a", "rebench")
 
     assert str(error.value) == (
-        f"{path}: [lanes.rebench] sets judge, but suss reads only [lanes.senior.judge]"
+        f"{path}: [lanes.rebench] sets judge, but SWE-drill reads only [lanes.senior.judge]"
     )
 
 
@@ -559,7 +559,7 @@ def test_an_arm_that_sets_harness_or_params_is_refused_naming_what_replaces_them
         config.load(path, "a", "rebench")
 
     assert str(error.value) == (
-        f"{path}: [arms.a] sets {retired}, which suss no longer reads; name the arm's Harbor "
+        f"{path}: [arms.a] sets {retired}, which SWE-drill no longer reads; name the arm's Harbor "
         "agent class with agent, its model with model, and its settings with kwargs"
     )
 
@@ -572,8 +572,8 @@ def test_an_arm_that_sets_harness_or_params_is_refused_naming_what_replaces_them
         ('agent = "m:A"\nmodel = 5\n', "model must be a string"),
         ('agent = "m:A"\nkwargs = 5\n', "kwargs must be a table"),
         ('agent = "m:A"\nkwargs = { limits = [1, 2] }\n', "kwargs limits must be"),
-        ('agent = "m:A"\nkwargs = { arm = "b" }\n', "kwargs sets arm, which suss sets"),
-        ('agent = "m:A"\nkwargs = { suss_config = "x" }\n', "kwargs sets suss_config"),
+        ('agent = "m:A"\nkwargs = { arm = "b" }\n', "kwargs sets arm, which SWE-drill sets"),
+        ('agent = "m:A"\nkwargs = { drill_config = "x" }\n', "kwargs sets drill_config"),
     ],
 )
 def test_an_arm_harbor_could_not_be_given_is_refused(tmp_path, table, says):

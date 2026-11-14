@@ -10,7 +10,7 @@ grade when GitHub does not answer.
 
 from pathlib import Path
 
-from suss.lanes.edits import TEST_SH, LaneError, read_test_sh
+from swe_drill.lanes.edits import TEST_SH, LaneError, read_test_sh
 
 # Their builds need Maven or Gradle artifacts that no longer exist, so no fix passes their tests.
 UNGRADEABLE = (

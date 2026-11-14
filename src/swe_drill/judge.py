@@ -33,16 +33,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from harbor.agents.installed.copilot_cli import CopilotCli
 from harbor.environments.base import BaseEnvironment
 from harbor.models.verifier.result import VerifierResult
 from harbor.verifier.verifier import Verifier
 
-from suss import lanes, sandbox
-from suss.config import TOKEN_NAME, _read_env
-from suss.replay import ReplayVerifier
-from suss.sandbox import as_root as _as_root, upload_bytes as _upload_bytes
-from suss.workspace import read_start_tree
+from swe_drill import lanes, sandbox
+from swe_drill.config import TOKEN_NAME, _read_env
+from swe_drill.copilot import NpmCopilotCli
+from swe_drill.replay import ReplayVerifier
+from swe_drill.sandbox import as_root as _as_root, upload_bytes as _upload_bytes
+from swe_drill.workspace import read_start_tree
 
 RECORD_NAME = "judge.json"
 LEDGER_NAME = "judge-credits.jsonl"
@@ -146,7 +146,7 @@ class JudgeError(Exception):
 class JudgePaths:
     """Where the judge keeps things in the sandbox, and the `copilot` it runs."""
 
-    root: str = "/opt/suss-judge"
+    root: str = "/opt/swe-drill-judge"
     # Under the verifier's logs, which Harbor keeps as the trial's verifier/.
     logs: str = "/logs/verifier/judge"
     # Found on PATH, where the session puts the installer's $HOME/.local/bin first.
@@ -400,7 +400,7 @@ class JudgeVerifier(ReplayVerifier):
             raise JudgeError(
                 f"the task's verifier timeout is {self.task.config.verifier.timeout_sec:g}"
                 f" seconds, which leaves no time for its tests after the judge's {needed:g};"
-                " judge it in a lane suss built"
+                " judge it in a lane SWE-drill built"
             )
         self._record = {
             "judge": {
@@ -877,49 +877,6 @@ async def install_copilot(environment: BaseEnvironment, copilot_version: str, lo
     await NpmCopilotCli(logs_dir=logs_dir, version=copilot_version).install(environment)
 
 
-class NpmCopilotCli(CopilotCli):
-    """
-    Harbor's Copilot CLI agent, installing Copilot CLI from npm's registry
-    instead of GitHub's releases.
-
-    npm's package for each platform holds the same binary as GitHub's release
-    of the version, and needs no Node to run. GitHub's release downloads fail
-    for hours at a time while npm's registry serves.
-    """
-
-    def __init__(self, **kwargs: Any):
-        """
-        Raises ValueError for a version that is not exact, as 1.0.107 is.
-        npm names each package file for its exact version, never a tag.
-        """
-        super().__init__(**kwargs)
-        if not re.fullmatch(r"\d+\.\d+\.\d+", self._version or ""):
-            raise ValueError(f"Copilot CLI's version must be an exact version, as 1.0.107 is, not {self._version!r}")
-
-    async def install(self, environment: BaseEnvironment) -> None:
-        """Install Copilot CLI at the agent's version into $HOME/.local/bin. Raises when it cannot."""
-        await self.ensure_system_dependencies(environment, ("curl", "bash", "git", "tar"))
-        version = self._version
-        await self.exec_as_agent(
-            environment,
-            command=(
-                "set -euo pipefail; "
-                'case "$(uname -m)" in x86_64|amd64) arch=x64;; aarch64|arm64) arch=arm64;; '
-                '*) echo "no Copilot CLI build for $(uname -m)"; exit 1;; esac; '
-                "libc=linux; if ls /lib/ld-musl-* >/dev/null 2>&1; then libc=linuxmusl; fi; "
-                'package="copilot-$libc-$arch"; '
-                "dir=$(mktemp -d); trap 'rm -rf \"$dir\"' EXIT; "
-                'curl -fsSL --retry 5 -o "$dir/copilot.tgz" '
-                f'"https://registry.npmjs.org/@github/$package/-/$package-{version}.tgz"; '
-                'tar -xzf "$dir/copilot.tgz" -C "$dir"; '
-                'mkdir -p "$HOME/.local/bin"; install -m 755 "$dir/package/copilot" "$HOME/.local/bin/copilot"; '
-                "echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc; "
-                'export PATH="$HOME/.local/bin:$PATH"; '
-                "copilot --version"
-            ),
-        )
-
-
 async def _run(environment: BaseEnvironment, command: str) -> str:
     """Run a command, merging its stderr, and return its output. Raises JudgeError when it fails."""
     result = await environment.exec(f"{{ {command}; }} 2>&1")
@@ -951,7 +908,7 @@ class _Senior:
         payload = json.dumps({"op": op, "tests": str(self.tests), **request}).encode()
         # REPO_NAME is read when run_judge.py is imported.
         process = await asyncio.create_subprocess_exec(
-            sys.executable, "-I", "-m", "suss.judge",
+            sys.executable, "-I", "-m", "swe_drill.judge",
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, env={**os.environ, "REPO_NAME": self.repo_name},
         )

@@ -2,7 +2,7 @@
 Find the workspace, and capture everything a harness changed in it as one patch.
 
 Every command runs in the sandbox, through Harbor's environment, since the
-workspace is there and not on the machine running suss.
+workspace is there and not on the machine running SWE-drill.
 """
 
 import shlex
@@ -16,7 +16,7 @@ PATCH_NAME = "model.patch"
 
 
 class WorkspaceError(Exception):
-    """A workspace suss cannot read or capture. The message carries git's output."""
+    """A workspace SWE-drill cannot read or capture. The message carries git's output."""
 
 
 async def find_workspace(env: BaseEnvironment) -> str:

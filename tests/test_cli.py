@@ -11,12 +11,12 @@ import typer.main
 from harbor.cli.main import app as harbor_app
 from harbor.cli.utils import parse_kwargs
 
-from suss import config
-from suss.cli import harbor_commands, harbor_executable, stamp
-from suss.config import Arm, Config, Judge
-from suss.agents import SussCopilotCli
+from swe_drill import config
+from swe_drill.cli import harbor_commands, harbor_executable, stamp
+from swe_drill.config import Arm, Config, Judge
+from swe_drill.agents.copilot_cli import CopilotCli
 
-SPEC = Path(__file__).resolve().parent.parent / "docs" / "specs" / "suss-spec.md"
+SPEC = Path(__file__).resolve().parent.parent / "docs" / "specs" / "swe-drill-spec.md"
 STAMP = "20261031T142500Z"
 TASKS = Path("/work/tasks/swe-rebench-07-2026")
 
@@ -25,14 +25,14 @@ def make_config(
     root: Path, arm: str = "peer-review", environment: str = "docker", concurrency: int = 16
 ):
     return Config(
-        path=root / "suss.toml",
+        path=root / "swe-drill.toml",
         swe_rebench=TASKS,
         environment=environment,
         k=3,
         concurrency=concurrency,
         arm=Arm(
             name=arm,
-            agent="suss.agents:SussCopilotCli",
+            agent="swe_drill.agents.copilot_cli:CopilotCli",
             model=None,
             kwargs={},
         ),
@@ -63,14 +63,14 @@ def harbor_parses(argv: list[str]) -> dict:
 
 def spec_commands(root: Path, env: Path, lane: str) -> list[list[str]]:
     """
-    The `harbor run` commands the spec's `suss run` gives for `lane`, split into
-    tokens, with `root` as the directory holding suss.toml, and `env` as the
-    environment suss is installed in.
+    The `harbor run` commands the spec's `swe-drill run` gives for `lane`, split into
+    tokens, with `root` as the directory holding swe-drill.toml, and `env` as the
+    environment SWE-drill is installed in.
     """
     blocks = re.findall(r"```bash\n(.*?)```", SPEC.read_text(), re.DOTALL)
     found = [
         block for block in blocks
-        if "-a suss.agents:" in block and f"--ak lane={lane}" in block
+        if "-a swe_drill.agents." in block and f"--ak lane={lane}" in block
     ]
     assert len(found) == 1, f"expected one block with the {lane} agent job in {SPEC}, found {len(found)}"
     return [
@@ -86,8 +86,8 @@ def spec_commands(root: Path, env: Path, lane: str) -> list[list[str]]:
 def spec_config(tmp_path: Path, lane: str) -> Config:
     blocks = re.findall(r"```toml\n(.*?)```", SPEC.read_text(), re.DOTALL)
     examples = [block for block in blocks if "[arms." in block]
-    assert len(examples) == 1, f"expected one example suss.toml in {SPEC}, found {len(examples)}"
-    path = tmp_path / "suss" / "suss.toml"
+    assert len(examples) == 1, f"expected one example swe-drill.toml in {SPEC}, found {len(examples)}"
+    path = tmp_path / "swe-drill" / "swe-drill.toml"
     path.parent.mkdir()
     path.write_text(examples[0])
     return config.load(path, "copilot-gpt", lane)
@@ -101,9 +101,9 @@ def test_each_lanes_commands_match_the_spec_token_for_token(tmp_path, lane, read
     harbor = harbor_executable()
     expected = spec_commands(loaded.path.parent, harbor.parent.parent, lane)
 
-    command = harbor_commands(loaded, SussCopilotCli.ALLOWED_HOSTS, lane, STAMP, 1, reads=reads)
+    command = harbor_commands(loaded, CopilotCli.ALLOWED_HOSTS, lane, STAMP, 1, reads=reads)
 
-    # suss runs each command with its own harbor in place of the first token.
+    # SWE-drill runs each command with its own harbor in place of the first token.
     assert [[str(harbor), *command.argv[1:]]] == expected
 
 
@@ -159,14 +159,14 @@ def test_an_agent_with_no_allowed_hosts_gets_no_allow_agent_host(tmp_path):
 
     assert agent.argv == [
         "harbor", "run", "-p", "lanes/senior", "-e", "docker", "-n", "16", "-k", "1",
-        "-a", "suss.agents:SussCopilotCli", "--ak", "arm=peer-review", "--ak", "suss_config=suss.toml",
+        "-a", "swe_drill.agents.copilot_cli:CopilotCli", "--ak", "arm=peer-review", "--ak", "drill_config=swe-drill.toml",
         "--ak", "lane=senior",
-        "--verifier", "suss.judge:JudgeVerifier", "--verifier-kwarg", "credit_budget=2000",
+        "--verifier", "swe_drill.judge:JudgeVerifier", "--verifier-kwarg", "credit_budget=2000",
         "--jobs-dir", "results/senior/peer-review", "--job-name", f"{STAMP}-1",
     ]
 
 
-def test_a_senior_agent_job_judges_and_grades_its_trials_in_suss_verifier_with_no_regrade(
+def test_a_senior_agent_job_judges_and_grades_its_trials_in_swe_drill_verifier_with_no_regrade(
     tmp_path,
 ):
     settings = with_dotenv(tmp_path, {"ANTHROPIC_API_KEY": "sk-ant-1", "COPILOT_GITHUB_TOKEN": "gh-1"})
@@ -181,10 +181,10 @@ def test_a_senior_agent_job_judges_and_grades_its_trials_in_suss_verifier_with_n
 
     assert agent.argv == [
         "harbor", "run", "-y", "-p", "lanes/senior", "-e", "docker", "-n", "16", "-k", "1",
-        "-a", "suss.agents:SussCopilotCli", "--ak", "arm=peer-review", "--ak", "suss_config=suss.toml",
+        "-a", "swe_drill.agents.copilot_cli:CopilotCli", "--ak", "arm=peer-review", "--ak", "drill_config=swe-drill.toml",
         "--ak", "lane=senior",
         "--allow-agent-host", "api.anthropic.com", "--allow-agent-host", "api.deepseek.com",
-        "--verifier", "suss.judge:JudgeVerifier",
+        "--verifier", "swe_drill.judge:JudgeVerifier",
         "--verifier-kwarg", "credit_budget=2000.5", "--verifier-kwarg", "model=gpt-6.1-sol",
         "--verifier-kwarg", "effort=",
         "--jobs-dir", "results/senior/peer-review", "--job-name", f"{STAMP}-2",
@@ -215,13 +215,13 @@ def test_a_senior_agent_job_gives_its_verifier_no_key_for_seniors_own_judges(tmp
     assert agent.withheld == (*reads, "COPILOT_GITHUB_TOKEN")
 
 
-def test_a_rebench_agent_job_grades_its_trials_in_suss_verifier_with_no_regrade(tmp_path):
+def test_a_rebench_agent_job_grades_its_trials_in_swe_drill_verifier_with_no_regrade(tmp_path):
     agent = harbor_commands(make_config(tmp_path), hosts(()), "rebench", STAMP, 1)
 
     assert agent.argv == [
         "harbor", "run", "-p", "lanes/rebench", "-e", "docker", "-n", "16", "-k", "1",
-        "-a", "suss.agents:SussCopilotCli", "--ak", "arm=peer-review", "--ak", "suss_config=suss.toml",
-        "--ak", "lane=rebench", "--verifier", "suss.replay:ReplayVerifier",
+        "-a", "swe_drill.agents.copilot_cli:CopilotCli", "--ak", "arm=peer-review", "--ak", "drill_config=swe-drill.toml",
+        "--ak", "lane=rebench", "--verifier", "swe_drill.replay:ReplayVerifier",
         "--jobs-dir", "results/rebench/peer-review", "--job-name", f"{STAMP}-1",
     ]
 
@@ -282,7 +282,7 @@ def test_a_refused_option_as_another_options_value_passes_through(tmp_path):
         ["-k", "1"],
         ["-k2"],
         ["--n-attempts=2"],
-        ["-a", "suss.agents:SussCopilotCli"],
+        ["-a", "swe_drill.agents.copilot_cli:CopilotCli"],
         ["--agent", "other"],
         ["-m", "replay"],
         ["--model=x"],
@@ -304,8 +304,8 @@ def test_a_refused_option_as_another_options_value_passes_through(tmp_path):
         ["--max-retries", "2", "-k", "2"],
     ],
 )
-def test_an_option_suss_sets_is_refused_in_every_spelling_whatever_its_value(extra, tmp_path):
-    # Harbor takes the last of a repeated option, so any of these would win over suss's own.
+def test_an_option_swe_drill_sets_is_refused_in_every_spelling_whatever_its_value(extra, tmp_path):
+    # Harbor takes the last of a repeated option, so any of these would win over SWE-drill's own.
     with pytest.raises(ValueError, match="can't be passed after --"):
         harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1, extra)
 
@@ -315,7 +315,7 @@ def harbor_run_options():
     return run, run.params
 
 
-def options_suss_sets(tmp_path) -> set[str]:
+def options_swe_drill_sets(tmp_path) -> set[str]:
     run, _ = harbor_run_options()
     # -y only on a lane whose tasks read Harbor's environment.
     commands = [
@@ -344,18 +344,18 @@ def refused_options(tmp_path) -> set[str]:
     return refused
 
 
-def test_every_option_suss_sets_on_the_job_is_refused(tmp_path):
-    emitted = options_suss_sets(tmp_path)
+def test_every_option_swe_drill_sets_on_the_job_is_refused(tmp_path):
+    emitted = options_swe_drill_sets(tmp_path)
 
     assert len(emitted) == 12
     assert emitted <= refused_options(tmp_path)
 
 
-def test_the_options_refused_beyond_those_suss_sets_are_these(tmp_path):
+def test_the_options_refused_beyond_those_swe_drill_sets_are_these(tmp_path):
     # Each selects other tasks, another agent, model, effort, endpoint or verifier, stops the
     # job grading its trials, widens the verifier's network, or keeps it from leaving a local
     # trial for its verifier to read.
-    assert refused_options(tmp_path) - options_suss_sets(tmp_path) == {
+    assert refused_options(tmp_path) - options_swe_drill_sets(tmp_path) == {
         "model_names",
         "effort",
         "base_url",
@@ -455,12 +455,12 @@ def test_a_commands_values_from_env_never_show_in_its_repr(tmp_path):
     assert "sk-grade-secret" not in repr(agent)
 
 
-def test_yes_after_the_separator_is_refused_as_an_option_suss_sets(tmp_path):
+def test_yes_after_the_separator_is_refused_as_an_option_swe_drill_sets(tmp_path):
     with pytest.raises(ValueError) as refused:
         harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1, ["--yes"])
 
     assert str(refused.value) == (
-        "-y/--yes can't be passed after --: suss answers Harbor's question itself, on a lane "
+        "-y/--yes can't be passed after --: SWE-drill answers Harbor's question itself, on a lane "
         "whose tasks read Harbor's environment"
     )
 
@@ -473,19 +473,19 @@ def test_an_env_file_after_the_separator_is_refused(tmp_path):
 
     assert str(refused.value) == (
         "--env-file can't be passed after --: it would give the agent job every variable its "
-        "tasks read from Harbor's environment; suss gives it only those .env sets that reach its "
+        "tasks read from Harbor's environment; SWE-drill gives it only those .env sets that reach its "
         "verifier alone"
     )
 
 
-def test_sharing_with_an_organization_is_refused_where_suss_answers_harbors_question(tmp_path):
+def test_sharing_with_an_organization_is_refused_where_swe_drill_answers_harbors_question(tmp_path):
     extra = ["--upload", "--share", "acme"]
 
     with pytest.raises(ValueError) as refused:
         harbor_commands(make_config(tmp_path), hosts(), "senior", STAMP, 1, extra, reads=READS)
 
     assert str(refused.value) == (
-        "--share can't be passed after -- on senior: suss passes -y there, which would "
+        "--share can't be passed after -- on senior: SWE-drill passes -y there, which would "
         "share the job with an organization you are not a member of without asking"
     )
 
@@ -504,7 +504,7 @@ def test_sharing_with_an_organization_passes_through_where_harbor_asks_no_questi
         (
             ["-c", "job.yaml"],
             "-c/--config can't be passed after --: a job config file can change anything"
-            " suss sets on the job",
+            " SWE-drill sets on the job",
         ),
         (
             ["-t", "org/task"],
@@ -530,15 +530,15 @@ def test_sharing_with_an_organization_passes_through_where_harbor_asks_no_questi
         ),
         (
             ["--agent-import-path", "x:Y"],
-            "--agent-import-path can't be passed after --: set the arm's agent in suss.toml",
+            "--agent-import-path can't be passed after --: set the arm's agent in swe-drill.toml",
         ),
         (
             ["--environment-import-path", "x:Y"],
-            "--environment-import-path can't be passed after --: set environment in suss.toml",
+            "--environment-import-path can't be passed after --: set environment in swe-drill.toml",
         ),
         (
             ["--user-agent", "x"],
-            "--user-agent can't be passed after --: suss runs the arm's agent alone, with no"
+            "--user-agent can't be passed after --: SWE-drill runs the arm's agent alone, with no"
             " simulated user",
         ),
         (
@@ -548,13 +548,13 @@ def test_sharing_with_an_organization_passes_through_where_harbor_asks_no_questi
         ),
         (
             ["--launch"],
-            "--launch can't be passed after --: suss runs each agent job locally, where its"
+            "--launch can't be passed after --: SWE-drill runs each agent job locally, where its"
             " verifier reads the trial on the host",
         ),
         (
             ["--print-config"],
             "--print-config can't be passed after --: it stops harbor before the job runs;"
-            " DRY_RUN=1 prints suss's commands instead",
+            " DRY_RUN=1 prints SWE-drill's commands instead",
         ),
         (
             ["--base-url", "https://example.com"],
@@ -563,7 +563,7 @@ def test_sharing_with_an_organization_passes_through_where_harbor_asks_no_questi
         ),
         (
             ["--allow-verifier-host", "example.com"],
-            "--allow-verifier-host can't be passed after --: suss grades each trial with the"
+            "--allow-verifier-host can't be passed after --: SWE-drill grades each trial with the"
             " network its task gives the verifier, and no more",
         ),
     ],
@@ -604,46 +604,46 @@ def test_an_options_value_is_not_taken_for_a_positional_argument(tmp_path):
 @pytest.mark.parametrize(
     "extra, message",
     [
-        (["-p", "x"], "-p/--path can't be passed after --: suss gives each job its lane's directory"),
-        (["-e", "x"], "-e/--env can't be passed after --: set environment in suss.toml"),
-        (["-n", "1"], "-n/--n-concurrent can't be passed after --: set concurrency in suss.toml"),
+        (["-p", "x"], "-p/--path can't be passed after --: SWE-drill gives each job its lane's directory"),
+        (["-e", "x"], "-e/--env can't be passed after --: set environment in swe-drill.toml"),
+        (["-n", "1"], "-n/--n-concurrent can't be passed after --: set concurrency in swe-drill.toml"),
         (
             ["-k", "2"],
-            "-k/--n-attempts can't be passed after --: suss runs one trial per agent job,"
-            " and k in suss.toml sets how many jobs",
+            "-k/--n-attempts can't be passed after --: SWE-drill runs one trial per agent job,"
+            " and k in swe-drill.toml sets how many jobs",
         ),
-        (["-a", "x"], "-a/--agent can't be passed after --: set the arm's agent in suss.toml"),
+        (["-a", "x"], "-a/--agent can't be passed after --: set the arm's agent in swe-drill.toml"),
         (
             ["-m", "x"],
-            "-m/--model can't be passed after --: set the arm's model in suss.toml",
+            "-m/--model can't be passed after --: set the arm's model in swe-drill.toml",
         ),
         (
             ["--ak", "x=1"],
-            "--ak/--agent-kwarg can't be passed after --: set the arm's kwargs in suss.toml",
+            "--ak/--agent-kwarg can't be passed after --: set the arm's kwargs in swe-drill.toml",
         ),
         (
             ["--allow-agent-host", "x"],
-            "--allow-agent-host can't be passed after --: suss allows the hosts the arm's agent"
+            "--allow-agent-host can't be passed after --: SWE-drill allows the hosts the arm's agent"
             " class lists in ALLOWED_HOSTS",
         ),
         (
             ["-o", "x"],
-            "-o/--jobs-dir can't be passed after --: suss writes each job under"
+            "-o/--jobs-dir can't be passed after --: SWE-drill writes each job under"
             " results/<lane>/<arm>/, or checks/ with --check",
         ),
         (
             ["--disable-verification"],
-            "--disable-verification/--enable-verification can't be passed after --: suss grades"
+            "--disable-verification/--enable-verification can't be passed after --: SWE-drill grades"
             " each trial in the agent job's own verifier, in a fresh sandbox",
         ),
         (
             ["--enable-verification"],
-            "--disable-verification/--enable-verification can't be passed after --: suss grades"
+            "--disable-verification/--enable-verification can't be passed after --: SWE-drill grades"
             " each trial in the agent job's own verifier, in a fresh sandbox",
         ),
         (
             ["--job-name", "x"],
-            "--job-name can't be passed after --: suss names each job from the run's stamp"
+            "--job-name can't be passed after --: SWE-drill names each job from the run's stamp"
             " and its trial number",
         ),
     ],
@@ -683,9 +683,9 @@ print(found.__module__, found.__name__)
 
 @pytest.mark.parametrize(
     "lane, verifier",
-    [("rebench", "suss.replay ReplayVerifier"), ("senior", "suss.judge JudgeVerifier")],
+    [("rebench", "swe_drill.replay ReplayVerifier"), ("senior", "swe_drill.judge JudgeVerifier")],
 )
-def test_the_harbor_suss_runs_loads_each_lanes_verifier_with_no_pythonpath(tmp_path, lane, verifier):
+def test_the_harbor_swe_drill_runs_loads_each_lanes_verifier_with_no_pythonpath(tmp_path, lane, verifier):
     agent = harbor_commands(make_config(tmp_path), hosts(), lane, STAMP, 1)
     python = harbor_executable().read_text().splitlines()[0].removeprefix("#!")
     env = {name: value for name, value in os.environ.items() if name != "PYTHONPATH"}
@@ -730,13 +730,13 @@ def test_the_harbor_suss_runs_loads_each_lanes_verifier_with_no_pythonpath(tmp_p
 def test_every_ak_value_reaches_the_agent_as_the_string_it_was(arm, tmp_path):
     agent = harbor_commands(make_config(tmp_path, arm=arm), hosts(), "senior", STAMP, 1)
 
-    assert harbor_parses(agent.argv) == {"arm": arm, "suss_config": "suss.toml", "lane": "senior"}
+    assert harbor_parses(agent.argv) == {"arm": arm, "drill_config": "swe-drill.toml", "lane": "senior"}
 
 
 def test_an_ordinary_ak_value_is_not_quoted(tmp_path):
     agent = harbor_commands(make_config(tmp_path), hosts(), "senior", STAMP, 1)
 
-    assert ak_values(agent.argv) == {"arm": "peer-review", "suss_config": "suss.toml", "lane": "senior"}
+    assert ak_values(agent.argv) == {"arm": "peer-review", "drill_config": "swe-drill.toml", "lane": "senior"}
 
 
 def test_an_arm_harbor_would_read_as_a_number_is_quoted_as_a_json_string(tmp_path):
@@ -754,7 +754,7 @@ def test_the_arms_agent_model_and_kwargs_reach_harbor_each_of_its_own_type(tmp_p
     agent = harbor_commands(dataclasses.replace(settings, arm=arm), hosts(), "rebench", STAMP, 1)
 
     at = agent.argv.index("-a")
-    assert agent.argv[at + 1 : at + 4] == ["suss.agents:SussCopilotCli", "-m", "gpt-6.1-sol"]
+    assert agent.argv[at + 1 : at + 4] == ["swe_drill.agents.copilot_cli:CopilotCli", "-m", "gpt-6.1-sol"]
     parsed = harbor_parses(agent.argv)
     assert {key: parsed[key] for key in kwargs} == kwargs
     assert {key: type(parsed[key]) for key in kwargs} == {key: type(v) for key, v in kwargs.items()}
