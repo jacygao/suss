@@ -13,6 +13,10 @@ the task's tests/run_judge.py in a Python process of their own on the host,
 since each task carries its own copy of senior's modules under one name.
 Harbor constructs the verifier on the host, where the agent job and the tasks
 are, so the job's credit ledger is one host file every trial shares.
+
+On a design task, test.sh runs senior's validation agent through
+swe_drill.validate, which the verifier gives its settings, the Copilot CLI the
+judge installed, and the token.
 """
 
 import asyncio
@@ -37,7 +41,7 @@ from harbor.environments.base import BaseEnvironment
 from harbor.models.verifier.result import VerifierResult
 from harbor.verifier.verifier import Verifier
 
-from swe_drill import lanes, sandbox
+from swe_drill import lanes, sandbox, validate
 from swe_drill.config import TOKEN_NAME, _read_env
 from swe_drill.copilot import NpmCopilotCli
 from swe_drill.replay import ReplayVerifier
@@ -67,6 +71,8 @@ EVENTS = ("model.call_start", "model.call_final_result", "assistant.message",
           "session.usage_checkpoint", "tool.execution_start", "result")
 EVENT_LINES = shlex.quote('"type": ?"(' + "|".join(re.escape(e) for e in EVENTS) + ')"')
 SENIOR_SECONDS = 300
+# The AI credits each of the validation agent's and its review judge's sessions may spend.
+VALIDATION_CREDITS = 200
 CLEANUP_SECONDS = lanes.senior.JUDGE_CLEANUP_SECONDS
 SESSION_SCRIPT = "session.sh"
 
@@ -147,7 +153,8 @@ class JudgePaths:
     """Where the judge keeps things in the sandbox, and the `copilot` it runs."""
 
     root: str = "/opt/swe-drill-judge"
-    # Under the verifier's logs, which Harbor keeps as the trial's verifier/.
+    # The verifier's logs, which Harbor keeps as the trial's verifier/.
+    verifier_logs: str = "/logs/verifier"
     logs: str = "/logs/verifier/judge"
     # Found on PATH, where the session puts the installer's $HOME/.local/bin first.
     copilot: str = "copilot"
@@ -163,6 +170,11 @@ class JudgePaths:
     @property
     def index(self) -> str:
         return f"{self.root}/index"
+
+    @property
+    def validation(self) -> str:
+        """Where swe_drill.validate finds its settings and the token."""
+        return f"{self.root}/validation"
 
 
 class CreditLedger:
@@ -332,6 +344,9 @@ class JudgeVerifier(ReplayVerifier):
         dotenv: Any = ".env",
         session_seconds: Any = 1200,
         judge_seconds: Any = lanes.senior.JUDGE_SECONDS,
+        validation_model: Any = MODEL,
+        validation_effort: Any = EFFORT,
+        validation_credits: Any = VALIDATION_CREDITS,
         paths: JudgePaths = JudgePaths(),
         **kwargs: Any,
     ):
@@ -343,21 +358,25 @@ class JudgeVerifier(ReplayVerifier):
         COPILOT_GITHUB_TOKEN, and `install_copilot` installs `copilot_version`.
         Host paths are relative to the directory `harbor run` started in. A
         session is stopped after `session_seconds`, and the judge, its install
-        included, after `judge_seconds`. `paths` is where the sandbox keeps
-        things; Harbor never passes it.
+        included, after `judge_seconds`. On a design task, senior's validation
+        agent and its review judge run on `validation_model` at
+        `validation_effort`, which is empty for a model that takes none, each
+        session capped at `validation_credits`. `paths` is where the sandbox
+        keeps things; Harbor never passes it.
 
         Raises TypeError for a setting Harbor parsed into the wrong type,
         ConfigError when the .env cannot be read, and what ReplayVerifier raises.
         """
         for key, value in (("credit_budget", credit_budget), ("session_seconds", session_seconds),
-                           ("judge_seconds", judge_seconds)):
+                           ("judge_seconds", judge_seconds), ("validation_credits", validation_credits)):
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise TypeError(
                     f"--verifier-kwarg {key} must be a number, but Harbor parsed it into {value!r},"
                     f" a {type(value).__name__}"
                 )
         for key, value in (("model", model), ("effort", effort), ("classifier_model", classifier_model),
-                           ("copilot_version", copilot_version), ("dotenv", dotenv)):
+                           ("copilot_version", copilot_version), ("dotenv", dotenv),
+                           ("validation_model", validation_model), ("validation_effort", validation_effort)):
             if not isinstance(value, str):
                 raise TypeError(
                     f"--verifier-kwarg {key} must be a string, but Harbor parsed it as JSON into"
@@ -371,6 +390,9 @@ class JudgeVerifier(ReplayVerifier):
         self.copilot_version = copilot_version
         self.session_seconds = session_seconds
         self.judge_seconds = judge_seconds
+        self.validation_model = validation_model
+        self.validation_effort = validation_effort
+        self.validation_credits = validation_credits
         self.paths = paths
         self._token = _read_env(Path(dotenv).absolute()).get(TOKEN_NAME, "")
         # The job's directory, which holds every trial of it.
@@ -394,6 +416,9 @@ class JudgeVerifier(ReplayVerifier):
         workspace and it could not be put back, so the trial fails rather than
         being graded on a workspace ReplayVerifier would not leave. A cancel
         that reaches the judge is raised again once the test files are back.
+
+        On a design task, test.sh gets what `_prepare_validation` leaves, and
+        however either ends, `_after_validation` runs.
         """
         needed = self.judge_seconds + CLEANUP_SECONDS
         if self.task.config.verifier.timeout_sec <= needed:
@@ -422,7 +447,74 @@ class JudgeVerifier(ReplayVerifier):
             raise JudgeError("a judge session changed the workspace, and it could not be put back")
         if self._cancelled is not None:
             raise self._cancelled
-        return await Verifier.verify(self)
+        if not (self.task.paths.task_dir / lanes.senior.VALIDATION_SPEC).is_file():
+            return await Verifier.verify(self)
+        try:
+            await self._prepare_validation()
+            return await Verifier.verify(self)
+        finally:
+            await self._after_validation()
+
+    async def _prepare_validation(self) -> None:
+        """
+        Leave swe_drill.validate its settings and the token in
+        paths.validation, and name that directory to test.sh.
+
+        Copilot CLI is installed here where the judge did not install it, as
+        for an empty patch. Where it cannot be, or the .env gives no token, the
+        settings say why and no token is left, so the validation fails before
+        any session, and the trial is invalid.
+        """
+        environment = self.environment
+        directory = self.paths.validation
+        if self._installed is None and self._setup_error is None:
+            await self._install("")
+        settings: dict[str, Any] = {
+            "copilot": None,
+            "version": self._installed,
+            "model": self.validation_model,
+            "effort": self.validation_effort,
+            "credits": self.validation_credits,
+        }
+        if self._setup_error is not None:
+            settings["error"] = f"Copilot CLI could not be installed: {self._setup_error}"
+        elif not self._token:
+            settings["error"] = f"the .env sets no {TOKEN_NAME}"
+        else:
+            # By its full path, since test.sh need not have the installer's PATH.
+            found = await _output(
+                environment, f'PATH="$HOME/.local/bin:$PATH" command -v {shlex.quote(self.paths.copilot)}'
+            )
+            settings["copilot"] = found.strip() or None
+        await _run(environment, f"rm -rf {shlex.quote(directory)} && mkdir -p {shlex.quote(directory)}")
+        await _upload_bytes(environment, json.dumps(settings).encode(), f"{directory}/{validate.SETTINGS_NAME}")
+        if "error" not in settings:
+            await _output(
+                environment,
+                f'umask 077 && printf %s "${TOKEN_NAME}" > {shlex.quote(f"{directory}/{validate.TOKEN_FILE}")}',
+                {TOKEN_NAME: self._token},
+            )
+        self.override_env = {**self.override_env, validate.SETTINGS_ENV: directory}
+
+    async def _after_validation(self) -> None:
+        """
+        However test.sh ended: the validation's directory is removed, and no
+        file holding the token is left under the judge's directories or the
+        verifier's logs, in the sandbox or in the trial's verifier/.
+        """
+        removed: list[str] = []
+        with contextlib.suppress(Exception):
+            await _run(self.environment, f"rm -rf {shlex.quote(self.paths.validation)}")
+            removed += await self._remove_token(self.environment)
+        if self._token:
+            for path in sorted(self.trial_paths.verifier_dir.rglob("*")):
+                with contextlib.suppress(OSError):
+                    if path.is_file() and not path.is_symlink() and self._token.encode() in path.read_bytes():
+                        path.unlink()
+                        removed.append(str(path))
+        if removed:
+            self._record.setdefault("removed_for_token", []).extend(removed)
+        self._write()
 
     async def _install(self, workspace: str) -> None:
         """
@@ -796,11 +888,11 @@ class JudgeVerifier(ReplayVerifier):
         )
 
     async def _remove_token(self, environment: BaseEnvironment) -> list[str]:
-        """Delete every file under the judge's directories that holds the token, and return their paths."""
+        """Delete every file under the judge's directories and the verifier's logs that holds the token, and return their paths."""
         # An empty pattern would match every file.
         if not self._token:
             return []
-        dirs = " ".join(shlex.quote(path) for path in (self.paths.logs, self.paths.root))
+        dirs = " ".join(shlex.quote(path) for path in (self.paths.verifier_logs, self.paths.root))
         output = await _output(
             environment,
             f'grep -rlF -e "${TOKEN_NAME}" -- {dirs} 2>/dev/null'

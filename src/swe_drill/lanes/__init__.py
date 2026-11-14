@@ -241,7 +241,8 @@ def build(lane: str, download: Path, lanes: Path, check: bool = False) -> Path:
 
 def _write(copy: Path, name: str, content: bytes, source: Path) -> None:
     """
-    Write `content` at `name` in the task's copy, with the mode of `source`.
+    Write `content` at `name` in the task's copy, with the mode of `source`,
+    or the default mode for a file the task does not have.
 
     A directory copied read-only from the download is made writable for the
     write alone, and keeps its own mode.
@@ -251,7 +252,8 @@ def _write(copy: Path, name: str, content: bytes, source: Path) -> None:
     directory.chmod(mode | stat.S_IWUSR)
     try:
         (copy / name).write_bytes(content)
-        shutil.copymode(source, copy / name)
+        if source.is_file():
+            shutil.copymode(source, copy / name)
     finally:
         directory.chmod(mode)
 

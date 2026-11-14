@@ -1,1 +1,6 @@
 stack_profile = "python-library"
+
+[settings]
+va_max_turns = 70
+va_timeout_sec = 1800
+script_timeout_sec = 900

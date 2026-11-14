@@ -466,6 +466,20 @@ def test_the_senior_lanes_judge_names_its_model_and_effort(tmp_path: Path):
     assert settings.judge == config.Judge(credit_budget=2000, model="gpt-6.1-sol", effort="")
 
 
+def test_the_senior_lanes_judge_names_its_validation_agents_model_and_effort(tmp_path: Path):
+    settings = senior(tmp_path, JUDGE + 'validation_model = "gpt-6.1-sol"\nvalidation_effort = ""\n')
+
+    assert settings.judge == config.Judge(
+        credit_budget=2000, validation_model="gpt-6.1-sol", validation_effort=""
+    )
+
+
+@pytest.mark.parametrize("key", ["validation_model", "validation_effort"])
+def test_a_validation_setting_that_is_not_a_string_is_an_error(tmp_path: Path, key: str):
+    with pytest.raises(config.ConfigError, match=f"sets {key} to 5, which must be a string"):
+        senior(tmp_path, JUDGE + f"{key} = 5\n")
+
+
 def test_another_lanes_run_takes_no_judge(tmp_path: Path):
     path = write_config(tmp_path, TOP + JUDGE + '[arms.a]\nagent = "m:A"\n')
 
@@ -499,6 +513,23 @@ def test_a_senior_run_with_no_copilot_token_is_refused_naming_it(tmp_path: Path,
     )
 
 
+@pytest.mark.parametrize("value", ["", "1"])
+def test_a_senior_run_takes_no_timeout_multiplier_or_one_of_one(tmp_path: Path, value: str):
+    config.check_judge(senior(tmp_path, JUDGE, f"COPILOT_GITHUB_TOKEN=gh-1\nTIMEOUT_MULTIPLIER={value}\n"), "senior")
+
+
+def test_a_senior_run_with_a_timeout_multiplier_is_refused_naming_it(tmp_path: Path):
+    settings = senior(tmp_path, JUDGE, "COPILOT_GITHUB_TOKEN=gh-1\nTIMEOUT_MULTIPLIER=3\n")
+
+    with pytest.raises(config.ConfigError) as error:
+        config.check_judge(settings, "senior")
+
+    assert str(error.value) == (
+        f"{tmp_path / '.env'} sets TIMEOUT_MULTIPLIER=3, which would lengthen senior's validation agent past"
+        " the verifier timeout the lane gives it; leave it unset"
+    )
+
+
 def test_a_senior_run_needs_no_key_for_seniors_own_judges(tmp_path: Path):
     settings = senior(tmp_path, JUDGE)
 
@@ -529,7 +560,7 @@ def test_a_judge_key_swe_drill_does_not_read_is_an_error_naming_it(tmp_path: Pat
 
     assert str(error.value) == (
         f"{tmp_path / 'swe-drill.toml'}: [lanes.senior.judge] sets classifier, but SWE-drill reads only"
-        " credit_budget, model and effort there"
+        " credit_budget, model, effort, validation_model and validation_effort there"
     )
 
 

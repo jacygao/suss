@@ -32,9 +32,12 @@ class Judge:
     """What JudgeVerifier judges a senior run with, from `[lanes.senior.judge]`."""
 
     credit_budget: float
-    # None takes JudgeVerifier's own default.
+    # Each None takes JudgeVerifier's own default.
     model: str | None = None
     effort: str | None = None
+    # The model and effort of senior's validation agent and its review judge.
+    validation_model: str | None = None
+    validation_effort: str | None = None
 
 
 @dataclass(frozen=True)
@@ -69,7 +72,9 @@ REQUIRED_IN_ARM = ("agent",)
 RETIRED_IN_ARM = ("harness", "params")
 # Set by SWE-drill on every agent, so an arm's own kwargs cannot take them.
 RESERVED_KWARGS = ("arm", "lane", "drill_config")
-JUDGE_KEYS = ("credit_budget", "model", "effort")
+JUDGE_KEYS = ("credit_budget", "model", "effort", "validation_model", "validation_effort")
+# The judge's keys that `swe-drill run` passes on as strings, where they are set.
+JUDGE_STRINGS = JUDGE_KEYS[1:]
 
 
 def load(path: Path, arm: str, lane: str) -> Config:
@@ -245,7 +250,7 @@ def _judge(path: Path, table: Any) -> Judge:
     The judge `[lanes.senior.judge]` sets.
 
     Raises ConfigError, naming the file, when it is not a table, sets another
-    key, has no positive `credit_budget`, or sets `model` or `effort` to
+    key, has no positive `credit_budget`, or sets any of JUDGE_STRINGS to
     something other than a string.
     """
     where = f"{path}: [lanes.{lanes.SENIOR}.judge]"
@@ -261,10 +266,10 @@ def _judge(path: Path, table: Any) -> Judge:
             f"{where} must set credit_budget, the AI credits every judge session of a job may"
             f" spend together, to a positive finite number, not {budget!r}"
         )
-    for key in ("model", "effort"):
+    for key in JUDGE_STRINGS:
         if key in table and not isinstance(table[key], str):
             raise ConfigError(f"{where} sets {key} to {table[key]!r}, which must be a string")
-    return Judge(budget, table.get("model"), table.get("effort"))
+    return Judge(budget, **{key: table.get(key) for key in JUDGE_STRINGS})
 
 
 # The task.toml tables whose `${NAME}` values Harbor fills from its own environment
@@ -304,15 +309,12 @@ def verifier_env(settings: Config, variables: Iterable[str]) -> dict[str, str]:
 
 # Read by Senior SWE-Bench's verifier alone, which grades with LLM judges.
 JUDGE_SETTING = "SSB_OVERRIDE_ALL_JUDGE_MODEL"
-# Each model the verifier calls, by its name in a senior trial's grader: the
-# settings that choose it, the first set one winning, and its default.
+# Each model senior's own judges would call, by its name in a senior trial's
+# grader: the settings that choose it, the first set one winning, and its default.
 GRADING_MODELS = {
     "judge_model": ((JUDGE_SETTING,), "anthropic/claude-sonnet-4-6"),
     "classifier_model": (("SSB_OVERRIDE_CLASSIFIER_MODEL",), "anthropic/claude-haiku-4-5-20251001"),
-    "validation_model": (("SSB_OVERRIDE_VA_MODEL", "FORCE_VA_MODEL"), "anthropic/claude-sonnet-4-6"),
 }
-# The validation agent's harness, chosen as a model is. It calls no provider of its own.
-VALIDATION_HARNESS = (("SSB_OVERRIDE_VA_HARNESS", "FORCE_VA_HARNESS"), "miniswe")
 
 
 def _chosen(env: Mapping[str, str], names: tuple[str, ...], default: str) -> tuple[str | None, str]:
@@ -323,26 +325,28 @@ def _chosen(env: Mapping[str, str], names: tuple[str, ...], default: str) -> tup
 
 def grading_choices(env: Mapping[str, str]) -> dict[str, str]:
     """
-    What the senior verifier, given `env`, grades with: each of GRADING_MODELS,
-    and the validation agent's harness as `validation_harness`.
+    The model of each of GRADING_MODELS that the senior verifier, given
+    `env`, would grade with.
 
     `env` is what the agent job's Harbor holds, as `verifier_env` gives it.
     """
-    choices = {**GRADING_MODELS, "validation_harness": VALIDATION_HARNESS}
-    order = ("judge_model", "classifier_model", "validation_harness", "validation_model")
-    return {name: _chosen(env, *choices[name])[1] for name in order}
+    return {name: _chosen(env, *choice)[1] for name, choice in GRADING_MODELS.items()}
 
 
 # The keys senior's own judges and validation agent call their models with.
 # SWE-drill judges senior itself, on a Copilot subscription, so no job is given them.
 GRADING_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PORTKEY_API_KEY")
 TOKEN_NAME = "COPILOT_GITHUB_TOKEN"
+TIMEOUT_MULTIPLIER = "TIMEOUT_MULTIPLIER"
 
 
 def check_judge(settings: Config, lane: str) -> None:
     """
     Refuse a senior run with no judge: no `[lanes.senior.judge]` in swe-drill.toml,
-    or no COPILOT_GITHUB_TOKEN in .env. Every other lane passes.
+    or no COPILOT_GITHUB_TOKEN in .env. Refuse one whose .env sets
+    TIMEOUT_MULTIPLIER to other than 1 too, since run_validate.py multiplies
+    the validation agent's timeouts by it and the lane's verifier timeout does
+    not. Every other lane passes.
 
     An empty token counts as unset. Raises ConfigError naming what is missing.
     """
@@ -357,6 +361,12 @@ def check_judge(settings: Config, lane: str) -> None:
         raise ConfigError(
             f"{settings.path.parent / '.env'} sets no {TOKEN_NAME}, which SWE-drill judges the trials"
             f" of {lane} with"
+        )
+    multiplier = settings.env.get(TIMEOUT_MULTIPLIER, "")
+    if multiplier not in ("", "1"):
+        raise ConfigError(
+            f"{settings.path.parent / '.env'} sets {TIMEOUT_MULTIPLIER}={multiplier}, which would lengthen"
+            f" senior's validation agent past the verifier timeout the lane gives it; leave it unset"
         )
 
 

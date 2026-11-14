@@ -19,7 +19,7 @@ from harbor.cli.utils import parse_kwargs
 
 from swe_drill import agents, config, lanes, leaderboard
 from swe_drill.leaderboard import LeaderboardError
-from swe_drill.config import GRADING_KEYS, TOKEN_NAME, Config, ConfigError, verifier_env
+from swe_drill.config import GRADING_KEYS, JUDGE_STRINGS, TOKEN_NAME, Config, ConfigError, verifier_env
 from swe_drill.lanes import LaneError
 
 
@@ -134,7 +134,7 @@ def _judge_kwargs(config: Config) -> list[str]:
     judge = config.judge
     # A number, which Harbor parses as JSON into one.
     kwargs = [f"credit_budget={judge.credit_budget}"]
-    for key in ("model", "effort"):
+    for key in JUDGE_STRINGS:
         value = getattr(judge, key)
         if value is not None:
             kwargs.append(_kwarg(key, value))

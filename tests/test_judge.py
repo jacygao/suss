@@ -12,6 +12,7 @@ stood in for by one that records what test.sh would find.
 """
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import os
@@ -19,6 +20,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from harbor.cli.utils import parse_kwargs
@@ -32,6 +34,7 @@ from harbor.verifier.verifier import Verifier
 
 import swe_drill.judge
 import swe_drill.replay
+from swe_drill import validate
 from swe_drill.judge import CreditLedger, JudgePaths, JudgeVerifier, extract_json
 from swe_drill.replay import ReplayError, ReplayVerifier
 from test_replay import edit_line, git, go, patch_of
@@ -189,6 +192,7 @@ def judge_verifier(
         paths=JudgePaths(
             root=str(sandbox / "opt" / trial),
             logs=str(sandbox / "logs" / trial / "verifier" / "judge"),
+            verifier_logs=str(sandbox / "logs" / trial / "verifier"),
             copilot=str(box / "copilot" / "copilot"),
         ),
         **kwargs,
@@ -1101,3 +1105,176 @@ def test_reads_back_argons_effort_from_a_checkpoint_that_names_its_vendor_openai
     for name in ("rubric", "taste"):
         session = session_named(record, name)
         assert (session["reported_models"], session["reported_efforts"]) == (["gemini-4-argon"], ["high"])
+
+
+# Senior's validation agent, which test.sh runs on a design task
+
+
+@pytest.fixture
+def design(box) -> Path:
+    """Make the stand-in task a design task, which has a validation spec."""
+    validate_dir = box / "lanes" / "senior" / TASK / "tests" / "validate"
+    validate_dir.mkdir()
+    (validate_dir / "validation_spec.toml").write_text("[settings]\nva_timeout_sec = 60\n")
+    return box
+
+
+@pytest.fixture
+def validated(monkeypatch):
+    """
+    Stand in for Harbor's own verifier, which runs test.sh: each run records
+    the environment test.sh would have, and the files in the directory it
+    names in SWE_DRILL_VALIDATION, then writes the token to each path in
+    `leaks`, as a session's log might hold it, and rewards 1.
+    """
+    seen = SimpleNamespace(runs=[], leaks=[])
+
+    async def run_test_sh(self) -> VerifierResult:
+        merged = {**self.task.config.verifier.env, **(self.verifier_env or {}), **self.override_env}
+        result = await self.environment.exec("env", env=resolve_env_vars(merged) or None)
+        env = dict(line.split("=", 1) for line in (result.stdout or "").splitlines() if "=" in line)
+        named = env.get(validate.SETTINGS_ENV)
+        files = {}
+        if named and Path(named).is_dir():
+            files = {path.name: path.read_text() for path in Path(named).rglob("*") if path.is_file()}
+        seen.runs.append({"env": result.stdout or "", "directory": named, "files": files})
+        for path in seen.leaks:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"token={TOKEN}\n")
+        return VerifierResult(rewards={"reward": 1.0})
+
+    monkeypatch.setattr(Verifier, "verify", run_test_sh)
+    return seen
+
+
+def test_harbor_loads_it_with_the_validation_agent_on_gemini_4_argon_at_high_effort_by_default(
+    tmp_path, local_environment
+):
+    paths = TrialPaths(tmp_path / "agent-job" / TRIAL)
+    paths.mkdir()
+    config = VerifierConfig(
+        import_path="swe_drill.judge:JudgeVerifier", kwargs=parse_kwargs(["credit_budget=80"])
+    )
+
+    verifier = VerifierFactory.create_verifier_from_config(
+        config, task=Task(FAKE_TASK), trial_paths=paths, environment=local_environment,
+        skip_tests_upload=True,
+    )
+
+    assert (verifier.validation_model, verifier.validation_effort, verifier.validation_credits) == (
+        "gemini-4-argon", "high", 200
+    )
+
+
+@pytest.mark.parametrize(
+    "key, value", [("validation_model", 5), ("validation_effort", None), ("validation_credits", "lots")]
+)
+def test_a_validation_setting_harbor_parsed_into_the_wrong_type_is_an_error(box, local_environment, key, value):
+    with pytest.raises(TypeError, match=key):
+        judge_verifier(box, local_environment, None, **{key: value})
+
+
+def test_a_design_task_leaves_test_sh_the_validations_settings_and_the_token_in_a_file_alone(
+    box, design, workspace, local_environment, validated
+):
+    verifier = judge_verifier(
+        box, local_environment, a_patch(workspace), validation_model="gpt-6.1-sol", validation_effort="medium"
+    )
+
+    verify(verifier)
+
+    [run] = validated.runs
+    assert run["directory"] == verifier.paths.validation
+    assert run["files"]["token"] == TOKEN
+    assert json.loads(run["files"]["settings.json"]) == {
+        "copilot": str(box / "copilot" / "copilot"),
+        "version": "1.0.105",
+        "model": "gpt-6.1-sol",
+        "effort": "medium",
+        "credits": 200,
+    }
+    assert TOKEN not in run["env"], "test.sh's environment holds the token"
+
+
+def test_the_validation_runs_the_copilot_the_judge_installed_by_its_full_path(
+    box, design, workspace, local_environment, validated, monkeypatch
+):
+    home = box / "home"
+    (home / ".local" / "bin").mkdir(parents=True)
+    shutil.copy(box / "copilot" / "copilot", home / ".local" / "bin" / "copilot")
+    monkeypatch.setenv("HOME", str(home))
+    verifier = judge_verifier(box, local_environment, a_patch(workspace))
+    verifier.paths = dataclasses.replace(verifier.paths, copilot="copilot")
+
+    verify(verifier)
+
+    settings = json.loads(validated.runs[0]["files"]["settings.json"])
+    assert settings["copilot"] == str(home / ".local" / "bin" / "copilot")
+
+
+def test_an_empty_patch_on_a_design_task_is_still_validated(box, design, workspace, local_environment, validated):
+    verify(judge_verifier(box, local_environment, a_patch(workspace, lambda repo: None)))
+
+    [run] = validated.runs
+    assert run["files"]["token"] == TOKEN
+    assert json.loads(run["files"]["settings.json"])["version"] == "1.0.105"
+
+
+def test_an_install_that_fails_leaves_the_validation_the_reason_and_no_token(
+    box, design, workspace, local_environment, validated
+):
+    (box / "install-fails").write_text("Command failed (exit 3): curl")
+
+    verify(judge_verifier(box, local_environment, a_patch(workspace)))
+
+    [run] = validated.runs
+    assert "token" not in run["files"]
+    settings = json.loads(run["files"]["settings.json"])
+    assert settings["copilot"] is None
+    assert "exit 3" in settings["error"]
+
+
+def test_a_task_with_no_validation_spec_leaves_test_sh_nothing(box, workspace, local_environment, validated):
+    verifier = judge_verifier(box, local_environment, a_patch(workspace))
+
+    verify(verifier)
+
+    [run] = validated.runs
+    assert run["directory"] is None
+    assert not Path(verifier.paths.validation).exists()
+
+
+def test_a_setup_that_fails_after_leaving_the_token_still_removes_it(
+    box, design, workspace, local_environment, validated, monkeypatch
+):
+    prepare = JudgeVerifier._prepare_validation
+
+    async def prepare_then_fail(self):
+        await prepare(self)
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(JudgeVerifier, "_prepare_validation", prepare_then_fail)
+    verifier = judge_verifier(box, local_environment, a_patch(workspace))
+
+    with pytest.raises(asyncio.CancelledError):
+        verify(verifier)
+
+    assert validated.runs == []
+    assert not Path(verifier.paths.validation).exists()
+
+
+def test_no_file_holding_the_token_outlives_test_sh_in_the_sandbox_or_the_trial(
+    box, design, workspace, local_environment, validated
+):
+    verifier = judge_verifier(box, local_environment, a_patch(workspace))
+    sandbox_log = Path(verifier.paths.verifier_logs) / "copilot-validation" / "agent-1" / "logs" / "process.log"
+    kept_log = verifier.trial_paths.verifier_dir / "copilot-validation" / "agent-1" / "logs" / "process.log"
+    validated.leaks += [sandbox_log, kept_log]
+
+    verify(verifier)
+
+    assert not Path(verifier.paths.validation).exists()
+    written = [path for path in (box / "sandbox").rglob("*") if path.is_file()]
+    written += [path for path in verifier.trial_paths.trial_dir.rglob("*") if path.is_file()]
+    assert [path for path in written if TOKEN.encode() in path.read_bytes()] == []
+    assert set(recorded(verifier)["removed_for_token"]) >= {str(sandbox_log), str(kept_log)}
