@@ -27,9 +27,6 @@ def test_the_modal_extra_installs_harbors_modal_extra_at_the_harbor_swe_drill_pi
     )
 
 
-ADAPTERS = ("swe_drill.agents.copilot_cli", "swe_drill.agents.claude_code", "swe_drill.agents.hve")
-
-
 def _module(path: Path) -> str:
     return ".".join(path.relative_to(REPO / "src").with_suffix("").parts).removesuffix(".__init__")
 
@@ -49,6 +46,10 @@ def _imported(path: Path) -> set[str]:
             found.add(base)
             found |= {f"{base}.{alias.name}" for alias in node.names}
     return found
+
+
+# Every module in agents/ but its __init__.py is an adapter, so a new one needs no entry here.
+ADAPTERS = tuple(_module(path) for path in sorted((SRC_PACKAGE / "agents").glob("*.py")) if path.name != "__init__.py")
 
 
 def test_no_core_module_imports_an_adapter():
