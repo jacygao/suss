@@ -8,6 +8,7 @@ from harbor.agents.installed.base import NonZeroAgentExitCodeError
 from harbor.environments.base import BaseEnvironment
 
 from swe_drill.agents.copilot_cli import CopilotCli
+from swe_drill.copilot import fetch
 
 
 RPI_AGENT = ".github/agents/hve-core/rpi-agent.agent.md"
@@ -62,8 +63,8 @@ class CopilotCliHve(CopilotCli):
         archive = f"https://codeload.github.com/microsoft/hve-core/tar.gz/{commit}"
         await self.exec_as_agent(
             environment,
-            "set -e; dir=$(mktemp -d); trap 'rm -rf \"$dir\"' EXIT; cd \"$dir\"; "
-            f"curl -fsSL -o hve-core.tar.gz {shlex.quote(archive)}; "
+            f"set -e; {fetch()}dir=$(mktemp -d); trap 'rm -rf \"$dir\"' EXIT; cd \"$dir\"; "
+            f"fetch hve-core.tar.gz {shlex.quote(archive)}; "
             "mkdir unpacked; tar -xzf hve-core.tar.gz -C unpacked; "
             f"test -f unpacked/{source}/plugin.json"
             f" || {{ echo 'the archive of hve-core {commit} holds no {source}/plugin.json'; exit 1; }}; "

@@ -11,6 +11,7 @@ from harbor.models.agent.context import AgentContext
 from swe_drill import judge
 from swe_drill.agents import RECORD_NAME
 from swe_drill.agents.copilot_cli import CopilotCli
+from swe_drill.copilot import fetch
 
 NODE_VERSION = "24.15.0"
 # The sha256 of nodejs.org's archive of NODE_VERSION for each architecture, as its SHASUMS256.txt gives it.
@@ -114,13 +115,13 @@ class CopilotCliSquiz(CopilotCli):
         checksums = " ".join(f"{arch}) want={digest};;" for arch, digest in NODE_SHA256.items())
         await self.exec_as_agent(
             environment,
-            "set -e; fail() { echo \"$1\"; exit 1; }; "
+            f"set -e; {fetch()}fail() {{ echo \"$1\"; exit 1; }}; "
             'case "$(uname -m)" in x86_64|amd64) arch=x64;; aarch64|arm64) arch=arm64;; '
             '*) fail "nodejs.org builds no Node for $(uname -m)";; esac; '
             "if ls /lib/ld-musl-* >/dev/null 2>&1; then fail 'nodejs.org builds no Node for musl'; fi; "
             f'case "$arch" in {checksums} *) fail "no checksum is pinned for Node on $arch";; esac; '
             "dir=$(mktemp -d); trap 'rm -rf \"$dir\"' EXIT; cd \"$dir\"; "
-            "curl -fsSL --retry 5 -o node.tar.gz"
+            "fetch node.tar.gz"
             f' "https://nodejs.org/dist/v{NODE_VERSION}/node-v{NODE_VERSION}-linux-$arch.tar.gz"; '
             "sum=$(sha256sum node.tar.gz | cut -d ' ' -f 1); "
             f'[ "$sum" = "$want" ] || fail "the archive of Node {NODE_VERSION} has checksum $sum, not $want"; '
@@ -133,8 +134,8 @@ class CopilotCliSquiz(CopilotCli):
         shim = f'#!/bin/sh\nexec {shlex.quote(node + "/bin/node")} {shlex.quote(plugin + "/src/cli.ts")} "$@"\n'
         installed = await self.exec_as_agent(
             environment,
-            "set -e; dir=$(mktemp -d); trap 'rm -rf \"$dir\"' EXIT; cd \"$dir\"; "
-            f"curl -fsSL --retry 5 -o squiz.tar.gz {shlex.quote(archive)}; "
+            f"set -e; {fetch()}dir=$(mktemp -d); trap 'rm -rf \"$dir\"' EXIT; cd \"$dir\"; "
+            f"fetch squiz.tar.gz {shlex.quote(archive)}; "
             "mkdir unpacked; tar -xzf squiz.tar.gz -C unpacked; "
             f"{{ test -f unpacked/{source}/hooks/hooks.json && test -f unpacked/{source}/src/cli.ts; }}"
             f" || {{ echo 'the archive of squiz {self.squiz_version} holds no {source}/hooks/hooks.json"

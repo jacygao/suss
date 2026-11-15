@@ -31,6 +31,7 @@ from swe_drill.agents import squiz as squiz_agent_module
 from swe_drill.agents.hve import CopilotCliHve, full_auto_prompt
 from swe_drill.agents.squiz import CopilotCliSquiz
 from swe_drill.config import ConfigError
+from swe_drill import copilot as copilot_module
 from swe_drill.copilot import NpmCopilotCli
 
 TOKEN = "github_pat_from_the_env_file"
@@ -339,6 +340,53 @@ def publish(box: Path, agent_file: str = AGENT_FILE, plugin: bool = True) -> Non
 
 def hve(box: Path, **kwargs) -> CopilotCliHve:
     return agent(box, CopilotCliHve, hve_core_commit=COMMIT, reasoning_effort="high", **kwargs)
+
+
+# Fails as curl does on a dropped HTTP/2 stream, which its own --retry never retries, FAILS times first.
+FLAKY_CURL = """#!/bin/sh
+here=$(dirname "$0")
+failed=$(cat "$here/curl.failed" 2>/dev/null || echo 0)
+if [ "$failed" -lt FAILS ]; then
+    echo $((failed + 1)) > "$here/curl.failed"
+    echo "curl: (92) HTTP/2 stream 0 was not closed cleanly: INTERNAL_ERROR (err 2)" >&2
+    exit 92
+fi
+""" + CURL.split("\n", 1)[1]
+
+
+def npm_copilot(box: Path) -> Path:
+    package = box / "npm" / "package"
+    package.mkdir(parents=True)
+    (package / "copilot").write_text("#!/bin/sh\necho 'GitHub Copilot CLI 1.0.105.'\n")
+    (package / "copilot").chmod(0o755)
+    with tarfile.open(bin_dir(box) / "hve-core.tar.gz", "w:gz") as archive:
+        archive.add(package, arcname="package")
+    return package
+
+
+def flaky_curl(box: Path, monkeypatch, fails: int) -> None:
+    (bin_dir(box) / "curl").write_text(FLAKY_CURL.replace("FAILS", str(fails)))
+    monkeypatch.setattr(copilot_module, "FETCH_PAUSE_SECONDS", 0)
+
+
+def test_copilot_cli_installs_through_a_dropped_download_282(box, local_environment, monkeypatch):
+    package = npm_copilot(box)
+    flaky_curl(box, monkeypatch, fails=2)
+
+    go(INSTALL(agent(box), local_environment))
+
+    assert (bin_dir(box) / "copilot").read_text() == (package / "copilot").read_text()
+    assert (bin_dir(box) / "curl.failed").read_text().strip() == "2"
+
+
+def test_copilot_cli_install_fails_once_every_download_try_fails(box, local_environment, monkeypatch):
+    npm_copilot(box)
+    flaky_curl(box, monkeypatch, fails=99)
+
+    with pytest.raises(Exception, match="exit 92"):
+        go(INSTALL(agent(box), local_environment))
+
+    assert (bin_dir(box) / "curl.failed").read_text().strip() == str(copilot_module.FETCH_TRIES)
 
 
 def test_copilot_cli_is_installed_from_npms_registry_not_githubs_releases(box, local_environment):

@@ -6,6 +6,23 @@ from typing import Any, ClassVar
 from harbor.agents.installed.copilot_cli import CopilotCli
 from harbor.environments.base import BaseEnvironment
 
+# How many times `fetch` tries a download, and how much longer it waits after each failed try.
+FETCH_TRIES = 5
+FETCH_PAUSE_SECONDS = 5
+
+
+def fetch() -> str:
+    """
+    A shell function, `fetch <file> <url>`, that downloads with curl and tries
+    again on any failure, FETCH_TRIES times in all. curl's own --retry skips a
+    dropped connection, which is how a download most often fails.
+    """
+    return (
+        "fetch() { tries=1; until curl -fsSL --retry 5 -o \"$1\" \"$2\"; do code=$?;"
+        f' [ "$tries" -lt {FETCH_TRIES} ] || return "$code"; rm -f "$1";'
+        f' sleep "$((tries * {FETCH_PAUSE_SECONDS}))"; tries=$((tries + 1)); done; }}; '
+    )
+
 
 class NpmCopilotCli(CopilotCli):
     """
@@ -36,13 +53,13 @@ class NpmCopilotCli(CopilotCli):
         await self.exec_as_agent(
             environment,
             command=(
-                "set -euo pipefail; "
+                f"set -euo pipefail; {fetch()}"
                 'case "$(uname -m)" in x86_64|amd64) arch=x64;; aarch64|arm64) arch=arm64;; '
                 '*) echo "no Copilot CLI build for $(uname -m)"; exit 1;; esac; '
                 "libc=linux; if ls /lib/ld-musl-* >/dev/null 2>&1; then libc=linuxmusl; fi; "
                 'package="copilot-$libc-$arch"; '
                 "dir=$(mktemp -d); trap 'rm -rf \"$dir\"' EXIT; "
-                'curl -fsSL --retry 5 -o "$dir/copilot.tgz" '
+                'fetch "$dir/copilot.tgz" '
                 f'"https://registry.npmjs.org/@github/$package/-/$package-{version}.tgz"; '
                 'tar -xzf "$dir/copilot.tgz" -C "$dir"; '
                 'mkdir -p "$HOME/.local/bin"; install -m 755 "$dir/package/copilot" "$HOME/.local/bin/copilot"; '
