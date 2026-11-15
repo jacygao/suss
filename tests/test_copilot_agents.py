@@ -25,6 +25,7 @@ from harbor.agents.installed.copilot_cli import CopilotCli as HarborCopilotCli
 from harbor.models.agent.context import AgentContext
 from harbor.models.trial.config import AgentConfig as TrialAgentConfig
 
+from swe_drill import judge
 from swe_drill.agents.copilot_cli import CopilotCli
 from swe_drill.agents import squiz as squiz_agent_module
 from swe_drill.agents.hve import CopilotCliHve, full_auto_prompt
@@ -647,6 +648,38 @@ def test_squiz_is_configured_for_the_local_venue_with_copilot_reviewing_and_fixi
         "fixer": "copilot",
         "copilotTokenFile": str(box / "sandbox" / "home" / ".local" / "share" / "swe-drill" / "copilot-token"),
     }
+
+
+def test_squizs_reviewer_runs_on_the_arms_reviewer_model_and_effort(box, local_environment, monkeypatch):
+    publish_squiz(box, monkeypatch)
+    squiz_host(box, CLOSING_HOST)
+
+    run(box, local_environment, squiz_agent(box, reviewer_model="claude-sonnet-5.5", reviewer_effort="high"))
+
+    settings = json.loads((box / "sandbox" / "gleam" / ".squiz.json").read_text())
+    assert (settings["model"], settings["thinking"]) == ("claude-sonnet-5.5", "high")
+
+
+@pytest.mark.parametrize("kwargs", [{"reviewer_effort": "huge"}, {"reviewer_model": ""}, {"reviewer_model": 5}])
+def test_a_reviewer_setting_squiz_would_refuse_is_refused_before_a_sandbox_starts(box, kwargs):
+    with pytest.raises(ValueError, match=r"reviewer_\w+ must be"):
+        squiz_agent(box, **kwargs)
+
+
+def test_a_squiz_sessions_model_and_effort_are_read_from_its_stored_events():
+    # A session's stored events.jsonl, as squiz's reviewer leaves it, has no model.call_start.
+    stored = "".join(json.dumps(event) + "\n" for event in (
+        {"type": "session.start", "data": {"selectedModel": ""}},
+        {"type": "session.model_change", "data": {"newModel": "claude-sonnet-5.5", "reasoningEffort": "high"}},
+        {"type": "session.usage_record", "data": {"usage": {"model": "claude-sonnet-5.5", "outputTokens": 131}}},
+    ))
+
+    events = judge.read_events(stored)
+
+    assert events["reported_models"] == ["claude-sonnet-5.5"]
+    assert events["reported_efforts"] == ["high"]
+    assert re.search(judge.EVENT_LINES.strip("'"), '"type": "session.usage_record"'), "the grep drops the record"
+    assert re.search(judge.EVENT_LINES.strip("'"), '"type": "session.model_change"'), "the grep drops the change"
 
 
 def test_squizs_reviewer_and_fixer_get_the_token_from_a_private_file_removed_after_the_run(

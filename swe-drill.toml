@@ -22,7 +22,7 @@ kwargs = { version = "1.0.107", reasoning_effort = "high", hve_core_commit = "55
 [arms."squiz-gpt-6.1-sol"]
 agent = "swe_drill.agents.squiz:CopilotCliSquiz"
 model = "gpt-6.1-sol"
-kwargs = { version = "1.0.107", reasoning_effort = "high", squiz_version = "0.3.2" }
+kwargs = { version = "1.0.107", reasoning_effort = "high", squiz_version = "0.3.2", reviewer_model = "claude-sonnet-5.5", reviewer_effort = "high" }
 
 [arms.claude-sonnet]
 agent = "swe_drill.agents.claude_code:ClaudeCode"

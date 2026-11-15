@@ -68,7 +68,8 @@ RETRY_RESERVE = 20.0
 RETRIED = ("failed:no_json", "failed:invalid_answer")
 # Each running session's JSON lines that the record reads. The rest are deltas.
 EVENTS = ("model.call_start", "model.call_final_result", "assistant.message",
-          "session.usage_checkpoint", "tool.execution_start", "result")
+          "session.usage_checkpoint", "tool.execution_start", "result",
+          "session.usage_record", "session.model_change")
 EVENT_LINES = shlex.quote('"type": ?"(' + "|".join(re.escape(e) for e in EVENTS) + ')"')
 SENIOR_SECONDS = 300
 # The AI credits each of the validation agent's and its review judge's sessions may spend.
@@ -297,8 +298,9 @@ def read_events(text: str) -> dict[str, Any]:
     efforts Copilot CLI reports it used, the calls, and the final reply.
 
     Credits are the largest `totalNanoAiu` of its usage checkpoints, over 1e9,
-    or None where it reported none. The models are those of its model calls,
-    and the efforts those its usage checkpoints name.
+    or None where it reported none. The models are those of its model calls
+    and usage records, and the efforts those its usage checkpoints and model
+    changes name.
     """
     events = []
     for line in text.splitlines():
@@ -310,6 +312,8 @@ def read_events(text: str) -> dict[str, Any]:
     nano = [d.get("totalNanoAiu") for kind, d in data if kind == "session.usage_checkpoint"]
     nano = [n for n in nano if isinstance(n, (int, float))]
     models = {d.get("model") for kind, d in data if kind in ("model.call_start", "model.call_final_result")}
+    # A session's stored events have no model calls, only its usage records.
+    models |= {(d.get("usage") or {}).get("model") for kind, d in data if kind == "session.usage_record"}
     efforts = {
         state.get("reasoning_effort")
         for kind, d in data
@@ -317,6 +321,7 @@ def read_events(text: str) -> dict[str, Any]:
         for entry in d.get("promptCacheBreakState") or []
         for state in (entry.get("models") or {}).values()
     }
+    efforts |= {d.get("reasoningEffort") for kind, d in data if kind == "session.model_change"}
     messages = [d.get("content") or "" for kind, d in data if kind == "assistant.message"]
     tools: dict[str, int] = {}
     for kind, d in data:
