@@ -468,7 +468,7 @@ def test_an_agent_file_with_no_full_auto_prompt_is_refused(text):
 # squiz
 
 
-SQUIZ_VERSION = "0.3.1"
+SQUIZ_VERSION = "0.3.2"
 # Records each call, writes squiz's base.json where squiz's hooks were loaded,
 # as its SessionStart does, prints the stream, makes a change, and leaves
 # squiz-host.sh running detached, as squiz's round host outlives the run.
@@ -641,7 +641,32 @@ def test_squiz_is_configured_for_the_local_venue_with_copilot_reviewing_and_fixi
     run(box, local_environment, squiz_agent(box))
 
     settings = json.loads((box / "sandbox" / "gleam" / ".squiz.json").read_text())
-    assert settings == {"venue": "local", "reviewer": "copilot", "fixer": "copilot"}
+    assert settings == {
+        "venue": "local",
+        "reviewer": "copilot",
+        "fixer": "copilot",
+        "copilotTokenFile": str(box / "sandbox" / "home" / ".local" / "share" / "swe-drill" / "copilot-token"),
+    }
+
+
+def test_squizs_reviewer_and_fixer_get_the_token_from_a_private_file_removed_after_the_run(
+    box, local_environment, monkeypatch
+):
+    publish_squiz(box, monkeypatch)
+    # Copilot CLI gives its hooks no COPILOT_GITHUB_TOKEN, so the round host reads the file .squiz.json names.
+    squiz_host(box, (
+        "file=$(sed -n 's/.*\"copilotTokenFile\": \"\\([^\"]*\\)\".*/\\1/p' .squiz.json)\n"
+        f"cat \"$file\" > {bin_dir(box)}/token.seen\n"
+        f"stat -c %a \"$file\" 2>/dev/null > {bin_dir(box)}/token.mode || stat -f %Lp \"$file\" > {bin_dir(box)}/token.mode\n"
+    ) + CLOSING_HOST)
+
+    run(box, local_environment, squiz_agent(box))
+
+    token_file = box / "sandbox" / "home" / ".local" / "share" / "swe-drill" / "copilot-token"
+    assert (bin_dir(box) / "token.seen").read_text() == TOKEN, "squiz's round host could not read the token"
+    assert (bin_dir(box) / "token.mode").read_text().strip() == "600"
+    assert not token_file.exists(), "the token file outlived the run"
+    assert TOKEN not in (logs(box) / "model.patch").read_text()
 
 
 def test_squizs_files_are_never_in_the_patch(box, local_environment, monkeypatch):
@@ -769,6 +794,12 @@ def test_squiz_install_fails_when_the_archive_is_another_squiz_version(box, loca
 
     with pytest.raises(RuntimeError, match="0.3.0"):
         go(squiz_agent(box).setup(local_environment))
+
+
+@pytest.mark.parametrize("version", ["0.3.1", "0.2.9", "0.1.0"])
+def test_a_squiz_before_0_3_2_is_refused_since_its_reviewer_gets_no_token(box, version):
+    with pytest.raises(ValueError, match="0.3.2"):
+        agent(box, CopilotCliSquiz, squiz_version=version)
 
 
 @pytest.mark.parametrize("version", ["latest", "0.3", "v0.3.1", 3])

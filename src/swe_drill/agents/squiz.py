@@ -19,6 +19,8 @@ NODE_SHA256 = {
     "arm64": "73afc234d558c24919875f51c2d1ea002a2ada4ea6f83601a383869fefa64eed",
 }
 EXACT_VERSION = re.compile(r"\d+\.\d+\.\d+")
+# The first squiz whose reviewer and fixer sign in from `copilotTokenFile`, since Copilot CLI gives its hooks no token.
+LEAST_VERSION = (0, 3, 2)
 SETTINGS = {"venue": "local", "reviewer": "copilot", "fixer": "copilot"}
 # How often the wait for squiz's close looks for it.
 POLL_SECONDS = 2
@@ -40,6 +42,10 @@ class CopilotCliSquiz(CopilotCli):
     squiz keeps its settings in the workspace's .squiz.json and its state in
     .squiz/, which .git/info/exclude keeps out of the patch. Its state is
     copied to the logs once the run ends.
+
+    Copilot CLI gives its hooks no COPILOT_GITHUB_TOKEN, so squiz's reviewer
+    and fixer sign in from a token file outside the workspace, which exists
+    only while the agent runs.
     """
 
     KWARGS = (*CopilotCli.KWARGS, "squiz_version")
@@ -57,13 +63,19 @@ class CopilotCliSquiz(CopilotCli):
     }
 
     def __init__(self, *, squiz_version: Any, **kwargs: Any):
-        """Raises ValueError for a `squiz_version` that is not exact, as 0.3.1 is."""
+        """Raises ValueError for a `squiz_version` that is not exact, as 0.3.2 is, or is before 0.3.2."""
         if not isinstance(squiz_version, str) or not EXACT_VERSION.fullmatch(squiz_version):
-            raise ValueError(f"squiz_version must be an exact version, as 0.3.1 is, not {squiz_version!r}")
+            raise ValueError(f"squiz_version must be an exact version, as 0.3.2 is, not {squiz_version!r}")
+        if tuple(int(part) for part in squiz_version.split(".")) < LEAST_VERSION:
+            raise ValueError(
+                f"squiz_version {squiz_version} is before 0.3.2, whose reviewer and fixer"
+                " are the first to sign in from a token file"
+            )
         super().__init__(squiz_version=squiz_version, **kwargs)
         self.squiz_version = squiz_version
         self.squiz_installed: str | None = None
         self._plugin: str | None = None
+        self._token_file: str | None = None
 
     async def install(self, environment: BaseEnvironment) -> None:
         """
@@ -124,6 +136,7 @@ class CopilotCliSquiz(CopilotCli):
             raise RuntimeError(f"the archive of squiz {self.squiz_version} installed squiz {reported}")
         self.squiz_installed = reported
         self._plugin = plugin
+        self._token_file = f"{home}/.local/share/swe-drill/copilot-token"
 
     def build_cli_flags(self) -> str:
         if self._plugin is None:
@@ -132,13 +145,25 @@ class CopilotCliSquiz(CopilotCli):
 
     async def _before_agent(self, environment: BaseEnvironment) -> None:
         """
-        Write the workspace's .squiz.json, and keep it and .squiz/ out of git.
+        Write the token file, as the agent's user and readable by it alone,
+        then the workspace's .squiz.json, and keep it and .squiz/ out of git.
 
         Raises NonZeroAgentExitCodeError, so the trial is graded with no change,
         when the workspace already has either, which is the task's, or when its
         own ignore rules keep either in the patch.
         """
-        settings = shlex.quote(json.dumps(SETTINGS))
+        if self._token_file is None:
+            raise RuntimeError("CopilotCliSquiz ran before install placed squiz")
+        token_file = shlex.quote(self._token_file)
+        # The token reaches the file from the environment, so no command line holds it.
+        written = await self.exec_as_agent(
+            environment,
+            f"umask 077 && mkdir -p \"$(dirname {token_file})\" && rm -f {token_file}"
+            f' && printf %s "${self.TOKEN}" > {token_file}',
+        )
+        if written.return_code != 0:
+            raise NonZeroAgentExitCodeError(f"cannot write the token file {self._token_file}")
+        settings = shlex.quote(json.dumps({**SETTINGS, "copilotTokenFile": self._token_file}))
         result = await environment.exec(
             "fail() { echo \"$1\"; exit 1; }; "
             "for path in .squiz.json .squiz; do"
@@ -188,7 +213,12 @@ class CopilotCliSquiz(CopilotCli):
             await asyncio.sleep(POLL_SECONDS)
 
     async def _record(self, environment: BaseEnvironment, status: str, run_seconds: float) -> None:
-        """Copy squiz's state and its fixer's sessions to the logs, then record the trial as CopilotCli does."""
+        """
+        Remove the token file, copy squiz's state and its fixer's sessions to
+        the logs, then record the trial as CopilotCli does.
+        """
+        if self._token_file is not None:
+            await environment.exec(f"rm -f {shlex.quote(self._token_file)}")
         await self._keep_squiz(environment)
         await super()._record(environment, status, run_seconds)
 
