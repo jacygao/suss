@@ -22,6 +22,8 @@ EXACT_VERSION = re.compile(r"\d+\.\d+\.\d+")
 # The first squiz whose reviewer and fixer sign in from `copilotTokenFile`, since Copilot CLI gives its hooks no token.
 LEAST_VERSION = (0, 3, 2)
 SETTINGS = {"venue": "local", "reviewer": "copilot", "fixer": "copilot"}
+# The values squiz's `thinking` takes.
+REVIEWER_EFFORTS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 # How often the wait for squiz's close looks for it.
 POLL_SECONDS = 2
 # The ids Copilot CLI names a session's directory by, which are then safe in a path.
@@ -48,7 +50,7 @@ class CopilotCliSquiz(CopilotCli):
     only while the agent runs.
     """
 
-    KWARGS = (*CopilotCli.KWARGS, "squiz_version")
+    KWARGS = (*CopilotCli.KWARGS, "squiz_version", "reviewer_model", "reviewer_effort")
     REQUIRED_KWARGS = ("version", "squiz_version")
     # squiz's hooks and its wake run only with Copilot CLI's experimental features on.
     GLOBAL_FLAGS = ("--experimental",)
@@ -62,8 +64,19 @@ class CopilotCliSquiz(CopilotCli):
         ),
     }
 
-    def __init__(self, *, squiz_version: Any, **kwargs: Any):
-        """Raises ValueError for a `squiz_version` that is not exact, as 0.3.2 is, or is before 0.3.2."""
+    def __init__(self, *, squiz_version: Any, reviewer_model: Any = None, reviewer_effort: Any = None, **kwargs: Any):
+        """
+        Raises ValueError for a `squiz_version` that is not exact, as 0.3.2 is,
+        or is before 0.3.2, and for a `reviewer_model` or `reviewer_effort`
+        squiz would refuse.
+
+        The reviewer runs on Copilot's own default model and squiz's default
+        effort where the arm names none.
+        """
+        if reviewer_model is not None and (not isinstance(reviewer_model, str) or not reviewer_model.strip()):
+            raise ValueError(f"reviewer_model must be a Copilot CLI model name, not {reviewer_model!r}")
+        if reviewer_effort is not None and reviewer_effort not in REVIEWER_EFFORTS:
+            raise ValueError(f"reviewer_effort must be one of {', '.join(REVIEWER_EFFORTS)}, not {reviewer_effort!r}")
         if not isinstance(squiz_version, str) or not EXACT_VERSION.fullmatch(squiz_version):
             raise ValueError(f"squiz_version must be an exact version, as 0.3.2 is, not {squiz_version!r}")
         if tuple(int(part) for part in squiz_version.split(".")) < LEAST_VERSION:
@@ -71,7 +84,12 @@ class CopilotCliSquiz(CopilotCli):
                 f"squiz_version {squiz_version} is before 0.3.2, whose reviewer and fixer"
                 " are the first to sign in from a token file"
             )
-        super().__init__(squiz_version=squiz_version, **kwargs)
+        super().__init__(
+            squiz_version=squiz_version, reviewer_model=reviewer_model, reviewer_effort=reviewer_effort, **kwargs
+        )
+        self.reviewer = {
+            key: value for key, value in (("model", reviewer_model), ("thinking", reviewer_effort)) if value is not None
+        }
         self.squiz_version = squiz_version
         self.squiz_installed: str | None = None
         self._plugin: str | None = None
@@ -163,7 +181,7 @@ class CopilotCliSquiz(CopilotCli):
         )
         if written.return_code != 0:
             raise NonZeroAgentExitCodeError(f"cannot write the token file {self._token_file}")
-        settings = shlex.quote(json.dumps({**SETTINGS, "copilotTokenFile": self._token_file}))
+        settings = shlex.quote(json.dumps({**SETTINGS, **self.reviewer, "copilotTokenFile": self._token_file}))
         result = await environment.exec(
             "fail() { echo \"$1\"; exit 1; }; "
             "for path in .squiz.json .squiz; do"
