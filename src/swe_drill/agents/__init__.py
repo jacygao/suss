@@ -64,6 +64,8 @@ class Adapter:
     KWARGS: ClassVar[tuple[str, ...]] = ()
     REQUIRED_KWARGS: ClassVar[tuple[str, ...]] = ()
     REQUIRES_MODEL: ClassVar[bool] = False
+    # The status of a trial Harbor stopped at its agent timeout once the agent had exited, during _after_agent.
+    AFTER_AGENT_TIMED_OUT: ClassVar[str] = "timed-out"
 
     def __init__(
         self,
@@ -171,9 +173,11 @@ class Adapter:
         write suss.json.
 
         The trial is `timed-out` when Harbor cancels the run at its agent
-        timeout, `harness-failed` when the agent raises, and `ok` otherwise. The agent's exception, and Harbor's
-        cancel, are raised once the record is written, the cancel within
-        CLEANUP_SECONDS so Harbor still sees its timeout.
+        timeout, or AFTER_AGENT_TIMED_OUT when the cancel comes once the agent
+        has exited, `harness-failed` when the agent raises, and otherwise what
+        `_after_agent` returns. The agent's exception, and Harbor's cancel, are
+        raised once the record is written, the cancel within CLEANUP_SECONDS so
+        Harbor still sees its timeout.
         """
         if self._prepared is None:
             raise RuntimeError(f"{type(self).__name__}.run was called before setup")
@@ -181,11 +185,14 @@ class Adapter:
         status = "ok"
         raised: BaseException | None = None
         started = time.monotonic()
+        exited = False
         try:
             await self._before_agent(environment)
             await super().run(instruction, environment, context)
+            exited = True
+            status = await self._after_agent(environment)
         except asyncio.CancelledError as cancelled:
-            status, raised = "timed-out", cancelled
+            status, raised = (self.AFTER_AGENT_TIMED_OUT if exited else "timed-out"), cancelled
         except BaseException as error:
             status, raised = "harness-failed", error
         run_seconds = time.monotonic() - started
@@ -270,6 +277,7 @@ class Adapter:
             "run_seconds": run_seconds,
             "patch_bytes": patch_bytes,
             "usage": await self._usage(environment),
+            **await self._details(environment),
         }
         await sandbox.upload_bytes(
             environment,
@@ -280,9 +288,21 @@ class Adapter:
     async def _before_agent(self, environment: BaseEnvironment) -> None:
         """Prepare the workspace for the agent. A failure here is the agent's, as its run's would be."""
 
+    async def _after_agent(self, environment: BaseEnvironment) -> str:
+        """
+        Wait, once the agent has exited, for whatever of its work goes on
+        after it, and return the trial's status. Nothing is stopped or
+        captured until it returns. A failure here is the agent's.
+        """
+        return "ok"
+
     async def _usage(self, environment: BaseEnvironment) -> dict[str, Any] | None:
         """What the agent reports it spent, for suss.json. None for an agent that reports nothing SWE-drill reads."""
         return None
+
+    async def _details(self, environment: BaseEnvironment) -> dict[str, Any]:
+        """Further fields of suss.json, which an agent whose record holds only the ones above leaves empty."""
+        return {}
 
 
 def grader(settings: config.Config, lane: str) -> dict[str, str]:
@@ -329,8 +349,8 @@ def agent_class(import_path: str, path: Path, arm: str) -> type[Adapter]:
         raise ConfigError(
             f"{path}: [arms.{arm}] agent = {import_path!r} is not an agent built on "
             "swe_drill.agents.Adapter, and only such an agent leaves the patch its trial is "
-            "graded by; use swe_drill.agents.copilot_cli:CopilotCli, swe_drill.agents.hve:CopilotCliHve or"
-            " swe_drill.agents.claude_code:ClaudeCode"
+            "graded by; use swe_drill.agents.copilot_cli:CopilotCli, swe_drill.agents.hve:CopilotCliHve,"
+            " swe_drill.agents.squiz:CopilotCliSquiz or swe_drill.agents.claude_code:ClaudeCode"
         )
     return found
 

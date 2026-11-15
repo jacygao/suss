@@ -1,7 +1,7 @@
 """Copilot CLI as the judge and the Copilot CLI adapters install it."""
 
 import re
-from typing import Any
+from typing import Any, ClassVar
 
 from harbor.agents.installed.copilot_cli import CopilotCli
 from harbor.environments.base import BaseEnvironment
@@ -16,6 +16,9 @@ class NpmCopilotCli(CopilotCli):
     of the version, and needs no Node to run. GitHub's release downloads fail
     for hours at a time while npm's registry serves.
     """
+
+    # Flags every Copilot CLI command this agent starts passes, its install's check of the version among them.
+    GLOBAL_FLAGS: ClassVar[tuple[str, ...]] = ()
 
     def __init__(self, **kwargs: Any):
         """
@@ -45,6 +48,10 @@ class NpmCopilotCli(CopilotCli):
                 'mkdir -p "$HOME/.local/bin"; install -m 755 "$dir/package/copilot" "$HOME/.local/bin/copilot"; '
                 "echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc; "
                 'export PATH="$HOME/.local/bin:$PATH"; '
-                "copilot --version"
+                f"{self.version_check()}"
             ),
         )
+
+    def version_check(self) -> str:
+        """The command that prints the installed Copilot CLI's version, run where $HOME/.local/bin is on PATH."""
+        return " ".join(["copilot", *self.GLOBAL_FLAGS, "--version"])
