@@ -57,7 +57,14 @@ def main() -> int:
     prompt = flags["-p"][0]
     # A prompt too long for one argument is passed as a file the session reads.
     pointed = re.match(r"Your instructions are in (\S+?)\. ", prompt)
-    instructions = Path(pointed.group(1)).read_text() if pointed else prompt
+    if pointed:
+        path = Path(pointed.group(1)).resolve()
+        # As Copilot CLI does with -p: no file outside the working directory unless every path is allowed.
+        if "--allow-all-paths" not in argv and not path.is_relative_to(Path.cwd().resolve()):
+            print(f"Permission denied and could not request permission from user: path is outside"
+                  f" allowed working directory {os.getcwd()} in non-interactive session", file=sys.stderr)
+            return 1
+    instructions = path.read_text() if pointed else prompt
     scenarios = json.loads((SCENARIO_DIR / "scenario.json").read_text())
     states = Path(os.environ["COPILOT_HOME"]) / "session-state"
     resumed = (flags.get("--resume") or [None])[0]
