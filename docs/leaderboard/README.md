@@ -12,15 +12,15 @@ SWE-rebench's July 2026 snapshot: 108 GitHub issues from open-source
 repositories, each graded by its own hidden tests. The table ranks arms by
 resolved rate, as `swe-drill leaderboard --lane rebench` does.
 
-| Arm | Harness | Model | Date | Runs | Resolved rate | pass@k | Timed out | Cost per run, USD at pay-as-you-go prices | Agent time per run, sum of trials |
-|---|---|---|---|---:|---:|---:|---:|---:|---:|
-| `claude-opus` | Claude Code 2.1.311 | claude-opus-5-5, effort high | 2026-11-09, 2026-11-11 | 2 | 66% ±9 | 70% @2 | 5 | $120.40 | 17.3 h |
-| `copilot-opus` | Copilot CLI 1.0.107 | claude-opus-5.5, effort high | 2026-11-12, 2026-11-12, 2026-11-13 | 3 | 65% ±8 | 75% @3 | 17 | $119.09 | 27.6 h |
-| `copilot-sonnet` | Copilot CLI 1.0.107 | claude-sonnet-5.5, effort high | 2026-11-09, 2026-11-10, 2026-11-10 | 3 | 64% ±8 | 74% @3 | 5 | $35.39 | 15.0 h |
-| `squiz-gpt-6.1-sol` | Copilot CLI 1.0.107 with squiz 0.3.2 | gpt-6.1-sol, effort high; reviewer claude-sonnet-5.5, effort high | 2026-11-15, 2026-11-15, 2026-11-15 | 3 | 64% ±8 | 72% @3 | 3 | $63.82 | 18.8 h |
-| `copilot-fusion-high` | Copilot CLI 1.0.107 | Fusion, tier high | 2026-11-14, 2026-11-14, 2026-11-14 | 3 | 63% ±9 | 69% @3 | 4 | $31.92 | 16.8 h |
-| `copilot-fusion` | Copilot CLI 1.0.107 | Fusion, tier standard | 2026-11-13, 2026-11-13, 2026-11-13 | 3 | 62% ±9 | 67% @3 | 0 | $15.23 | 12.4 h |
-| `copilot-gpt-6.1-sol` | Copilot CLI 1.0.107 | gpt-6.1-sol, effort high | 2026-11-14, 2026-11-14, 2026-11-14 | 3 | 62% ±9 | 67% @3 | 1 | $44.06 | 14.8 h |
+| Arm | Agent | Harness | Model | Date | Runs | Resolved rate | pass@k | Timed out | Cost per run, USD at pay-as-you-go prices | Agent time per run, sum of trials |
+|---|---|---|---|---|---:|---:|---:|---:|---:|---:|
+| `claude-opus` | Claude Code 2.1.311 | Default | claude-opus-5-5, effort high | 2026-11-09, 2026-11-11 | 2 | 66% ±9 | 70% @2 | 5 | $120.40 | 17.3 h |
+| `copilot-opus` | Copilot CLI 1.0.107 | Default | claude-opus-5.5, effort high | 2026-11-12, 2026-11-12, 2026-11-13 | 3 | 65% ±8 | 75% @3 | 17 | $119.09 | 27.6 h |
+| `copilot-sonnet` | Copilot CLI 1.0.107 | Default | claude-sonnet-5.5, effort high | 2026-11-09, 2026-11-10, 2026-11-10 | 3 | 64% ±8 | 74% @3 | 5 | $35.39 | 15.0 h |
+| `squiz-gpt-6.1-sol` | Copilot CLI 1.0.107 | Peer review by squiz 0.3.2, claude-sonnet-5.5 reviewer at effort high | gpt-6.1-sol, effort high | 2026-11-15, 2026-11-15, 2026-11-15 | 3 | 64% ±8 | 72% @3 | 3 | $63.82 | 18.8 h |
+| `copilot-fusion-high` | Copilot CLI 1.0.107 | Default | Fusion, tier high | 2026-11-14, 2026-11-14, 2026-11-14 | 3 | 63% ±9 | 69% @3 | 4 | $31.92 | 16.8 h |
+| `copilot-fusion` | Copilot CLI 1.0.107 | Default | Fusion, tier standard | 2026-11-13, 2026-11-13, 2026-11-13 | 3 | 62% ±9 | 67% @3 | 0 | $15.23 | 12.4 h |
+| `copilot-gpt-6.1-sol` | Copilot CLI 1.0.107 | Default | gpt-6.1-sol, effort high | 2026-11-14, 2026-11-14, 2026-11-14 | 3 | 62% ±9 | 67% @3 | 1 | $44.06 | 14.8 h |
 
 | Arm | Job | Where it ran | Params | Median trial |
 |---|---|---|---|---:|
@@ -94,9 +94,9 @@ patch for quality with senior's rubric and taste judges.
 
 ### Correctness
 
-| Arm | Harness | Model | Date | Investigate tasks | Runs | Resolved | Resolved share | Design tasks graded | AI credits | Agent time, sum of trials |
-|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
-| `copilot-gpt` | `copilot-cli` | gpt-6.1-sol | 2026-11-05 | 25 | 1 | 8 | 32% | 0 of 25 | 4,739 (≈ $47) | 11.3 h |
+| Arm | Agent | Harness | Model | Date | Investigate tasks | Runs | Resolved | Resolved share | Design tasks graded | AI credits | Agent time, sum of trials |
+|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `copilot-gpt` | `copilot-cli` | Default | gpt-6.1-sol | 2026-11-05 | 25 | 1 | 8 | 32% | 0 of 25 | 4,739 (≈ $47) | 11.3 h |
 
 ### Code quality
 
@@ -128,6 +128,9 @@ patch for quality with senior's rubric and taste judges.
 
 ## How to read the columns
 
+- **Agent:** the coding agent and its version. **Harness:** what runs around
+  it. Default is the agent alone; peer review is squiz reviewing each change
+  the agent makes, with a fixer that answers the findings.
 - **Runs:** how many times the arm ran every task, one trial per task each
   time. Trial counts and rates pool all runs; cost and agent time are per run.
 - **Resolved rate:** resolved trials over valid trials. The ± is half its 95%
@@ -146,11 +149,11 @@ patch for quality with senior's rubric and taste judges.
 SWE-bench Pro, which SWE-drill no longer runs: Sonnet 5.5 on plain Copilot CLI
 resolved 98% of `pro-go`, leaving no room to tell harnesses apart.
 
-| Lane | Arm | Harness | Model | Date | Tasks | Resolved | Unresolved | Invalid | Timed out | Harness failed | Resolved share | AI credits | Agent time, sum of trials | Elapsed |
-|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `pro-hard51-rerun113` | `copilot-sonnet` | `copilot-cli` | claude-sonnet-5.5 | 2026-11-03 | 10 | 10 | 0 | 0 | 0 | 0 | 100% | 245 (≈ $2.45) | 18.0 min | 5 min |
-| `pro-go` | `copilot-sonnet` | `copilot-cli` | claude-sonnet-5.5 | 2026-11-03 | 256 | 252 | 4 | 0 | 0 | 0 | 98% | 3,562 (≈ $36) | 14.0 h | 0.7 h |
-| `pro-hard51` | `copilot-sonnet` | `copilot-cli` | claude-sonnet-5.5 | 2026-11-03 | 51 | 35 | 16 | 0 | 0 | 10 | 69% | 1,055 (≈ $11) | 2.8 h | 0.3 h |
+| Lane | Arm | Agent | Harness | Model | Date | Tasks | Resolved | Unresolved | Invalid | Timed out | Harness failed | Resolved share | AI credits | Agent time, sum of trials | Elapsed |
+|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `pro-hard51-rerun113` | `copilot-sonnet` | `copilot-cli` | Default | claude-sonnet-5.5 | 2026-11-03 | 10 | 10 | 0 | 0 | 0 | 0 | 100% | 245 (≈ $2.45) | 18.0 min | 5 min |
+| `pro-go` | `copilot-sonnet` | `copilot-cli` | Default | claude-sonnet-5.5 | 2026-11-03 | 256 | 252 | 4 | 0 | 0 | 0 | 98% | 3,562 (≈ $36) | 14.0 h | 0.7 h |
+| `pro-hard51` | `copilot-sonnet` | `copilot-cli` | Default | claude-sonnet-5.5 | 2026-11-03 | 51 | 35 | 16 | 0 | 0 | 10 | 69% | 1,055 (≈ $11) | 2.8 h | 0.3 h |
 
 | Lane | Job | Params | Median trial |
 |---|---|---|---:|

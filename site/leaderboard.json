@@ -7,7 +7,8 @@
     "arms": [
       {
         "name": "claude-opus",
-        "harness": "Claude Code 2.1.311",
+        "agent": "Claude Code 2.1.311",
+        "harness": "Default",
         "model": "claude-opus-5-5, effort high",
         "rate": 0.66,
         "margin": 0.09,
@@ -36,7 +37,8 @@
       },
       {
         "name": "copilot-opus",
-        "harness": "Copilot CLI 1.0.107",
+        "agent": "Copilot CLI 1.0.107",
+        "harness": "Default",
         "model": "claude-opus-5.5, effort high",
         "rate": 0.65,
         "margin": 0.08,
@@ -71,7 +73,8 @@
       },
       {
         "name": "copilot-sonnet",
-        "harness": "Copilot CLI 1.0.107",
+        "agent": "Copilot CLI 1.0.107",
+        "harness": "Default",
         "model": "claude-sonnet-5.5, effort high",
         "rate": 0.64,
         "margin": 0.08,
@@ -106,8 +109,10 @@
       },
       {
         "name": "squiz-gpt-6.1-sol",
-        "harness": "Copilot CLI 1.0.107 with squiz 0.3.2",
-        "model": "gpt-6.1-sol, effort high; reviewer claude-sonnet-5.5, effort high",
+        "agent": "Copilot CLI 1.0.107",
+        "harness": "Peer review (squiz)",
+        "harnessDetail": "Peer review by squiz 0.3.2, claude-sonnet-5.5 reviewer at effort high",
+        "model": "gpt-6.1-sol, effort high",
         "rate": 0.642,
         "margin": 0.0833,
         "pass": 0.7222,
@@ -141,7 +146,8 @@
       },
       {
         "name": "copilot-fusion-high",
-        "harness": "Copilot CLI 1.0.107",
+        "agent": "Copilot CLI 1.0.107",
+        "harness": "Default",
         "model": "Fusion, tier high",
         "rate": 0.6296,
         "margin": 0.0864,
@@ -176,7 +182,8 @@
       },
       {
         "name": "copilot-fusion",
-        "harness": "Copilot CLI 1.0.107",
+        "agent": "Copilot CLI 1.0.107",
+        "harness": "Default",
         "model": "Fusion, tier standard",
         "rate": 0.6235,
         "margin": 0.088,
@@ -211,7 +218,8 @@
       },
       {
         "name": "copilot-gpt-6.1-sol",
-        "harness": "Copilot CLI 1.0.107",
+        "agent": "Copilot CLI 1.0.107",
+        "harness": "Default",
         "model": "gpt-6.1-sol, effort high",
         "rate": 0.6204,
         "margin": 0.088,
@@ -255,7 +263,8 @@
     "arms": [
       {
         "name": "copilot-gpt",
-        "harness": "Copilot CLI 1.0.105",
+        "agent": "Copilot CLI 1.0.105",
+        "harness": "Default",
         "model": "gpt-6.1-sol, effort high",
         "resolved": 8,
         "investigate": 25,

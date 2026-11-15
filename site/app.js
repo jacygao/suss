@@ -91,8 +91,9 @@
         el("td", { class: "rank", text: String(i + 1) }),
         el("td", {}, [el("button", { type: "button", class: "arm-btn", "data-arm": arm.name, "aria-pressed": String(selected), on: { click: function () { pick(arm.name); } } }, [
           el("span", { class: "arm-name", text: arm.name }),
-          el("span", { class: "arm-sub", text: arm.harness + " · " + arm.model })
+          el("span", { class: "arm-sub", text: arm.agent + " · " + arm.model })
         ])]),
+        el("td", {}, [el("span", { class: "chip", text: arm.harness, title: arm.harnessDetail || arm.harness })]),
         el("td", {}, [el("div", { class: "rate-cell" }, [el("span", { class: "rate-text", text: pct(arm.rate), title: rateText(arm) }), track(arm)])]),
         el("td", { class: "num", text: passText(arm) }),
         el("td", { class: "num", text: String(arm.runs.length) }),
@@ -103,9 +104,9 @@
         el("td", {}, [el("span", { class: "chip", text: arm.where })])
       ]);
     });
-    var heads = ["#", "Arm", "Resolved rate", "pass@k", "Runs", "Timed out", "Cost / run", "Agent time / run", "Tokens / trial", "Ran on"];
+    var heads = ["#", "Arm", "Harness", "Resolved rate", "pass@k", "Runs", "Timed out", "Cost / run", "Agent time / run", "Tokens / trial", "Ran on"];
     var thead = el("tr", {}, heads.map(function (h, i) {
-      var cls = i >= 3 && i <= 8 ? "num" : "";
+      var cls = i >= 4 && i <= 9 ? "num" : "";
       if (h !== "Resolved rate") return el("th", { scope: "col", class: cls, text: h });
       return el("th", { scope: "col" }, [el("div", { text: h }), el("div", { class: "axis-labels", "aria-hidden": "true" }, ["50%", "60%", "70%", "80%"].map(function (t) { return el("span", { text: t }); }))]);
     }));
@@ -114,16 +115,16 @@
         el("div", {}, [el("h2", { id: "rank-title", text: "Ranked by resolved rate" }), el("p", { class: "small muted", text: "Select an arm to see its runs." })]),
         el("div", { class: "legend" }, [el("span", {}, [el("span", { class: "key-dot", "aria-hidden": "true" }), "Resolved rate"]), el("span", {}, [el("span", { class: "key-bar", "aria-hidden": "true" }), "95% interval"])])
       ]),
-      el("div", { class: "scroll" }, [el("table", { style: "min-width: 1080px" }, [el("thead", {}, [thead]), el("tbody", {}, rows)])]),
+      el("div", { class: "scroll" }, [el("table", { style: "min-width: 1160px" }, [el("thead", {}, [thead]), el("tbody", {}, rows)])]),
       el("div", { class: "card-foot" }, [icon("M8 7.2v4M8 4.8v.1"), el("span", {}, [el("strong", { text: "Gaps of a few points may be noise. " }), "Every interval here overlaps the others, and each covers an arm’s own rate, not the gap between two arms. An arm with one run shows no interval."])])
     ]));
 
     out.push(el("ol", { class: "cards", "aria-label": "Arms ranked by resolved rate" }, arms.map(function (arm, i) {
-      var facts = [["pass@k", passText(arm)], ["Cost / run", money(arm.cost)], ["Time / run", hours(arm.hours)], ["Runs", String(arm.runs.length)], ["Timed out", String(arm.timedOut)], ["Ran on", arm.where], ["Tokens / trial", tokens(arm.tokens)]];
+      var facts = [["Harness", arm.harnessDetail || arm.harness], ["pass@k", passText(arm)], ["Cost / run", money(arm.cost)], ["Time / run", hours(arm.hours)], ["Runs", String(arm.runs.length)], ["Timed out", String(arm.timedOut)], ["Ran on", arm.where], ["Tokens / trial", tokens(arm.tokens)]];
       return el("li", { class: "acard" }, [
         el("div", { class: "acard-top" }, [
           el("span", { class: "badge", text: String(i + 1) }),
-          el("div", { class: "who" }, [el("span", { class: "arm-name", text: arm.name }), el("span", { class: "arm-sub", text: arm.harness + " · " + arm.model })]),
+          el("div", { class: "who" }, [el("span", { class: "arm-name", text: arm.name }), el("span", { class: "arm-sub", text: arm.agent + " · " + arm.model })]),
           el("span", { class: "big", text: pct(arm.rate), title: rateText(arm) })
         ]),
         track(arm),
@@ -168,6 +169,7 @@
       el("section", { class: "card", "aria-labelledby": "read-title" }, [el("div", { class: "card-body" }, [
         el("h2", { id: "read-title", text: "How to read it" }),
         el("dl", { class: "read" }, [
+          ["Harness", "What runs around the coding agent. Default is the agent alone; peer review is squiz reviewing each change the agent makes, with a fixer that answers the findings."],
           ["Runs", "How many times the arm ran every task, one trial per task each time. Rates pool all runs; cost and time are per run."],
           ["Resolved rate", "Resolved trials over valid trials, with its 95% interval."],
           ["pass@k", "The share of tasks that at least one of the arm’s k runs resolved."],
@@ -201,7 +203,7 @@
         el("thead", {}, [el("tr", {}, ["Arm", "Resolved share", "Resolved", "Design graded", "Cost", "Agent time"].map(function (h, i) { return el("th", { scope: "col", class: i >= 2 ? "num" : "", text: h }); }))]),
         el("tbody", {}, lane.arms.map(function (arm) {
           return el("tr", {}, [
-            el("td", {}, [el("div", { style: "display: flex; flex-direction: column; gap: 2px" }, [el("span", { class: "arm-name", text: arm.name }), el("span", { class: "arm-sub", text: arm.harness + " · " + arm.model })])]),
+            el("td", {}, [el("div", { style: "display: flex; flex-direction: column; gap: 2px" }, [el("span", { class: "arm-name", text: arm.name }), el("span", { class: "arm-sub", text: arm.agent + " · " + arm.model })])]),
             el("td", {}, [el("div", { class: "rate-cell" }, [el("span", { class: "rate-text", text: pct(arm.share) }),
               el("div", { class: "track", "aria-hidden": "true" }, [el("div", { class: "axis" }), el("div", { class: "ci", style: "left: " + arm.lo * 100 + "%; width: " + (arm.hi - arm.lo) * 100 + "%" }), el("div", { class: "dot", style: "left: " + arm.share * 100 + "%" })])])]),
             el("td", { class: "num", text: arm.resolved + " of " + arm.investigate }),
