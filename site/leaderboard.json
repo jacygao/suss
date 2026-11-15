@@ -105,7 +105,7 @@
             "median": 3.9
           }
         ],
-        "note": ""
+        "note": "The three runs ran at once, one Azure region each, and no trial needed running again. apache__pulsar-25953 has no test result in any of the three runs, and counts as unresolved. Its three runs on a PC, which resolved 64%, are left out."
       },
       {
         "name": "squiz-gpt-6.1-sol",
