@@ -112,7 +112,7 @@
         "margin": 0.0833,
         "pass": 0.7222,
         "timedOut": 3,
-        "cost": 84.09,
+        "cost": 63.82,
         "hours": 18.8,
         "tokens": 1001000,
         "where": "Docker · Azure",
@@ -137,7 +137,7 @@
             "median": 7.7
           }
         ],
-        "note": "squiz reviews each change with claude-sonnet-5.5 and its fixer answers the findings; the cost counts both, $20.26 of the $84.09 a run. The review stopped short on seven trials, when squiz took its state file's lock too late, and those patches were graded as they stood. Five trials have no test result and count as unresolved. The three runs ran at once, one Azure region each."
+        "note": "squiz reviews each change with claude-sonnet-5.5 and its fixer answers the findings; the cost counts both, $20.26 of the $63.82 a run. The review stopped short on seven trials, when squiz took its state file's lock too late, and those patches were graded as they stood. Five trials have no test result and count as unresolved. The three runs ran at once, one Azure region each."
       },
       {
         "name": "copilot-fusion-high",

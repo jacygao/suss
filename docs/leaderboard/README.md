@@ -17,7 +17,7 @@ resolved rate, as `swe-drill leaderboard --lane rebench` does.
 | `claude-opus` | Claude Code 2.1.311 | claude-opus-5-5, effort high | 2026-11-09, 2026-11-11 | 2 | 66% ±9 | 70% @2 | 5 | $120.40 | 17.3 h |
 | `copilot-opus` | Copilot CLI 1.0.107 | claude-opus-5.5, effort high | 2026-11-12, 2026-11-12, 2026-11-13 | 3 | 65% ±8 | 75% @3 | 17 | $119.09 | 27.6 h |
 | `copilot-sonnet` | Copilot CLI 1.0.107 | claude-sonnet-5.5, effort high | 2026-11-09, 2026-11-10, 2026-11-10 | 3 | 64% ±8 | 74% @3 | 5 | $35.39 | 15.0 h |
-| `squiz-gpt-6.1-sol` | Copilot CLI 1.0.107 with squiz 0.3.2 | gpt-6.1-sol, effort high; reviewer claude-sonnet-5.5, effort high | 2026-11-15, 2026-11-15, 2026-11-15 | 3 | 64% ±8 | 72% @3 | 3 | $84.09 | 18.8 h |
+| `squiz-gpt-6.1-sol` | Copilot CLI 1.0.107 with squiz 0.3.2 | gpt-6.1-sol, effort high; reviewer claude-sonnet-5.5, effort high | 2026-11-15, 2026-11-15, 2026-11-15 | 3 | 64% ±8 | 72% @3 | 3 | $63.82 | 18.8 h |
 | `copilot-fusion-high` | Copilot CLI 1.0.107 | Fusion, tier high | 2026-11-14, 2026-11-14, 2026-11-14 | 3 | 63% ±9 | 69% @3 | 4 | $31.92 | 16.8 h |
 | `copilot-fusion` | Copilot CLI 1.0.107 | Fusion, tier standard | 2026-11-13, 2026-11-13, 2026-11-13 | 3 | 62% ±9 | 67% @3 | 0 | $15.23 | 12.4 h |
 | `copilot-gpt-6.1-sol` | Copilot CLI 1.0.107 | gpt-6.1-sol, effort high | 2026-11-14, 2026-11-14, 2026-11-14 | 3 | 62% ±9 | 67% @3 | 1 | $44.06 | 14.8 h |
@@ -65,8 +65,10 @@ resolved rate, as `swe-drill leaderboard --lane rebench` does.
   unresolved.** They are `apache__hugegraph-3037`'s in the second run and the
   third, which leave its tests nothing to run.
 - **`squiz-gpt-6.1-sol`'s cost counts squiz's reviewer and fixer.** Of its
-  $84.09 a run, the coding agent took $63.83, the reviewer $15.64 and the
-  fixer $4.62. The fixer ran on 26, 31 and 21 trials of the three runs.
+  $63.82 a run, the coding agent took $43.56, the reviewer $15.64 and the
+  fixer $4.62. The fixer ran on 26, 31 and 21 trials of the three runs. Two
+  trials of the first run timed out with no cost recorded, and its total
+  leaves them out.
 - **squiz's review stopped short on seven `squiz-gpt-6.1-sol` trials,** two or
   three a run, each because squiz took the lock on its state file only after
   its deadline had passed. Their patches were graded as they stood.
@@ -178,8 +180,7 @@ The `rebench` counts, credits and times come from each trial's records, with
 ```bash
 jq -r .status <job>/*/agent/suss.json | sort | uniq -c
 jq .verifier_result.rewards.reward <job>/*/result.json | sort | uniq -c
-jq -s 'map(.usage.ai_credits // empty) | add / 100' <job>/*/agent/suss.json  # Copilot CLI's cost
-jq -s 'map([.usage.ai_credits, .usage.squiz.reviewer.ai_credits, .usage.squiz.fixer.ai_credits] | map(. // 0) | add) | add / 100' <job>/*/agent/suss.json  # squiz's cost
+jq -s 'map(.usage.ai_credits // empty) | add / 100' <job>/*/agent/suss.json  # Copilot CLI's cost, squiz's reviewer and fixer included
 jq -s 'map(.agent_result.cost_usd // empty) | add' <job>/*/result.json      # Claude Code's cost
 jq -s 'map(.run_seconds) | add / 3600' <job>/*/agent/suss.json
 ```
