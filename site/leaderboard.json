@@ -76,33 +76,33 @@
         "agent": "Copilot CLI 1.0.107",
         "harness": "Default",
         "model": "claude-sonnet-5.5, effort high",
-        "rate": 0.64,
-        "margin": 0.08,
-        "pass": 0.74,
-        "timedOut": 5,
-        "cost": 35.39,
-        "hours": 15.0,
-        "tokens": null,
-        "where": "Docker · PC",
+        "rate": 0.6512,
+        "margin": 0.0787,
+        "pass": 0.75,
+        "timedOut": 1,
+        "cost": 35.76,
+        "hours": 13.1,
+        "tokens": 651000,
+        "where": "Docker · Azure",
         "params": "version 1.0.107, effort high",
         "runs": [
           {
-            "job": "20261109T221503Z-1",
-            "date": "2026-11-09",
-            "where": "Docker on a PC",
+            "job": "20261115T213917Z-1",
+            "date": "2026-11-15",
+            "where": "Docker on Azure, Australia East",
+            "median": 4.0
+          },
+          {
+            "job": "20261115T214236Z-1",
+            "date": "2026-11-15",
+            "where": "Docker on Azure, New Zealand North",
+            "median": 4.1
+          },
+          {
+            "job": "20261115T214539Z-1",
+            "date": "2026-11-15",
+            "where": "Docker on Azure, Korea Central",
             "median": 3.9
-          },
-          {
-            "job": "20261110T074227Z-1",
-            "date": "2026-11-10",
-            "where": "Docker on a PC",
-            "median": 4.5
-          },
-          {
-            "job": "20261110T214213Z-1",
-            "date": "2026-11-10",
-            "where": "Docker on a PC",
-            "median": 4.9
           }
         ],
         "note": ""
