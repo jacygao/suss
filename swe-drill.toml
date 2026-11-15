@@ -19,6 +19,11 @@ agent = "swe_drill.agents.hve:CopilotCliHve"
 model = "gpt-6.1-sol"
 kwargs = { version = "1.0.107", reasoning_effort = "high", hve_core_commit = "55352bb8e9f0622ff40f5c6afa80363adaf6b07f" }
 
+[arms."squiz-gpt-6.1-sol"]
+agent = "swe_drill.agents.squiz:CopilotCliSquiz"
+model = "gpt-6.1-sol"
+kwargs = { version = "1.0.107", reasoning_effort = "high", squiz_version = "0.3.1" }
+
 [arms.claude-sonnet]
 agent = "swe_drill.agents.claude_code:ClaudeCode"
 model = "claude-sonnet-5-5"

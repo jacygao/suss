@@ -76,7 +76,10 @@ class CopilotCli(Adapter, NpmCopilotCli):
             )
 
     def build_cli_flags(self) -> str:
-        return " ".join([super().build_cli_flags(), *self.FLAGS]).strip()
+        return " ".join([super().build_cli_flags(), *self.GLOBAL_FLAGS, *self.FLAGS]).strip()
+
+    def get_version_command(self) -> str:
+        return f'export PATH="$HOME/.local/bin:$PATH"; {self.version_check()}'
 
     async def install(self, environment: BaseEnvironment) -> None:
         """

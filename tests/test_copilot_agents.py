@@ -8,8 +8,11 @@ points the agent's paths at its own sandbox directory instead.
 """
 
 import asyncio
+import hashlib
 import json
+import platform
 import re
+import shlex
 import subprocess
 import sys
 import tarfile
@@ -23,7 +26,9 @@ from harbor.models.agent.context import AgentContext
 from harbor.models.trial.config import AgentConfig as TrialAgentConfig
 
 from swe_drill.agents.copilot_cli import CopilotCli
+from swe_drill.agents import squiz as squiz_agent_module
 from swe_drill.agents.hve import CopilotCliHve, full_auto_prompt
+from swe_drill.agents.squiz import CopilotCliSquiz
 from swe_drill.config import ConfigError
 from swe_drill.copilot import NpmCopilotCli
 
@@ -458,3 +463,376 @@ def test_the_full_auto_prompt_is_read_from_its_own_handoff():
 def test_an_agent_file_with_no_full_auto_prompt_is_refused(text):
     with pytest.raises(RuntimeError, match="Full Auto"):
         full_auto_prompt(text)
+
+
+# squiz
+
+
+SQUIZ_VERSION = "0.3.1"
+# Records each call, writes squiz's base.json where squiz's hooks were loaded,
+# as its SessionStart does, prints the stream, makes a change, and leaves
+# squiz-host.sh running detached, as squiz's round host outlives the run.
+SQUIZ_COPILOT = """#!PYTHON
+import json, os, shutil, subprocess, sys
+from pathlib import Path
+here = Path(__file__).parent
+argv = sys.argv[1:]
+with open(here / "copilot.calls", "a") as calls:
+    calls.write(json.dumps(argv) + "\\n")
+if "--version" in argv:
+    print("GitHub Copilot CLI 1.0.107.")
+    sys.exit(0)
+(here / "copilot.argv").write_text(json.dumps(argv))
+(here / "copilot.which").write_text(json.dumps({"node": shutil.which("node"), "squiz": shutil.which("squiz")}))
+plugin = Path(argv[argv.index("--plugin-dir") + 1]) if "--plugin-dir" in argv else None
+if plugin is not None and (plugin / "hooks" / "hooks.json").exists():
+    Path(".squiz/local").mkdir(parents=True, exist_ok=True)
+    Path(".squiz/local/base.json").write_text('{"commit": "x", "branches": []}')
+print((here / "stream.jsonl").read_text(), end="")
+with open("hello.txt", "a") as f:
+    f.write("a known change\\n")
+host = here / "squiz-host.sh"
+if host.exists():
+    subprocess.Popen(["/bin/sh", str(host)], start_new_session=True, stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+"""
+# A round host that reviews for a moment, then has its fixer change the
+# workspace, then closes the episode.
+CLOSING_HOST = """sleep 1
+echo "the fixer's change" >> hello.txt
+mkdir -p .squiz/local
+printf '{"threads": []}' > .squiz/local/threads.json
+printf '2 rounds, 1 finding' > .squiz/local/summary.md
+printf '{"head": "0e7db84", "exitStatus": 0, "openThreads": []}' > .squiz/local/closed.json
+"""
+# Serves nodejs.org's archive or squiz's from the test's own, by the URL.
+SQUIZ_CURL = """#!/bin/sh
+here=$(dirname "$0")
+while [ $# -gt 1 ]; do
+    [ "$1" = -o ] && out=$2
+    shift
+done
+echo "$1" >> "$here/curl.urls"
+case "$1" in
+    https://nodejs.org/*) cp "$here/node.tar.gz" "$out" ;;
+    *) cp "$here/squiz.tar.gz" "$out" ;;
+esac
+"""
+SHA256SUM = """#!PYTHON
+import hashlib, sys
+for name in sys.argv[1:]:
+    with open(name, "rb") as f:
+        print(hashlib.sha256(f.read()).hexdigest() + "  " + name)
+"""
+# Runs squiz's entry point, which the stand-in squiz makes a shell script.
+FAKE_NODE = """#!/bin/sh
+if [ "$1" = --version ]; then echo v24.15.0; exit 0; fi
+exec /bin/sh "$@"
+"""
+FAKE_SQUIZ_CLI = """root=$(cd "$(dirname "$0")/.." && pwd)
+[ "$1" = version ] && echo "squiz VERSION $root/bin/squiz"
+"""
+
+
+def node_arch() -> str:
+    return {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}[platform.machine().lower()]
+
+
+def publish_squiz(box: Path, monkeypatch, version: str = SQUIZ_VERSION) -> None:
+    """Make the archives of Node and of squiz the stand-in curl serves, and pin the stand-in Node's checksum."""
+    archives = box / "squiz-archives"
+    node = archives / f"node-v24.15.0-linux-{node_arch()}"
+    (node / "bin").mkdir(parents=True)
+    (node / "bin" / "node").write_text(FAKE_NODE)
+    (node / "bin" / "node").chmod(0o755)
+    with tarfile.open(bin_dir(box) / "node.tar.gz", "w:gz") as archive:
+        archive.add(node, arcname=node.name)
+    root = archives / f"squiz-{SQUIZ_VERSION}"
+    for path, text in (
+        (".claude-plugin/plugin.json", f'{{"name": "squiz", "version": "{version}"}}'),
+        ("hooks/hooks.json", '{"hooks": {}}'),
+        ("bin/squiz", '#!/bin/sh\nexec node "$(dirname "$0")/../src/cli.ts" "$@"\n'),
+        ("src/cli.ts", FAKE_SQUIZ_CLI.replace("VERSION", version)),
+    ):
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(text)
+    with tarfile.open(bin_dir(box) / "squiz.tar.gz", "w:gz") as archive:
+        archive.add(root, arcname=root.name)
+    digest = hashlib.sha256((bin_dir(box) / "node.tar.gz").read_bytes()).hexdigest()
+    monkeypatch.setattr(squiz_agent_module, "NODE_SHA256", {node_arch(): digest})
+    monkeypatch.setattr(squiz_agent_module, "POLL_SECONDS", 0.05)
+    for name, text in (("copilot", SQUIZ_COPILOT), ("curl", SQUIZ_CURL), ("sha256sum", SHA256SUM)):
+        (bin_dir(box) / name).write_text(text.replace("PYTHON", sys.executable))
+        (bin_dir(box) / name).chmod(0o755)
+
+
+def squiz_agent(box: Path, **kwargs) -> CopilotCliSquiz:
+    return agent(box, CopilotCliSquiz, squiz_version=SQUIZ_VERSION, reasoning_effort="high", **kwargs)
+
+
+def squiz_host(box: Path, script: str) -> None:
+    (bin_dir(box) / "squiz-host.sh").write_text(script)
+
+
+def squiz_plugin(box: Path) -> Path:
+    return box / "sandbox" / "home" / ".local" / "share" / "squiz" / SQUIZ_VERSION
+
+
+def test_squiz_patch_is_saved_only_once_squiz_closes_after_copilot_exits(box, local_environment, monkeypatch):
+    publish_squiz(box, monkeypatch)
+    squiz_host(box, CLOSING_HOST)
+
+    run(box, local_environment, squiz_agent(box))
+
+    patch = (logs(box) / "model.patch").read_text()
+    assert "the fixer's change" in patch, "the patch was saved before squiz's fixer changed the workspace"
+    assert "a known change" in patch
+    assert record(box)["status"] == "ok"
+    assert record(box)["squiz"]["outcome"] == "closed"
+    assert record(box)["squiz"]["closed"] == {"head": "0e7db84", "exitStatus": 0, "openThreads": []}
+
+
+def test_squiz_threads_summary_and_close_are_kept_under_agent(box, local_environment, monkeypatch):
+    publish_squiz(box, monkeypatch)
+    squiz_host(box, CLOSING_HOST)
+
+    run(box, local_environment, squiz_agent(box))
+
+    kept = logs(box) / "squiz"
+    assert (kept / "threads.json").read_text() == '{"threads": []}'
+    assert (kept / "summary.md").read_text() == "2 rounds, 1 finding"
+    assert (kept / "closed.json").exists()
+
+
+def test_a_squiz_review_that_never_closes_is_recorded_as_review_timed_out(box, local_environment, monkeypatch):
+    publish_squiz(box, monkeypatch)
+    squiz_host(box, "sleep 30\n")
+    the_agent = squiz_agent(box)
+
+    async def under_harbors_timeout():
+        await the_agent.setup(local_environment)
+        await asyncio.wait_for(the_agent.run(INSTRUCTION, local_environment, AgentContext()), timeout=3)
+
+    logs(box).mkdir(parents=True, exist_ok=True)
+    with pytest.raises(TimeoutError):
+        go(under_harbors_timeout())
+
+    assert record(box)["status"] == "review-timed-out"
+    assert record(box)["squiz"]["outcome"] is None
+    assert "a known change" in (logs(box) / "model.patch").read_text()
+
+
+def test_a_squiz_episode_that_stops_short_of_its_close_is_recorded_as_stopped(box, local_environment, monkeypatch):
+    publish_squiz(box, monkeypatch)
+    stopped = '{"head": "3f9c2e0", "stopped": "fixer queued nothing", "reason": "it queued nothing"}'
+    squiz_host(box, f"sleep 1\nmkdir -p .squiz/local\nprintf '{stopped}' > .squiz/local/stopped.json\n")
+
+    run(box, local_environment, squiz_agent(box))
+
+    assert record(box)["status"] == "review-stopped"
+    assert record(box)["squiz"]["outcome"] == "stopped"
+    assert record(box)["squiz"]["stopped"]["stopped"] == "fixer queued nothing"
+
+
+def test_squiz_is_configured_for_the_local_venue_with_copilot_reviewing_and_fixing(box, local_environment, monkeypatch):
+    publish_squiz(box, monkeypatch)
+    squiz_host(box, CLOSING_HOST)
+
+    run(box, local_environment, squiz_agent(box))
+
+    settings = json.loads((box / "sandbox" / "gleam" / ".squiz.json").read_text())
+    assert settings == {"venue": "local", "reviewer": "copilot", "fixer": "copilot"}
+
+
+def test_squizs_files_are_never_in_the_patch(box, local_environment, monkeypatch):
+    publish_squiz(box, monkeypatch)
+    # squiz's own .squiz/.gitignore is left out, so only SWE-drill's exclude keeps .squiz/ out.
+    squiz_host(box, CLOSING_HOST + "printf '{}' > .squiz/local/state.json\n")
+
+    run(box, local_environment, squiz_agent(box))
+
+    patch = (logs(box) / "model.patch").read_text()
+    assert ".squiz" not in patch, f"squiz's files reached the patch:\n{patch}"
+    assert "the fixer's change" in patch
+
+
+def test_squiz_refuses_a_workspace_that_already_has_squiz_files(box, local_environment, monkeypatch):
+    publish_squiz(box, monkeypatch)
+    (box / "sandbox" / "gleam" / ".squiz.json").write_text("{}")
+
+    with pytest.raises(NonZeroAgentExitCodeError, match="already has .squiz"):
+        run(box, local_environment, squiz_agent(box))
+
+    assert not (bin_dir(box) / "copilot.argv").exists(), "copilot ran anyway"
+    assert record(box)["status"] == "harness-failed"
+
+
+def test_squiz_refuses_a_workspace_whose_ignore_rules_keep_squiz_files(box, local_environment, monkeypatch):
+    publish_squiz(box, monkeypatch)
+    (box / "sandbox" / "gleam" / ".gitignore").write_text("!.squiz.json\n")
+
+    with pytest.raises(NonZeroAgentExitCodeError, match="ignore rules"):
+        run(box, local_environment, squiz_agent(box))
+
+
+def test_every_copilot_command_squiz_runs_passes_experimental_and_the_record_says_so(
+    box, local_environment, monkeypatch
+):
+    publish_squiz(box, monkeypatch)
+    squiz_host(box, CLOSING_HOST)
+
+    run(box, local_environment, squiz_agent(box))
+
+    calls = [json.loads(line) for line in (bin_dir(box) / "copilot.calls").read_text().splitlines()]
+    assert len(calls) == 2, "expected the version check and the run"
+    for argv in calls:
+        assert "--experimental" in argv, f"copilot ran without --experimental: {argv}"
+    argv = copilot_argv(box)
+    assert argv[argv.index("--plugin-dir") + 1] == str(squiz_plugin(box))
+    assert record(box)["squiz"]["copilot_experimental"] is True
+    assert record(box)["squiz"]["loaded"] is True
+
+
+def test_squizs_install_check_runs_copilot_with_experimental(box, local_environment):
+    package = box / "npm" / "package"
+    package.mkdir(parents=True)
+    (package / "copilot").write_text(f'#!/bin/sh\necho "$@" > {bin_dir(box)}/installed.argv\n')
+    (package / "copilot").chmod(0o755)
+    with tarfile.open(bin_dir(box) / "hve-core.tar.gz", "w:gz") as archive:
+        archive.add(package, arcname="package")
+
+    go(INSTALL(squiz_agent(box), local_environment))
+
+    assert (bin_dir(box) / "installed.argv").read_text().split() == ["--experimental", "--version"]
+
+
+def test_a_run_whose_squiz_never_loaded_fails(box, local_environment, monkeypatch):
+    publish_squiz(box, monkeypatch)
+    squiz_host(box, CLOSING_HOST)
+    the_agent = squiz_agent(box)
+    go(the_agent.setup(local_environment))
+    (squiz_plugin(box) / "hooks" / "hooks.json").unlink()
+    logs(box).mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(RuntimeError, match="base.json"):
+        go(the_agent.run(INSTRUCTION, local_environment, AgentContext()))
+
+    assert record(box)["status"] == "harness-failed"
+    assert record(box)["squiz"]["loaded"] is False
+
+
+def test_squiz_installs_node_and_squiz_at_their_pinned_versions(box, local_environment, monkeypatch):
+    publish_squiz(box, monkeypatch)
+    asked = []
+
+    async def recording(self, environment, dependencies):
+        asked.extend(dependencies)
+
+    monkeypatch.setattr(HarborCopilotCli, "ensure_system_dependencies", recording)
+    the_agent = squiz_agent(box)
+
+    go(the_agent.setup(local_environment))
+
+    assert (bin_dir(box) / "curl.urls").read_text().splitlines() == [
+        f"https://nodejs.org/dist/v24.15.0/node-v24.15.0-linux-{node_arch()}.tar.gz",
+        f"https://codeload.github.com/jacygao/squiz/tar.gz/refs/tags/v{SQUIZ_VERSION}",
+    ]
+    assert "ps" in asked, "squiz needs ps, which a slim image lacks"
+    assert the_agent.squiz_installed == SQUIZ_VERSION
+    shim = (squiz_plugin(box) / "bin" / "squiz").read_text()
+    node = box / "sandbox" / "home" / ".local" / "share" / "swe-drill" / "node-v24.15.0" / "bin" / "node"
+    assert str(node) in shim, "squiz would run on whatever node is on PATH"
+    assert (bin_dir(box) / "squiz").resolve() == (squiz_plugin(box) / "bin" / "squiz").resolve()
+
+
+def test_squizs_node_stays_off_the_agents_path(box, local_environment, monkeypatch):
+    publish_squiz(box, monkeypatch)
+    squiz_host(box, CLOSING_HOST)
+
+    run(box, local_environment, squiz_agent(box))
+
+    which = json.loads((bin_dir(box) / "copilot.which").read_text())
+    assert which["node"] is None or "swe-drill" not in which["node"], "the task's node was replaced"
+    assert which["squiz"] == str(bin_dir(box) / "squiz"), "the fixer cannot run squiz reply by name"
+
+
+def test_squiz_install_fails_on_a_node_archive_with_another_checksum(box, local_environment, monkeypatch):
+    publish_squiz(box, monkeypatch)
+    monkeypatch.setattr(squiz_agent_module, "NODE_SHA256", {node_arch(): "0" * 64})
+
+    with pytest.raises(Exception, match="checksum"):
+        go(squiz_agent(box).setup(local_environment))
+
+
+def test_squiz_install_fails_when_the_archive_is_another_squiz_version(box, local_environment, monkeypatch):
+    publish_squiz(box, monkeypatch, version="0.3.0")
+
+    with pytest.raises(RuntimeError, match="0.3.0"):
+        go(squiz_agent(box).setup(local_environment))
+
+
+@pytest.mark.parametrize("version", ["latest", "0.3", "v0.3.1", 3])
+def test_a_squiz_version_that_is_not_exact_is_refused_before_a_sandbox_starts(box, version):
+    with pytest.raises(ValueError, match="exact version"):
+        agent(box, CopilotCliSquiz, squiz_version=version)
+
+
+def session_events(nano: int, model: str) -> str:
+    return "".join(json.dumps(event) + "\n" for event in (
+        {"type": "session.start", "data": {}},
+        {"type": "model.call_start", "data": {"model": model}},
+        checkpoint(nano // 2, model),
+        checkpoint(nano, model),
+    ))
+
+
+def test_the_trials_credits_include_squizs_reviewer_and_fixer_sessions(box, local_environment, monkeypatch):
+    publish_squiz(box, monkeypatch)
+    home = box / "sandbox" / "home"
+    files = {
+        # A reviewer's COPILOT_HOME is its round's session directory.
+        ".squiz/local/rounds/1/session/session-state/r1/events.jsonl": session_events(3_000_000_000, "gpt-6-astra"),
+        ".squiz/local/rounds/2/session/session-state/r2/events.jsonl": session_events(1_500_000_000, "gpt-6-astra"),
+        # The fixer runs in the coding agent's COPILOT_HOME, beside the agent's own session.
+        f"{home}/.copilot/session-state/f1/events.jsonl": session_events(2_000_000_000, "gpt-6.1-sol"),
+        f"{home}/.copilot/session-state/agent/events.jsonl": session_events(18_439_490_000, "gpt-6.1-sol"),
+        ".squiz/local/state.json": json.dumps({"rounds": [
+            {"fixer": {"outcome": "started", "agent": "copilot", "session": {"id": "f1", "resumed": False}}},
+            {"fixer": {"outcome": "not started", "reason": "a fixer is running"}},
+        ]}),
+    }
+    script = "".join(
+        f"mkdir -p {shlex.quote(str(Path(path).parent))}\nprintf %s {shlex.quote(text)} > {shlex.quote(path)}\n"
+        for path, text in files.items()
+    )
+    squiz_host(box, script + CLOSING_HOST)
+
+    _, context, _ = run(box, local_environment, squiz_agent(box))
+
+    usage = record(box)["usage"]
+    assert usage["ai_credits"] == pytest.approx(18.4395 + 3 + 1.5 + 2)
+    assert usage["squiz"] == {
+        "reviewer": {"ai_credits": 4.5, "reported_models": ["gpt-6-astra"], "sessions": 2},
+        "fixer": {"ai_credits": 2.0, "reported_models": ["gpt-6.1-sol"], "sessions": 1},
+    }
+    assert usage["reported_models"] == ["gpt-6.1-sol"]
+    assert context.metadata["ai_credits"] == usage["ai_credits"], "Harbor's result leaves out the review"
+    assert (logs(box) / "squiz" / "fixer-sessions" / "f1" / "events.jsonl").exists()
+
+
+def test_a_squiz_session_that_reported_no_credits_leaves_the_trials_credits_unknown(
+    box, local_environment, monkeypatch
+):
+    publish_squiz(box, monkeypatch)
+    # A reviewer stopped before its first usage checkpoint.
+    events = json.dumps({"type": "model.call_start", "data": {"model": "gpt-6-astra"}}) + "\n"
+    path = ".squiz/local/rounds/1/session/session-state/r1/events.jsonl"
+    squiz_host(box, f"mkdir -p {shlex.quote(str(Path(path).parent))}\nprintf %s {shlex.quote(events)} > {path}\n"
+               + CLOSING_HOST)
+
+    _, context, _ = run(box, local_environment, squiz_agent(box))
+
+    usage = record(box)["usage"]
+    assert usage["squiz"]["reviewer"]["ai_credits"] is None, "an unknown cost was counted as zero"
+    assert usage["ai_credits"] is None, "a partial sum was recorded as the whole run's credits"
+    assert context.metadata["ai_credits"] is None

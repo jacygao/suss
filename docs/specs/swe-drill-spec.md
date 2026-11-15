@@ -432,11 +432,37 @@ The agent's own files go there too, such as Copilot CLI's stream,
   ```
 - `base` is the commit. `model.patch` applies to the starting tree, which is
   the base only when the image left no change in the workspace.
-- `status` is `ok`, `harness-failed` or `timed-out`. A trial runs until its
-  task's agent timeout, and is `timed-out` when Harbor stops it there. It is
-  `harness-failed` when the agent raises, as Harbor's agents do when their
-  coding agent exits non-zero. Either way, SWE-drill stops the agent's processes,
-  then captures the patch and writes the record, and the verifier grades it.
+- `status` is `ok`, `harness-failed` or `timed-out`, or for
+  `CopilotCliSquiz` also `review-stopped` or `review-timed-out`. A trial runs
+  until its task's agent timeout, and is `timed-out` when Harbor stops it
+  there. It is `harness-failed` when the agent raises, as Harbor's agents do
+  when their coding agent exits non-zero. A `CopilotCliSquiz` trial is
+  `review-timed-out` when Harbor stops it there after Copilot CLI has exited,
+  while squiz's review is still open, and `review-stopped` when squiz's
+  episode stopped short of its close. Whatever the status, SWE-drill stops the
+  agent's processes, then captures the patch and writes the record, and the
+  verifier grades it.
+- `squiz`, in a `CopilotCliSquiz` trial alone, says which squiz ran, whether
+  Copilot CLI ran with `--experimental`, whether squiz loaded, and how its
+  episode ended:
+
+  ```json
+  {
+    "squiz": {
+      "version": "0.3.1",
+      "copilot_experimental": true,
+      "loaded": true,
+      "outcome": "closed",
+      "closed": { "head": "0e7db84", "exitStatus": 0, "openThreads": [] },
+      "stopped": null
+    }
+  }
+  ```
+
+  `loaded` is whether `.squiz/local/base.json`, which squiz's `SessionStart`
+  hook writes, exists. `outcome` is `closed`, `stopped`, or `null` for an
+  episode that did neither, and `closed` and `stopped` hold squiz's
+  `closed.json` and `stopped.json`.
 - A trial whose patch cannot be written fails with the capture's error, and is
   not graded, whatever the agent did.
 - `usage` is what the agent reports it spent, or `null` for an agent whose
@@ -476,9 +502,10 @@ A class names, as class attributes, the hosts its agent phase reaches in
 |---|---|---|---|
 | `swe_drill.agents.copilot_cli:CopilotCli` | a model, required; `version`, required; `reasoning_effort`; `fusion_tier` | `api.github.com`, `api.enterprise.githubcopilot.com` | Harbor's `copilot-cli` agent. SWE-drill installs Copilot CLI at `version` from npm's registry, as the binary in `@github/copilot-<platform>`, which needs no Node, and Harbor's agent runs `copilot --prompt=<instruction> --yolo --deny-tool web_fetch --deny-tool web_search --model=<model> --effort <reasoning_effort> --output-format=json`, denying the web tools because the agent phase's network is an allowlist. SWE-drill adds `--disable-builtin-mcps`, `--no-auto-update`, `--disable-client-telemetry`, `--no-ask-user` and `--excluded-tools web_fetch web_search`. The model is one of Copilot's own, by the name `--model` takes, and Harbor constructs no agent for one that names a provider, as `anthropic/<model>` does, which Harbor would run against that provider's API. Copilot CLI's commands in the agent phase get `COPILOT_GITHUB_TOKEN` from `.env` and no other token: never `GH_TOKEN` or `GITHUB_TOKEN`, and none from Harbor's environment. Harbor constructs it only when `.env` sets that token. With model `fusion`, Copilot picks the model and effort for each task, refuses `--effort`, and takes `fusion_tier`, one of `standard`, `high` or `max`, which SWE-drill writes as `fusionTier` to `~/.copilot/settings.json` before the agent runs. SWE-drill refuses `fusion_tier` with any other model. |
 | `swe_drill.agents.hve:CopilotCliHve` | as `CopilotCli`, and `hve_core_commit`, required | as `CopilotCli` | `CopilotCli` as Microsoft's hve-core RPI Agent. Its install also downloads hve-core at `hve_core_commit`, a full 40-digit commit, from `https://codeload.github.com/microsoft/hve-core/tar.gz/<commit>` to `$HOME/.local/share/hve-core/<commit>/`, and fails when the archive holds no `plugin.json`, or that commit's `rpi-agent.agent.md` has no "Full Auto" handoff prompt. It adds `--plugin-dir` with that directory and `--agent hve-core:rpi-agent`, and gives as the prompt the Full Auto prompt, a blank line, then the instruction. `model` and `reasoning_effort` apply to the RPI Agent, and its subagents' own files name theirs. RPI keeps its state in the workspace's `.copilot-tracking/`, which SWE-drill makes a link to `/logs/agent/copilot-tracking/` and adds to `.git/info/exclude`, so it is kept as it is written and stays out of the patch. The trial is `harness-failed`, with Copilot CLI never started, when the workspace already has `.copilot-tracking`, or its own ignore rules keep git from ignoring it. |
+| `swe_drill.agents.squiz:CopilotCliSquiz` | as `CopilotCli`, and `squiz_version`, required, an exact version such as `0.3.1` | as `CopilotCli` | `CopilotCli` with squiz reviewing and fixing the change in its local venue, with Copilot CLI as reviewer and fixer. Its install also installs `ps`, Node 24.15.0 from `https://nodejs.org/dist/`, checked against the archive's pinned sha256, to `$HOME/.local/share/swe-drill/node-v24.15.0/`, and squiz from `https://codeload.github.com/jacygao/squiz/tar.gz/refs/tags/v<squiz_version>` to `$HOME/.local/share/squiz/<squiz_version>/`. It replaces squiz's `bin/squiz` with one that runs that Node, links it as `$HOME/.local/bin/squiz`, and fails when `squiz version` names another version. That Node is on no `PATH`, so the task's own `node` is unchanged. Every Copilot CLI command it starts passes `--experimental`, and the agent's adds `--plugin-dir` with squiz's directory. Before the agent runs, it writes `{"venue": "local", "reviewer": "copilot", "fixer": "copilot"}` to the workspace's `.squiz.json`, and adds `/.squiz.json` and `/.squiz/` to `.git/info/exclude`, so neither is in the patch. The trial is `harness-failed`, with Copilot CLI never started, when the workspace already has either, or its own ignore rules keep git from ignoring either. Once Copilot CLI exits, the trial is `harness-failed` where squiz left no `.squiz/local/base.json`, and otherwise waits for `.squiz/local/closed.json` or `stopped.json` before anything is stopped or captured. It then copies `.squiz/local/`, less `objects/`, to `/logs/agent/squiz/`, and each fixer session its state files name to `/logs/agent/squiz/fixer-sessions/<id>/`. The reviewer and the fixer inherit the agent's environment, so they see `COPILOT_GITHUB_TOKEN` and no other token. |
 | `swe_drill.agents.claude_code:ClaudeCode` | a model, required; `version`, required; `reasoning_effort` | `api.anthropic.com` | Harbor's `claude-code` agent, on the owner's Claude subscription. It installs Claude Code at `version` with `https://downloads.claude.ai/claude-code-releases/bootstrap.sh`, and runs `claude --verbose --output-format=stream-json --effort <reasoning_effort> --disallowedTools WebSearch,WebFetch --permission-mode=bypassPermissions --print` with the instruction on its standard input and `ANTHROPIC_MODEL` set to the model, disallowing the web tools because the agent phase's network is an allowlist. The model is Anthropic's own, by the name Claude Code's `--model` takes, such as `claude-sonnet-5-5`, and Harbor constructs no agent for one that names a provider. Claude Code's commands in the agent phase get `CLAUDE_CODE_OAUTH_TOKEN` from `.env`, the token `claude setup-token` makes, and no other credential: never `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_BASE_URL`, and none from Harbor's environment. Harbor constructs it only when `.env` sets that token. |
 
-The two Copilot CLI agents record its usage from its stream, which Harbor's agent does not
+The Copilot CLI agents record its usage from its stream, which Harbor's agent does not
 parse: in `suss.json`'s `usage`, and in Harbor's `agent_result.metadata` for
 the trial. `ai_credits` is the largest `totalNanoAiu` of its
 `session.usage_checkpoint` events over 1e9. `reported_models` are the models
@@ -486,6 +513,27 @@ its `model.call_start` events name, and `reported_efforts` the efforts its
 checkpoints name, so a run on a model or effort other than the one asked for
 shows there. Where Harbor's parse found no token counts, as for a GPT model,
 `agent_result` takes the last checkpoint's input, cache-read and output tokens.
+
+`CopilotCliSquiz` adds to `ai_credits` the credits of each squiz reviewer and
+fixer session, read the same way from the session's `events.jsonl`, so the
+trial's credits are the whole run's. Where the agent or any of those sessions
+reported no credits, as one stopped before its first checkpoint does, that
+part's `ai_credits` and the trial's are `null`. `usage.squiz` breaks them out,
+and `reported_models` stays the coding agent's:
+
+```json
+{
+  "usage": {
+    "ai_credits": 25.9395,
+    "reported_models": ["gpt-6.1-sol"],
+    "reported_efforts": ["high"],
+    "squiz": {
+      "reviewer": { "ai_credits": 4.5, "reported_models": ["gpt-6-astra"], "sessions": 2 },
+      "fixer": { "ai_credits": 3.0, "reported_models": ["gpt-6.1-sol"], "sessions": 1 }
+    }
+  }
+}
+```
 
 ## 5. Lanes
 
@@ -978,6 +1026,7 @@ src/swe_drill/
     copilot_cli.py  CopilotCli
     claude_code.py  ClaudeCode
     hve.py          CopilotCliHve
+    squiz.py        CopilotCliSquiz
   copilot.py        installing Copilot CLI, for the judge and the Copilot CLI agents
   sandbox.py        commands in the sandbox, and stopping what they started
   workspace.py      finding the workspace, and capturing the patch
