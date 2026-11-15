@@ -221,7 +221,8 @@ class CopilotCliSquiz(CopilotCli):
     async def _usage(self, environment: BaseEnvironment) -> dict[str, Any]:
         """
         CopilotCli's usage, with `ai_credits` the whole run's: the agent's, and
-        each reviewer's and fixer's session's, which `squiz` breaks out.
+        each reviewer's and fixer's session's, which `squiz` breaks out. It is
+        None where any of them is unknown, so no partial sum reads as the whole.
         """
         usage = await super()._usage(environment)
         kept = shlex.quote(self._kept())
@@ -230,8 +231,7 @@ class CopilotCliSquiz(CopilotCli):
         )
         fixer = await _sessions_usage(environment, f"find {kept}/fixer-sessions -name events.jsonl 2>/dev/null")
         parts = [usage["ai_credits"], reviewer["ai_credits"], fixer["ai_credits"]]
-        if any(part is not None for part in parts):
-            usage["ai_credits"] = round(sum(part or 0 for part in parts), 4)
+        usage["ai_credits"] = None if None in parts else round(sum(parts), 4)
         usage["squiz"] = {"reviewer": reviewer, "fixer": fixer}
         return usage
 
@@ -291,13 +291,21 @@ def fixer_sessions(state: Any) -> list[str]:
 
 
 async def _sessions_usage(environment: BaseEnvironment, listing: str) -> dict[str, Any]:
-    """The credits and models of every Copilot CLI session whose events.jsonl `listing` prints."""
+    """
+    The credits and models of every Copilot CLI session whose events.jsonl
+    `listing` prints. The credits are None where any session reported none,
+    since its cost is unknown, not nothing.
+    """
     paths = sorted(((await environment.exec(listing)).stdout or "").split())
-    credits = 0.0
+    credits: float | None = 0.0
     models: set[str] = set()
     for path in paths:
         result = await environment.exec(f"grep -E {judge.EVENT_LINES} {shlex.quote(path)}")
         events = judge.read_events(result.stdout or "")
-        credits += events["credits"] or 0
+        credits = None if credits is None or events["credits"] is None else credits + events["credits"]
         models.update(events["reported_models"])
-    return {"ai_credits": round(credits, 4), "reported_models": sorted(models), "sessions": len(paths)}
+    return {
+        "ai_credits": None if credits is None else round(credits, 4),
+        "reported_models": sorted(models),
+        "sessions": len(paths),
+    }

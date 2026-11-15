@@ -516,8 +516,10 @@ shows there. Where Harbor's parse found no token counts, as for a GPT model,
 
 `CopilotCliSquiz` adds to `ai_credits` the credits of each squiz reviewer and
 fixer session, read the same way from the session's `events.jsonl`, so the
-trial's credits are the whole run's. `usage.squiz` breaks them out, and
-`reported_models` stays the coding agent's:
+trial's credits are the whole run's. Where the agent or any of those sessions
+reported no credits, as one stopped before its first checkpoint does, that
+part's `ai_credits` and the trial's are `null`. `usage.squiz` breaks them out,
+and `reported_models` stays the coding agent's:
 
 ```json
 {

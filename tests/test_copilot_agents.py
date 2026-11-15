@@ -818,3 +818,21 @@ def test_the_trials_credits_include_squizs_reviewer_and_fixer_sessions(box, loca
     assert usage["reported_models"] == ["gpt-6.1-sol"]
     assert context.metadata["ai_credits"] == usage["ai_credits"], "Harbor's result leaves out the review"
     assert (logs(box) / "squiz" / "fixer-sessions" / "f1" / "events.jsonl").exists()
+
+
+def test_a_squiz_session_that_reported_no_credits_leaves_the_trials_credits_unknown(
+    box, local_environment, monkeypatch
+):
+    publish_squiz(box, monkeypatch)
+    # A reviewer stopped before its first usage checkpoint.
+    events = json.dumps({"type": "model.call_start", "data": {"model": "gpt-6-astra"}}) + "\n"
+    path = ".squiz/local/rounds/1/session/session-state/r1/events.jsonl"
+    squiz_host(box, f"mkdir -p {shlex.quote(str(Path(path).parent))}\nprintf %s {shlex.quote(events)} > {path}\n"
+               + CLOSING_HOST)
+
+    _, context, _ = run(box, local_environment, squiz_agent(box))
+
+    usage = record(box)["usage"]
+    assert usage["squiz"]["reviewer"]["ai_credits"] is None, "an unknown cost was counted as zero"
+    assert usage["ai_credits"] is None, "a partial sum was recorded as the whole run's credits"
+    assert context.metadata["ai_credits"] is None
