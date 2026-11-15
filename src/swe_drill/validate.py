@@ -299,7 +299,11 @@ class Validation:
         logs.mkdir(parents=True, exist_ok=True)
         if len(prompt.encode()) > ARG_LIMIT:
             (logs / "prompt.md").write_text(prompt)
-            prompt = POINTER.format(path=logs / "prompt.md")
+            # Under -p, Copilot CLI reads no file outside its working directory unless every path is allowed.
+            readable = logs if "--allow-all-paths" in tools else cwd
+            if readable != logs:
+                (readable / "prompt.md").write_text(prompt)
+            prompt = POINTER.format(path=readable / "prompt.md")
         settings = self.settings
         start = "--resume" if resumes else "--session-id"
         argv = [settings["copilot"], "-p", prompt, start, session_id, "--model", settings["model"]]

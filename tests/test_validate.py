@@ -412,6 +412,25 @@ def test_a_prompt_too_long_for_one_argument_is_read_from_a_file(box):
     assert any(len(call["instructions"]) > validate.ARG_LIMIT for call in calls(box))
 
 
+
+def test_a_review_judges_long_prompt_is_in_a_file_its_view_only_session_may_read_282(box):
+    # A long patch and spec put the review judge's prompt over one argument, as
+    # they did on real tasks. Its session may read only its own directory,
+    # which the stand-in enforces.
+    (logs(box) / "agent.patch").write_text("".join(f"+line {n} of a long change\n" for n in range(5_000)))
+    spec = box / "sandbox" / "validate" / "validation_spec.toml"
+    spec.write_text(spec.read_text().replace("Check what", "Check " + "very " * 8_000 + "carefully what"))
+    fix(box)
+
+    run = validate_in(box)
+
+    assert run.returncode == 0, explain(run)
+    reviews = [call for call in calls(box) if call["kind"] == "review"]
+    assert reviews and any(len(call["instructions"]) > validate.ARG_LIMIT for call in reviews), (
+        "the review judge's prompt never needed a file, so the test shows nothing"
+    )
+    assert results(box)["validation_score"] == 1.0
+
 # The token
 
 
