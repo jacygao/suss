@@ -326,9 +326,11 @@ made as Copilot CLI sessions:
   the repository with every tool but `web_fetch` and `web_search`, until the
   `va_timeout_sec`, or for a retry the `retry_timeout_sec`, that
   `run_validate.py` gives it.
-- **The review judge**, whose verdict decides a retry or a discard, runs in an
-  empty directory with `view` alone, for at most 300 seconds, and answers with
-  the `submit_review` JSON. Senior's own `parse_response` and `should_discard`
+- **The review judge**, whose verdict decides a retry or a discard, runs in a
+  directory of its own with `view` alone, for at most 300 seconds, and answers
+  with the `submit_review` JSON. Copilot CLI lets it read nothing outside that
+  directory, so a prompt over 120,000 bytes, too long for one argument, is
+  written there as `prompt.md` for it to read. Senior's own `parse_response` and `should_discard`
   read it. An answer they cannot read is retried once in the same session.
   When the retry cannot be read either, `run_validate.py` exits 2.
 
