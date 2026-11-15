@@ -12,20 +12,22 @@ SWE-rebench's July 2026 snapshot: 108 GitHub issues from open-source
 repositories, each graded by its own hidden tests. The table ranks arms by
 resolved rate, as `swe-drill leaderboard --lane rebench` does.
 
-| Arm | Harness | Model | Date | Runs | Resolved rate | pass@k | Timed out | Cost per run, USD at pay-as-you-go prices | Agent time per run, sum of trials |
-|---|---|---|---|---:|---:|---:|---:|---:|---:|
-| `claude-opus` | Claude Code 2.1.311 | claude-opus-5-5, effort high | 2026-11-09, 2026-11-11 | 2 | 66% ±9 | 70% @2 | 5 | $120.40 | 17.3 h |
-| `copilot-opus` | Copilot CLI 1.0.107 | claude-opus-5.5, effort high | 2026-11-12, 2026-11-12, 2026-11-13 | 3 | 65% ±8 | 75% @3 | 17 | $119.09 | 27.6 h |
-| `copilot-sonnet` | Copilot CLI 1.0.107 | claude-sonnet-5.5, effort high | 2026-11-09, 2026-11-10, 2026-11-10 | 3 | 64% ±8 | 74% @3 | 5 | $35.39 | 15.0 h |
-| `copilot-fusion-high` | Copilot CLI 1.0.107 | Fusion, tier high | 2026-11-14, 2026-11-14, 2026-11-14 | 3 | 63% ±9 | 69% @3 | 4 | $31.92 | 16.8 h |
-| `copilot-fusion` | Copilot CLI 1.0.107 | Fusion, tier standard | 2026-11-13, 2026-11-13, 2026-11-13 | 3 | 62% ±9 | 67% @3 | 0 | $15.23 | 12.4 h |
-| `copilot-gpt-6.1-sol` | Copilot CLI 1.0.107 | gpt-6.1-sol, effort high | 2026-11-14, 2026-11-14, 2026-11-14 | 3 | 62% ±9 | 67% @3 | 1 | $44.06 | 14.8 h |
+| Arm | Agent | Harness | Model | Date | Runs | Resolved rate | pass@k | Timed out | Cost per run, USD at pay-as-you-go prices | Agent time per run, sum of trials |
+|---|---|---|---|---|---:|---:|---:|---:|---:|---:|
+| `claude-opus` | Claude Code 2.1.311 | Default | claude-opus-5-5, effort high | 2026-11-09, 2026-11-11 | 2 | 66% ±9 | 70% @2 | 5 | $120.40 | 17.3 h |
+| `copilot-opus` | Copilot CLI 1.0.107 | Default | claude-opus-5.5, effort high | 2026-11-12, 2026-11-12, 2026-11-13 | 3 | 65% ±8 | 75% @3 | 17 | $119.09 | 27.6 h |
+| `copilot-sonnet` | Copilot CLI 1.0.107 | Default | claude-sonnet-5.5, effort high | 2026-11-09, 2026-11-10, 2026-11-10 | 3 | 64% ±8 | 74% @3 | 5 | $35.39 | 15.0 h |
+| `squiz-gpt-6.1-sol` | Copilot CLI 1.0.107 | Peer review by squiz 0.3.2, claude-sonnet-5.5 reviewer at effort high | gpt-6.1-sol, effort high | 2026-11-15, 2026-11-15, 2026-11-15 | 3 | 64% ±8 | 72% @3 | 3 | $63.82 | 18.8 h |
+| `copilot-fusion-high` | Copilot CLI 1.0.107 | Default | Fusion, tier high | 2026-11-14, 2026-11-14, 2026-11-14 | 3 | 63% ±9 | 69% @3 | 4 | $31.92 | 16.8 h |
+| `copilot-fusion` | Copilot CLI 1.0.107 | Default | Fusion, tier standard | 2026-11-13, 2026-11-13, 2026-11-13 | 3 | 62% ±9 | 67% @3 | 0 | $15.23 | 12.4 h |
+| `copilot-gpt-6.1-sol` | Copilot CLI 1.0.107 | Default | gpt-6.1-sol, effort high | 2026-11-14, 2026-11-14, 2026-11-14 | 3 | 62% ±9 | 67% @3 | 1 | $44.06 | 14.8 h |
 
 | Arm | Job | Where it ran | Params | Median trial |
 |---|---|---|---|---:|
 | `claude-opus` | `20261109T002622Z-1`, `20261111T060421Z-1` | Modal | version 2.1.311, effort high | 5.6 min, 5.8 min |
 | `copilot-opus` | `20261112T093414Z-1`, `20261112T212852Z-1`, `20261113T063106Z-1` | Docker on a PC | version 1.0.107, effort high | 10.8 min, 12.1 min, 11.5 min |
 | `copilot-sonnet` | `20261109T221503Z-1`, `20261110T074227Z-1`, `20261110T214213Z-1` | Docker on a PC | version 1.0.107, effort high | 3.9 min, 4.5 min, 4.9 min |
+| `squiz-gpt-6.1-sol` | `20261115T114014Z-1`, `20261115T114339Z-1`, `20261115T114642Z-1` | Docker on Azure VMs | version 1.0.107, effort high, `squiz_version` 0.3.2, `reviewer_model` claude-sonnet-5.5, `reviewer_effort` high | 8.1 min, 7.6 min, 7.7 min |
 | `copilot-fusion-high` | `20261114T124819Z-1`, `20261114T125147Z-1`, `20261114T125449Z-1` | Docker on Azure VMs | version 1.0.107, `fusion_tier` high | 5.2 min, 5.5 min, 5.4 min |
 | `copilot-fusion` | `20261113T223307Z-1`, `20261113T223410Z-1`, `20261113T223531Z-1` | Docker on Azure VMs | version 1.0.107 | 5.2 min, 4.8 min, 5.6 min |
 | `copilot-gpt-6.1-sol` | `20261114T042619Z-1`, `20261114T042923Z-1`, `20261114T043249Z-1` | Docker on Azure VMs | version 1.0.107, effort high | 5.5 min, 5.7 min, 5.9 min |
@@ -45,12 +47,11 @@ resolved rate, as `swe-drill leaderboard --lane rebench` does.
 - **`copilot-fusion-high`'s runs on a PC are left out too,** so that all three
   of its runs are on Azure: `20261111T035703Z-1` and `20261112T010208Z-1`
   together resolved 63%.
-- **`copilot-fusion`'s, `copilot-gpt-6.1-sol`'s and `copilot-fusion-high`'s
-  runs ran three at a time, one Azure region each.** Copilot CLI never started on 12 of
+- **`copilot-fusion`'s, `copilot-gpt-6.1-sol`'s, `copilot-fusion-high`'s and
+  `squiz-gpt-6.1-sol`'s runs ran three at a time, one Azure region each.** Copilot CLI never started on 12 of
   `copilot-fusion`'s trials, refused by Copilot's model router or out of time
-  in setup, and those 12 ran again on a fresh VM. `copilot-gpt-6.1-sol`'s and
-  `copilot-fusion-high`'s runs started three minutes apart, and none of their
-  trials needed running again.
+  in setup, and those 12 ran again on a fresh VM. The other three arms' runs
+  started three minutes apart, and none of their trials needed running again.
 - **A trial whose grading stopped before any test ran was graded once more,
   from the same patch.** Four had: `copilot-gpt-6.1-sol`'s
   `mikro-orm__mikro-orm-7799` in the first run, whose test database did not
@@ -63,6 +64,18 @@ resolved rate, as `swe-drill leaderboard --lane rebench` does.
 - **Two `copilot-fusion-high` patches do not compile, and count as
   unresolved.** They are `apache__hugegraph-3037`'s in the second run and the
   third, which leave its tests nothing to run.
+- **`squiz-gpt-6.1-sol`'s cost counts squiz's reviewer and fixer.** Of its
+  $63.82 a run, the coding agent took $43.56, the reviewer $15.64 and the
+  fixer $4.62. The fixer ran on 26, 31 and 21 trials of the three runs. Two
+  trials of the first run timed out with no cost recorded, and its total
+  leaves them out.
+- **squiz's review stopped short on seven `squiz-gpt-6.1-sol` trials,** two or
+  three a run, each because squiz took the lock on its state file only after
+  its deadline had passed. Their patches were graded as they stood.
+- **Five `squiz-gpt-6.1-sol` trials have no test result, and count as
+  unresolved.** They are `apache__pulsar-25953` in all three runs and
+  `apache__hugegraph-3037` in the first and the third. They were not graded
+  again.
 - **`copilot-opus`'s and `copilot-sonnet`'s runs have not been checked for
   grading that stopped,** since they are on the PC and not yet in storage.
 - **Three `copilot-opus` trials have no grade, and count as unresolved.**
@@ -81,9 +94,9 @@ patch for quality with senior's rubric and taste judges.
 
 ### Correctness
 
-| Arm | Harness | Model | Date | Investigate tasks | Runs | Resolved | Resolved share | Design tasks graded | AI credits | Agent time, sum of trials |
-|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
-| `copilot-gpt` | `copilot-cli` | gpt-6.1-sol | 2026-11-05 | 25 | 1 | 8 | 32% | 0 of 25 | 4,739 (≈ $47) | 11.3 h |
+| Arm | Agent | Harness | Model | Date | Investigate tasks | Runs | Resolved | Resolved share | Design tasks graded | AI credits | Agent time, sum of trials |
+|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `copilot-gpt` | `copilot-cli` | Default | gpt-6.1-sol | 2026-11-05 | 25 | 1 | 8 | 32% | 0 of 25 | 4,739 (≈ $47) | 11.3 h |
 
 ### Code quality
 
@@ -115,6 +128,9 @@ patch for quality with senior's rubric and taste judges.
 
 ## How to read the columns
 
+- **Agent:** the coding agent and its version. **Harness:** what runs around
+  it. Default is the agent alone; peer review is squiz reviewing each change
+  the agent makes, with a fixer that answers the findings.
 - **Runs:** how many times the arm ran every task, one trial per task each
   time. Trial counts and rates pool all runs; cost and agent time are per run.
 - **Resolved rate:** resolved trials over valid trials. The ± is half its 95%
@@ -133,11 +149,11 @@ patch for quality with senior's rubric and taste judges.
 SWE-bench Pro, which SWE-drill no longer runs: Sonnet 5.5 on plain Copilot CLI
 resolved 98% of `pro-go`, leaving no room to tell harnesses apart.
 
-| Lane | Arm | Harness | Model | Date | Tasks | Resolved | Unresolved | Invalid | Timed out | Harness failed | Resolved share | AI credits | Agent time, sum of trials | Elapsed |
-|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `pro-hard51-rerun113` | `copilot-sonnet` | `copilot-cli` | claude-sonnet-5.5 | 2026-11-03 | 10 | 10 | 0 | 0 | 0 | 0 | 100% | 245 (≈ $2.45) | 18.0 min | 5 min |
-| `pro-go` | `copilot-sonnet` | `copilot-cli` | claude-sonnet-5.5 | 2026-11-03 | 256 | 252 | 4 | 0 | 0 | 0 | 98% | 3,562 (≈ $36) | 14.0 h | 0.7 h |
-| `pro-hard51` | `copilot-sonnet` | `copilot-cli` | claude-sonnet-5.5 | 2026-11-03 | 51 | 35 | 16 | 0 | 0 | 10 | 69% | 1,055 (≈ $11) | 2.8 h | 0.3 h |
+| Lane | Arm | Agent | Harness | Model | Date | Tasks | Resolved | Unresolved | Invalid | Timed out | Harness failed | Resolved share | AI credits | Agent time, sum of trials | Elapsed |
+|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `pro-hard51-rerun113` | `copilot-sonnet` | `copilot-cli` | Default | claude-sonnet-5.5 | 2026-11-03 | 10 | 10 | 0 | 0 | 0 | 0 | 100% | 245 (≈ $2.45) | 18.0 min | 5 min |
+| `pro-go` | `copilot-sonnet` | `copilot-cli` | Default | claude-sonnet-5.5 | 2026-11-03 | 256 | 252 | 4 | 0 | 0 | 0 | 98% | 3,562 (≈ $36) | 14.0 h | 0.7 h |
+| `pro-hard51` | `copilot-sonnet` | `copilot-cli` | Default | claude-sonnet-5.5 | 2026-11-03 | 51 | 35 | 16 | 0 | 0 | 10 | 69% | 1,055 (≈ $11) | 2.8 h | 0.3 h |
 
 | Lane | Job | Params | Median trial |
 |---|---|---|---:|
@@ -167,7 +183,7 @@ The `rebench` counts, credits and times come from each trial's records, with
 ```bash
 jq -r .status <job>/*/agent/suss.json | sort | uniq -c
 jq .verifier_result.rewards.reward <job>/*/result.json | sort | uniq -c
-jq -s 'map(.usage.ai_credits // empty) | add / 100' <job>/*/agent/suss.json  # Copilot CLI's cost
+jq -s 'map(.usage.ai_credits // empty) | add / 100' <job>/*/agent/suss.json  # Copilot CLI's cost, squiz's reviewer and fixer included
 jq -s 'map(.agent_result.cost_usd // empty) | add' <job>/*/result.json      # Claude Code's cost
 jq -s 'map(.run_seconds) | add / 3600' <job>/*/agent/suss.json
 ```

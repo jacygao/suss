@@ -1,5 +1,5 @@
 {
-  "updated": "2026-11-15",
+  "updated": "2026-11-16",
   "rebench": {
     "title": "rebench",
     "about": "SWE-rebench’s July 2026 snapshot: 108 GitHub issues from open-source repositories, each graded by its own hidden tests. Every arm runs the same tasks, graded the same way.",
@@ -7,7 +7,8 @@
     "arms": [
       {
         "name": "claude-opus",
-        "harness": "Claude Code 2.1.311",
+        "agent": "Claude Code 2.1.311",
+        "harness": "Default",
         "model": "claude-opus-5-5, effort high",
         "rate": 0.66,
         "margin": 0.09,
@@ -36,7 +37,8 @@
       },
       {
         "name": "copilot-opus",
-        "harness": "Copilot CLI 1.0.107",
+        "agent": "Copilot CLI 1.0.107",
+        "harness": "Default",
         "model": "claude-opus-5.5, effort high",
         "rate": 0.65,
         "margin": 0.08,
@@ -71,7 +73,8 @@
       },
       {
         "name": "copilot-sonnet",
-        "harness": "Copilot CLI 1.0.107",
+        "agent": "Copilot CLI 1.0.107",
+        "harness": "Default",
         "model": "claude-sonnet-5.5, effort high",
         "rate": 0.64,
         "margin": 0.08,
@@ -105,8 +108,46 @@
         "note": ""
       },
       {
+        "name": "squiz-gpt-6.1-sol",
+        "agent": "Copilot CLI 1.0.107",
+        "harness": "Peer review (squiz)",
+        "harnessDetail": "Peer review by squiz 0.3.2, claude-sonnet-5.5 reviewer at effort high",
+        "model": "gpt-6.1-sol, effort high",
+        "rate": 0.642,
+        "margin": 0.0833,
+        "pass": 0.7222,
+        "timedOut": 3,
+        "cost": 63.82,
+        "hours": 18.8,
+        "tokens": 1001000,
+        "where": "Docker · Azure",
+        "params": "version 1.0.107, effort high, squiz_version 0.3.2, reviewer_model claude-sonnet-5.5, reviewer_effort high",
+        "runs": [
+          {
+            "job": "20261115T114014Z-1",
+            "date": "2026-11-15",
+            "where": "Docker on Azure, Australia East",
+            "median": 8.1
+          },
+          {
+            "job": "20261115T114339Z-1",
+            "date": "2026-11-15",
+            "where": "Docker on Azure, New Zealand North",
+            "median": 7.6
+          },
+          {
+            "job": "20261115T114642Z-1",
+            "date": "2026-11-15",
+            "where": "Docker on Azure, Korea Central",
+            "median": 7.7
+          }
+        ],
+        "note": "squiz reviews each change with claude-sonnet-5.5 and its fixer answers the findings; the cost counts both, $20.26 of the $63.82 a run. The review stopped short on seven trials, when squiz took its state file's lock too late, and those patches were graded as they stood. Five trials have no test result and count as unresolved. The three runs ran at once, one Azure region each."
+      },
+      {
         "name": "copilot-fusion-high",
-        "harness": "Copilot CLI 1.0.107",
+        "agent": "Copilot CLI 1.0.107",
+        "harness": "Default",
         "model": "Fusion, tier high",
         "rate": 0.6296,
         "margin": 0.0864,
@@ -141,7 +182,8 @@
       },
       {
         "name": "copilot-fusion",
-        "harness": "Copilot CLI 1.0.107",
+        "agent": "Copilot CLI 1.0.107",
+        "harness": "Default",
         "model": "Fusion, tier standard",
         "rate": 0.6235,
         "margin": 0.088,
@@ -176,7 +218,8 @@
       },
       {
         "name": "copilot-gpt-6.1-sol",
-        "harness": "Copilot CLI 1.0.107",
+        "agent": "Copilot CLI 1.0.107",
+        "harness": "Default",
         "model": "gpt-6.1-sol, effort high",
         "rate": 0.6204,
         "margin": 0.088,
@@ -220,7 +263,8 @@
     "arms": [
       {
         "name": "copilot-gpt",
-        "harness": "Copilot CLI 1.0.105",
+        "agent": "Copilot CLI 1.0.105",
+        "harness": "Default",
         "model": "gpt-6.1-sol, effort high",
         "resolved": 8,
         "investigate": 25,
