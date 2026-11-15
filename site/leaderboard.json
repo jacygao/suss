@@ -1,5 +1,5 @@
 {
-  "updated": "2026-11-15",
+  "updated": "2026-11-16",
   "rebench": {
     "title": "rebench",
     "about": "SWE-rebench’s July 2026 snapshot: 108 GitHub issues from open-source repositories, each graded by its own hidden tests. Every arm runs the same tasks, graded the same way.",
@@ -103,6 +103,41 @@
           }
         ],
         "note": ""
+      },
+      {
+        "name": "squiz-gpt-6.1-sol",
+        "harness": "Copilot CLI 1.0.107 with squiz 0.3.2",
+        "model": "gpt-6.1-sol, effort high; reviewer claude-sonnet-5.5, effort high",
+        "rate": 0.642,
+        "margin": 0.0833,
+        "pass": 0.7222,
+        "timedOut": 3,
+        "cost": 84.09,
+        "hours": 18.8,
+        "tokens": 1001000,
+        "where": "Docker · Azure",
+        "params": "version 1.0.107, effort high, squiz_version 0.3.2, reviewer_model claude-sonnet-5.5, reviewer_effort high",
+        "runs": [
+          {
+            "job": "20261115T114014Z-1",
+            "date": "2026-11-15",
+            "where": "Docker on Azure, Australia East",
+            "median": 8.1
+          },
+          {
+            "job": "20261115T114339Z-1",
+            "date": "2026-11-15",
+            "where": "Docker on Azure, New Zealand North",
+            "median": 7.6
+          },
+          {
+            "job": "20261115T114642Z-1",
+            "date": "2026-11-15",
+            "where": "Docker on Azure, Korea Central",
+            "median": 7.7
+          }
+        ],
+        "note": "squiz reviews each change with claude-sonnet-5.5 and its fixer answers the findings; the cost counts both, $20.26 of the $84.09 a run. The review stopped short on seven trials, when squiz took its state file's lock too late, and those patches were graded as they stood. Five trials have no test result and count as unresolved. The three runs ran at once, one Azure region each."
       },
       {
         "name": "copilot-fusion-high",
