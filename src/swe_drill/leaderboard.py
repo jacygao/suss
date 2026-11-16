@@ -1,5 +1,5 @@
 """
-swe-drill leaderboard: reading every arm's trials under `results/rebench/`, each
+swe-drill leaderboard: reading every arm's trials under `results/<lane>/`, each
 graded by its own verifier, and the table the command prints.
 
 Reading never raises on what a trial left or failed to leave. One whose
@@ -16,7 +16,8 @@ from pathlib import Path
 
 from swe_drill import config, lanes
 
-LANE = lanes.REBENCH
+# The lanes that have a leaderboard.
+RANKED = (lanes.REBENCH, lanes.ATLAS_RF)
 
 # The keys of parsed_counts in a rebench verifier's report.
 TEST_OUTCOMES = ("PASSED", "FAILED", "SKIPPED", "ERROR")
@@ -42,6 +43,10 @@ class Trial:
     # Whether the verifier recorded a test result. When it records none, a 0
     # cannot tell a wrong patch from grading that broke.
     verifier_tested: bool
+    # Whether the lane's judge gave a verdict on every rubric item, which a
+    # lane with no judge always has. An item it gave none is left out of the
+    # reward, so a judge that fails may pass a trial, or fail it, unseen.
+    verifier_judged: bool
     # True when the verifier judged the trial invalid by writing an
     # empty reward, which Harbor records as RewardFileEmptyError. A timeout or
     # a crash also leaves no reward, and is not this.
@@ -50,14 +55,14 @@ class Trial:
     path: Path
 
 
-def read_trials(directory: Path, arm: str) -> list[Trial]:
+def read_trials(directory: Path, arm: str, lane: str = lanes.REBENCH) -> list[Trial]:
     """
-    Every trial in the arm's agent jobs under `results/rebench/<arm>/`, in
+    Every trial in the arm's agent jobs under `results/<lane>/<arm>/`, in
     `directory`, sorted by job and task.
 
     An arm with no such directory has no trials.
     """
-    arm_directory = Path(directory) / "results" / LANE / arm
+    arm_directory = Path(directory) / "results" / lane / arm
     if not arm_directory.is_dir():
         return []
     trials = []
@@ -67,12 +72,12 @@ def read_trials(directory: Path, arm: str) -> list[Trial]:
             # A trial that names no task cannot be counted against one.
             if task is None:
                 continue
-            trials.append(_trial(job.name, task, trial))
+            trials.append(_trial(job.name, task, trial, lane))
     return sorted(trials, key=lambda trial: (trial.job, trial.task))
 
 
-def _trial(job: str, task: str, trial: Path) -> Trial:
-    """The trial, as its own verifier graded it."""
+def _trial(job: str, task: str, trial: Path, lane: str) -> Trial:
+    """The trial, as its own verifier on `lane` graded it."""
     record = _json(trial / "agent" / "suss.json")
     patch_bytes = record.get("patch_bytes") if isinstance(record, dict) else None
     replay_path = trial / "verifier" / "replay.json"
@@ -92,7 +97,8 @@ def _trial(job: str, task: str, trial: Path) -> Trial:
         verifier_applied=applied,
         verifier_refused=applied is True and not _applied_whole(replay),
         verifier_raised=raised,
-        verifier_tested=_tested(trial),
+        verifier_tested=_tested(trial) if lane == lanes.REBENCH else _tests_rewarded(trial),
+        verifier_judged=lane != lanes.ATLAS_RF or _judged(trial),
         invalid=_exception(trial) == "RewardFileEmptyError",
         path=trial,
     )
@@ -157,6 +163,33 @@ def _tested(trial: Path) -> bool:
         isinstance(count, int) and not isinstance(count, bool) and count > 0
         for outcome, count in found.items()
         if outcome in TEST_OUTCOMES
+    )
+
+
+def _tests_rewarded(trial: Path) -> bool:
+    """
+    Whether the trial's verifier/comparison_results.json holds a numeric
+    `tests_reward`, which SWE Atlas's test.sh writes there only when it read
+    the tests' results.
+    """
+    found = _json(trial / "verifier" / "comparison_results.json")
+    reward = found.get("tests_reward") if isinstance(found, dict) else None
+    return isinstance(reward, int | float) and not isinstance(reward, bool)
+
+
+def _judged(trial: Path) -> bool:
+    """
+    Whether the trial's verifier/rubrics_results.json gives a verdict on every
+    rubric item.
+
+    SWE Atlas's evaluate_rubrics.py marks an item `"evaluable": false` when its
+    model gave no answer it could read, as when every call failed. It writes
+    no `rubric_scores` when it had no key, and no file when it crashed.
+    """
+    found = _json(trial / "verifier" / "rubrics_results.json")
+    scores = found.get("rubric_scores") if isinstance(found, dict) else None
+    return isinstance(scores, list) and all(
+        isinstance(score, dict) and score.get("evaluable") is True for score in scores
     )
 
 
@@ -226,17 +259,18 @@ class Standing:
     pass_at_k: float
 
 
-def report(directory: Path) -> str:
+def report(directory: Path, lane: str = lanes.REBENCH) -> str:
     """
-    What `swe-drill leaderboard --lane rebench` prints, run in `directory`, the
-    directory holding swe-drill.toml.
+    What `swe-drill leaderboard --lane <lane>` prints, run in `directory`, the
+    directory holding swe-drill.toml, for a lane in RANKED.
 
-    Each arm is a directory under `results/rebench/`. An invalid trial counts
+    Each arm is a directory under `results/<lane>/`. An invalid trial counts
     nowhere, so a task whose every trial in an arm is invalid is not one of
     that arm's tasks. The table goes by resolved rate, best first, then by arm
     name. After it come the valid trials whose verifier recorded no test
-    result, then the invalid trials, each list by arm in the table's order,
-    then by job and task.
+    result, then those whose judge gave no verdict on some rubric item, then
+    the invalid trials, each list by arm in the table's order, then by job and
+    task.
 
     Raises ConfigError when swe-drill.toml is missing or an arm in it sets
     `baseline`, and LeaderboardError when no arm has results, an arm has no
@@ -244,7 +278,7 @@ def report(directory: Path) -> str:
     patch or could not apply it.
     """
     config.check_arms(Path(directory) / "swe-drill.toml")
-    trials = _read(directory)
+    trials = _read(directory, lane)
     standings = sorted(
         (_standing(arm, found) for arm, found in trials.items()),
         key=lambda standing: (-standing.rate, standing.arm),
@@ -256,8 +290,14 @@ def report(directory: Path) -> str:
         for trial in trials[arm]
         if not trial.invalid and not trial.verifier_tested
     ]
+    unjudged = [
+        (arm, trial.job, trial.task)
+        for arm in order
+        for trial in trials[arm]
+        if not trial.invalid and not trial.verifier_judged
+    ]
     invalid = [(arm, trial.job, trial.task) for arm in order for trial in trials[arm] if trial.invalid]
-    return render(standings, untested, invalid)
+    return render(standings, untested, invalid, unjudged)
 
 
 def _standing(arm: str, trials: Sequence[Trial]) -> Standing:
@@ -274,44 +314,44 @@ def _standing(arm: str, trials: Sequence[Trial]) -> Standing:
     )
 
 
-def _read(directory: Path) -> dict[str, list[Trial]]:
+def _read(directory: Path, lane: str) -> dict[str, list[Trial]]:
     """
-    Every trial of each arm under `results/rebench/`, by arm, raising
+    Every trial of each arm under `results/<lane>/`, by arm, raising
     LeaderboardError when there is no arm, for an arm with no trials or with
     only invalid ones, and for the first trial with a patch whose verifier
     applied none of it or could not apply it, so that nothing is ranked that
     cannot be.
     """
-    lane_directory = Path(directory) / "results" / LANE
+    lane_directory = Path(directory) / "results" / lane
     # Every directory: an arm's name may start with a `.`, which marks Harbor's own directories only inside a job.
     found = lane_directory.iterdir() if lane_directory.is_dir() else []
     arms = sorted(entry.name for entry in found if entry.is_dir())
     if not arms:
-        raise LeaderboardError(f"no results under results/{LANE}/")
+        raise LeaderboardError(f"no results under results/{lane}/")
     trials = {}
     for arm in arms:
-        trials[arm] = read_trials(directory, arm)
+        trials[arm] = read_trials(directory, arm, lane)
         if not trials[arm]:
-            raise LeaderboardError(f"no results for arm {arm} under results/{LANE}/")
+            raise LeaderboardError(f"no results for arm {arm} under results/{lane}/")
         for trial in trials[arm]:
             grading = f"verifier in {trial.job}"
             # That verifier did not grade the patch, so its 0 is not the trial's result.
             if trial.patch_bytes > 0 and trial.verifier_applied is False:
                 raised = f"raised {trial.verifier_raised} and " if trial.verifier_raised else ""
                 raise LeaderboardError(
-                    f"the trial of {trial.task} in results/{LANE}/{arm}/{trial.job} made a "
+                    f"the trial of {trial.task} in results/{lane}/{arm}/{trial.job} made a "
                     f"{trial.patch_bytes}-byte patch, but its {grading} {raised}applied none"
                 )
             # Its result is the grade of a change the harness did not make.
             if trial.verifier_refused:
                 raise LeaderboardError(
-                    f"the trial of {trial.task} in results/{LANE}/{arm}/{trial.job} made a "
+                    f"the trial of {trial.task} in results/{lane}/{arm}/{trial.job} made a "
                     f"patch, but its {grading} could not apply it"
                 )
         # Such an arm has no rate to print.
         if all(trial.invalid for trial in trials[arm]):
             raise LeaderboardError(
-                f"every trial of arm {arm} under results/{LANE}/ is invalid: "
+                f"every trial of arm {arm} under results/{lane}/ is invalid: "
                 "its verifier wrote an empty reward"
             )
     return trials
@@ -321,11 +361,12 @@ def render(
     standings: Sequence[Standing],
     untested: Sequence[tuple[str, str, str]] = (),
     invalid: Sequence[tuple[str, str, str]] = (),
+    unjudged: Sequence[tuple[str, str, str]] = (),
 ) -> str:
     """
     The table of `standings`, in the order given, then each (arm, job, task)
-    in `untested`, then in `invalid`, each under its own heading, unless there
-    are none.
+    in `untested`, then in `unjudged`, then in `invalid`, each under its own
+    heading, unless there are none.
     """
     header = ["arm", "runs", "resolved rate", "pass@k"]
     rows = [
@@ -340,6 +381,10 @@ def render(
     lines = _table(header, rows)
     lines += _named(
         "These trials' verifiers recorded no test result, so their grading may have broken:", untested
+    )
+    lines += _named(
+        "These trials' judges gave no verdict on some rubric item, so their grading may have broken:",
+        unjudged,
     )
     lines += _named(
         "These trials' verifiers judged them invalid, so the leaderboard counts none of them:", invalid

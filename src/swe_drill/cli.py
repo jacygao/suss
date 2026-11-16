@@ -20,7 +20,7 @@ from harbor.cli.utils import parse_kwargs
 from swe_drill import agents, config, lanes, leaderboard
 from swe_drill.leaderboard import LeaderboardError
 from swe_drill.config import GRADING_KEYS, JUDGE_STRINGS, TOKEN_NAME, Config, ConfigError, verifier_env
-from swe_drill.lanes import LaneError
+from swe_drill.lanes import LaneError, atlas_rf
 
 
 VERIFIER = "swe_drill.replay:ReplayVerifier"
@@ -62,7 +62,9 @@ def harbor_commands(
     """
     The `harbor run` command for agent job `trial` of the arm on `lane`, which
     grades each trial itself in Harbor's separate verifier: ReplayVerifier on
-    rebench, and on senior JudgeVerifier, given the lane's judge.
+    rebench and atlas-rf, and on senior JudgeVerifier, given the lane's judge.
+    On atlas-rf it gives the verifier the rubric judge's model as EVAL_MODEL,
+    with `--ve`.
 
     It must run in the directory holding swe-drill.toml, which its relative paths
     resolve from. `allowed_hosts` are those the arm's agent class lists.
@@ -74,7 +76,8 @@ def harbor_commands(
     SWE-drill's own environment. It is given those of `verifier_reads` that .env
     sets, which the tasks read in `[verifier.env]` alone and so reach the
     verifier's test.sh and no sandbox. On senior that leaves out GRADING_KEYS,
-    and it withholds the judge's token too.
+    and it withholds the judge's token too. On atlas-rf it leaves out
+    EVAL_MODEL, which `--ve` sets.
 
     Raises ValueError, with a message for the user, when `harbor_args` include
     a positional argument, an option SWE-drill sets on the job, an option that
@@ -110,6 +113,8 @@ def harbor_commands(
         agent += ["--verifier", JUDGE_VERIFIER, *_judge_kwargs(config)]
     else:
         agent += ["--verifier", VERIFIER]
+    if lane == lanes.ATLAS_RF:
+        agent += ["--ve", f"{atlas_rf.EVAL_MODEL}={config.eval_model}"]
     agent += ["--jobs-dir", str(jobs_dir), "--job-name", job_name]
     _refuse(harbor_args)
     if reads:
@@ -121,6 +126,8 @@ def harbor_commands(
         given = {name: value for name, value in given.items() if name not in GRADING_KEYS}
         # The judge reads it from .env itself, and gives it to its sessions alone.
         withheld += (TOKEN_NAME,)
+    if lane == lanes.ATLAS_RF:
+        given = {name: value for name, value in given.items() if name != atlas_rf.EVAL_MODEL}
     return Command(agent, withheld, given)
 
 
@@ -201,6 +208,10 @@ _REFUSED = {
     "verifier": _GRADED,
     "verifier_import_path": _GRADED,
     "verifier_kwargs": _GRADED,
+    "verifier_env": (
+        "SWE-drill gives the verifier the variables .env sets that its tasks read, and on"
+        " atlas-rf the judge's model that swe-drill.toml names"
+    ),
     "yes": "SWE-drill answers Harbor's question itself, on a lane whose tasks read Harbor's environment",
     # Those that would change what the agent job runs.
     "config_path": "a job config file can change anything SWE-drill sets on the job",
@@ -400,9 +411,9 @@ def _parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         usage="swe-drill leaderboard --lane <lane>",
         help="rank every arm's results on a lane",
         description="Print each arm under results/<lane>/ with its runs, its resolved rate "
-        "and pass@k, best resolved rate first. Only rebench has a leaderboard.",
+        "and pass@k, best resolved rate first. Only rebench and atlas-rf have a leaderboard.",
     )
-    ranking.add_argument("--lane", required=True, help=lanes.REBENCH)
+    ranking.add_argument("--lane", required=True, help=", ".join(leaderboard.RANKED))
     return parser.parse_args(argv), harbor_args
 
 
@@ -474,10 +485,11 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
 def _leaderboard(lane: str, harbor_args: list[str], directory: Path) -> int:
     if harbor_args:
         raise _Stop("swe-drill leaderboard takes nothing after --")
-    if lane != lanes.REBENCH:
-        raise _Stop(f"swe-drill leaderboard covers {lanes.REBENCH} only, not {lane}")
+    if lane not in leaderboard.RANKED:
+        ranked = " and ".join(leaderboard.RANKED)
+        raise _Stop(f"swe-drill leaderboard covers {ranked} only, not {lane}")
     # Printed whole, after every check, so that an error leaves no partial table.
-    print(leaderboard.report(directory), end="")
+    print(leaderboard.report(directory, lane), end="")
     return 0
 
 
@@ -514,9 +526,9 @@ def _plan(
     lanes.check_lane(lane)
     download = settings.download(lane)
     # The whole lane even for a check, which tests that the arm can run it.
-    found = lanes.read_tasks(lanes.lane_tasks(lane, download))
-    lanes.check_buildable(lane, download, settings.path.parent / "lanes", check)
-    used = dict(list(found.items())[:1]) if check else found
+    lanes.read_tasks(lanes.lane_tasks(lane, download))
+    # The copies' task.toml, which may read other variables than the download's do.
+    used = lanes.check_buildable(lane, download, settings.path.parent / "lanes", check)
     reads = config.host_variables(used)
     # A variable [environment.env] reads would reach the agent's sandbox too.
     in_sandbox = config.host_variables(used, ("environment",))

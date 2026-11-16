@@ -1,10 +1,13 @@
 import asyncio
 import hashlib
+import importlib.util
 import json
 import random
 import shutil
 import subprocess
+import sys
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -887,12 +890,12 @@ def test_an_arm_that_sets_baseline_is_an_error_naming_it_and_the_key(results, ca
 
 
 @pytest.mark.parametrize("lane", ["senior", "pro-go"])
-def test_a_lane_other_than_rebench_is_an_error(results, capsys, lane):
+def test_a_lane_other_than_rebench_or_atlas_rf_is_an_error(results, capsys, lane):
     code = cli.main(["leaderboard", "--lane", lane], directory=results)
 
     out, err = capsys.readouterr()
     assert code != 0
-    assert (out, err) == ("", f"error: swe-drill leaderboard covers rebench only, not {lane}\n")
+    assert (out, err) == ("", f"error: swe-drill leaderboard covers rebench and atlas-rf only, not {lane}\n")
 
 
 def test_the_lane_is_required(results, capsys):
@@ -991,4 +994,201 @@ def test_a_verifier_that_applied_part_of_a_trials_patch_is_an_error_naming_it(re
         "",
         f"error: the trial of t3 in results/{LANE}/alpha/S-2 made a patch, "
         "but its verifier in S-2 could not apply it\n",
+    )
+
+
+# atlas-rf
+
+ATLAS = "atlas-rf"
+RUBRIC = {"id": "769a", "title": "1.1: Extracts the local buffer", "importance": "must have", "type": "positive"}
+
+
+def rubrics_results(*verdicts: str | None) -> dict:
+    """
+    The verifier/rubrics_results.json SWE Atlas's evaluate_rubrics.py writes,
+    one item for each verdict: "YES" or "NO", or None for an item its model
+    never answered, which it writes as passing and not evaluable.
+    """
+    scores = [
+        dict(
+            RUBRIC,
+            passes=verdict != "NO",
+            evaluable=verdict is not None,
+            score=None if verdict is None else {"status": verdict, "justification": "..."},
+        )
+        for verdict in verdicts
+    ]
+    judged = [score for score in scores if score["evaluable"]]
+    return {
+        "must_have_pass": bool(judged) and all(score["passes"] for score in judged),
+        "agg_score": sum(score["passes"] for score in judged) / len(judged) if judged else 0.0,
+        "rubric_count": len(scores),
+        "evaluable_count": len(judged),
+        "must_have_count": len(judged),
+        "rubric_scores": scores,
+    }
+
+
+JUDGED = rubrics_results("YES", "YES")
+# What evaluate_rubrics.py writes when every call to its model failed: every item unanswered.
+UNANSWERED = rubrics_results(None, None)
+TESTS_RAN = {"tests_reward": 1.0, "relevant_test_count": 4}
+
+
+def write_atlas_trial(
+    root: Path, arm: str, task: str, i: int, reward: float, rubrics=JUDGED, comparison=TESTS_RAN
+) -> Path:
+    """
+    The arm's trial of the task in agent job `S-<i>`, with the reward.json keys
+    Harbor reads from an atlas-rf verifier. A rubrics or comparison of None
+    leaves the verifier no such file.
+    """
+    job = root / "results" / ATLAS / arm / f"S-{i}"
+    trial = trial_directory(write_job(job), task, f"agent{i}")
+    write_json(trial / "config.json", {"task": {"path": f"lanes/{ATLAS}/{task}"}})
+    rewards = {
+        "reward": reward, "tests_reward": 1.0, "must_have_pass": reward, "rubrics_agg_score": 0.5,
+        "overall_pass": reward,
+    }
+    write_json(
+        trial / "result.json",
+        {"task_name": f"scale-ai/{task}", "trial_name": trial.name, "verifier_result": {"rewards": rewards}},
+    )
+    write_json(trial / "agent" / "suss.json", {"arm": arm, "patch_bytes": 4182})
+    write_json(
+        trial / "verifier" / "replay.json",
+        {"patch": "/logs/artifacts/model.patch", "patch_bytes": 4182, "apply_rc": 0, "apply_out": ""},
+    )
+    for name, value in (("rubrics_results.json", rubrics), ("comparison_results.json", comparison)):
+        (trial / "verifier" / name).unlink(missing_ok=True)
+        if value is not None:
+            write_json(trial / "verifier" / name, value)
+    return trial
+
+
+@pytest.fixture
+def atlas(tmp_path) -> Path:
+    """Two arms on atlas-rf: alpha resolving two of three tasks, and beta one."""
+    (tmp_path / "swe-drill.toml").write_text(SWE_DRILL_TOML)
+    for task, reward in (("t1", 1.0), ("t2", 1.0), ("t3", 0.0)):
+        write_atlas_trial(tmp_path, "alpha", task, 1, reward)
+    for task, reward in (("t1", 0.0), ("t2", 1.0), ("t3", 0.0)):
+        write_atlas_trial(tmp_path, "beta", task, 1, reward)
+    return tmp_path
+
+
+def test_the_atlas_rf_leaderboard_ranks_every_arm_on_its_trials_reward(atlas, capsys):
+    code = cli.main(["leaderboard", "--lane", ATLAS], directory=atlas)
+
+    out, err = capsys.readouterr()
+    assert (code, err) == (0, "")
+    assert out == (
+        "arm    runs  resolved rate  pass@k\n"
+        "alpha     1        67% ±50  67% @1\n"
+        "beta      1        33% ±50  33% @1\n"
+    )
+
+
+UNJUDGED = "These trials' judges gave no verdict on some rubric item, so their grading may have broken:\n"
+
+
+def test_the_atlas_rf_leaderboard_names_trials_whose_judge_or_tests_left_no_result(atlas, capsys):
+    write_atlas_trial(atlas, "beta", "t3", 1, 0.0, rubrics=UNANSWERED)
+    write_atlas_trial(atlas, "alpha", "t1", 1, 1.0, rubrics=rubrics_results("YES", None))
+    write_atlas_trial(atlas, "alpha", "t3", 1, 0.0, rubrics=None)
+    write_atlas_trial(atlas, "beta", "t1", 1, 0.0, rubrics={"error": "missing EVAL_API_KEY/EVAL_BASE_URL"})
+    write_atlas_trial(atlas, "alpha", "t2", 1, 1.0, comparison={"error": "No such file"})
+
+    code = cli.main(["leaderboard", "--lane", ATLAS], directory=atlas)
+
+    out, err = capsys.readouterr()
+    assert (code, err) == (0, "")
+    assert out.endswith(
+        "\n" + NAMED + "  alpha  S-1  t2\n"
+        "\n" + UNJUDGED + "  alpha  S-1  t1\n  alpha  S-1  t3\n  beta   S-1  t1\n  beta   S-1  t3\n"
+    )
+
+
+EVALUATE_RUBRICS = (
+    Path(__file__).resolve().parent / "atlas_tasks" / "task-69391d8d1ce51c407be1e531" / "tests" / "evaluate_rubrics.py"
+)
+
+
+class Unreachable:
+    """An OpenAI client whose every call fails, as one does when the judge's API cannot be reached."""
+
+    def __init__(self, **kwargs):
+        self.chat = self
+        self.completions = self
+
+    def create(self, **kwargs):
+        raise ConnectionError("Connection error.")
+
+
+def unreachable_judge(tmp_path: Path, monkeypatch) -> dict:
+    """What SWE Atlas's evaluate_rubrics.py writes when every call to its model fails."""
+    tests = tmp_path / "tests"
+    tests.mkdir(parents=True)
+    rubrics = [
+        {"id": "a", "title": "1: Maintainability", "annotations": {"type": "high level intent"}},
+        {"id": "b", "title": "1.1: Extracts the buffer", "annotations": {"type": "positive hli verifier", "importance": "must have"}},
+        {"id": "c", "title": "1.2: Keeps the old type", "annotations": {"type": "negative hli verifier", "importance": "must have"}},
+    ]
+    write_json(tests / "rubrics.json", rubrics)
+    (tests / "rubrics_system_prompt.txt").write_text("Grade it.")
+    (tests / "rubrics_user_prompt_template.txt").write_text("{problem_statement}\n{model_answer}\n{title}")
+    (tests / "prompt.txt").write_text("Refactor the buffers.")
+    spec = importlib.util.spec_from_file_location("evaluate_rubrics", EVALUATE_RUBRICS)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    results = tmp_path / "verifier" / "rubrics_results.json"
+    monkeypatch.setattr(module, "TESTS_DIR", str(tests))
+    monkeypatch.setattr(module, "PATCH_PATH", str(tmp_path / "agent.patch"))
+    monkeypatch.setattr(module, "RESULTS_PATH", str(results))
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=Unreachable))
+    monkeypatch.setenv("EVAL_API_KEY", "key")
+    monkeypatch.setenv("EVAL_BASE_URL", "https://judge.invalid")
+    (tmp_path / "agent.patch").write_text("diff --git a/x b/x\n")
+
+    assert module.main() == 0
+    return json.loads(results.read_text())
+
+
+def test_a_trial_whose_judge_reached_no_model_is_named(atlas, capsys, tmp_path, monkeypatch):
+    written = unreachable_judge(tmp_path / "judge", monkeypatch)
+    write_atlas_trial(atlas, "alpha", "t1", 1, 0.0, rubrics=written)
+    capsys.readouterr()
+
+    code = cli.main(["leaderboard", "--lane", ATLAS], directory=atlas)
+
+    out, err = capsys.readouterr()
+    assert (code, err) == (0, "")
+    # Every item passes, unjudged, so none fails the reward; must_have_pass is false only for want of any.
+    assert (written["must_have_pass"], written["evaluable_count"], written["rubric_count"]) == (False, 0, 2)
+    assert out.endswith("\n" + UNJUDGED + "  alpha  S-1  t1\n")
+
+
+def test_a_task_with_no_rubrics_is_judged(atlas, capsys):
+    write_atlas_trial(atlas, "beta", "t3", 1, 1.0, rubrics=rubrics_results())
+
+    code = cli.main(["leaderboard", "--lane", ATLAS], directory=atlas)
+
+    out, err = capsys.readouterr()
+    assert (code, err) == (0, "")
+    assert UNJUDGED not in out
+
+
+def test_an_atlas_rf_verifier_that_applied_none_of_a_trials_patch_is_an_error_naming_it(atlas, capsys):
+    trial = write_atlas_trial(atlas, "alpha", "t3", 1, 0.0)
+    write_json(trial / "verifier" / "replay.json", {"patch": None})
+
+    code = cli.main(["leaderboard", "--lane", ATLAS], directory=atlas)
+
+    out, err = capsys.readouterr()
+    assert code != 0
+    assert (out, err) == (
+        "",
+        f"error: the trial of t3 in results/{ATLAS}/alpha/S-1 made a 4182-byte patch, "
+        "but its verifier in S-1 applied none\n",
     )

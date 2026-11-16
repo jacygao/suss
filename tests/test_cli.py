@@ -94,7 +94,12 @@ def spec_config(tmp_path: Path, lane: str) -> Config:
 
 
 @pytest.mark.parametrize(
-    "lane, reads", [("rebench", ()), ("senior", ("ANTHROPIC_API_KEY",))]
+    "lane, reads",
+    [
+        ("rebench", ()),
+        ("senior", ("ANTHROPIC_API_KEY",)),
+        ("atlas-rf", ("COPILOT_GITHUB_TOKEN", "EVAL_MODEL")),
+    ],
 )
 def test_each_lanes_commands_match_the_spec_token_for_token(tmp_path, lane, reads):
     loaded = spec_config(tmp_path, lane)
@@ -234,6 +239,32 @@ def test_a_rebench_agent_job_grades_its_trials_in_swe_drill_verifier_with_no_reg
     ]
 
 
+ATLAS_READS = ("COPILOT_GITHUB_TOKEN", "EVAL_MODEL")
+
+
+def test_an_atlas_rf_agent_job_grades_in_swe_drill_verifier_and_gives_the_judge_its_model(tmp_path):
+    settings = dataclasses.replace(
+        with_dotenv(tmp_path, {"COPILOT_GITHUB_TOKEN": "gh-1", "EVAL_MODEL": "from-dotenv"}),
+        eval_model="gemini-4-argon",
+    )
+
+    agent = harbor_commands(
+        settings, hosts(()), "atlas-rf", STAMP, 1, reads=ATLAS_READS, verifier_reads=ATLAS_READS
+    )
+
+    assert agent.argv == [
+        "harbor", "run", "-y", "-p", "lanes/atlas-rf", "-e", "docker", "-n", "16", "-k", "1",
+        "-a", "swe_drill.agents.copilot_cli:CopilotCli", "--ak", "arm=peer-review", "--ak", "drill_config=swe-drill.toml",
+        "--ak", "lane=atlas-rf", "--verifier", "swe_drill.replay:ReplayVerifier",
+        "--ve", "EVAL_MODEL=gemini-4-argon",
+        "--jobs-dir", "results/atlas-rf/peer-review", "--job-name", f"{STAMP}-1",
+    ]
+    # Harbor fills the judge's key from its own environment, for test.sh's command alone.
+    assert agent.given == {"COPILOT_GITHUB_TOKEN": "gh-1"}
+    assert agent.withheld == ATLAS_READS
+    assert not any("gh-1" in token for token in agent.argv), "the judge's token is an argument"
+
+
 GRADING_OPTIONS = ("--ve", "--verifier-env", "--ae", "--agent-env", "--ek", "--environment-kwarg")
 
 
@@ -331,6 +362,10 @@ def options_swe_drill_sets(tmp_path) -> set[str]:
         harbor_commands(
             make_config(tmp_path), hosts(), "senior", STAMP, 1, reads=("ANTHROPIC_API_KEY",)
         ),
+        harbor_commands(
+            dataclasses.replace(make_config(tmp_path), eval_model="gemini-4-argon"), hosts(),
+            "atlas-rf", STAMP, 1,
+        ),
     ]
     emitted = set()
     for command in commands:
@@ -355,7 +390,7 @@ def refused_options(tmp_path) -> set[str]:
 def test_every_option_swe_drill_sets_on_the_job_is_refused(tmp_path):
     emitted = options_swe_drill_sets(tmp_path)
 
-    assert len(emitted) == 12
+    assert len(emitted) == 13
     assert emitted <= refused_options(tmp_path)
 
 
@@ -654,6 +689,12 @@ def test_an_options_value_is_not_taken_for_a_positional_argument(tmp_path):
             "--job-name can't be passed after --: SWE-drill names each job from the run's stamp"
             " and its trial number",
         ),
+        (
+            ["--ve", "EVAL_MODEL=x"],
+            "--ve/--verifier-env can't be passed after --: SWE-drill gives the verifier the"
+            " variables .env sets that its tasks read, and on atlas-rf the judge's model that"
+            " swe-drill.toml names",
+        ),
     ],
 )
 def test_a_refused_option_says_where_its_setting_comes_from(extra, message, tmp_path):
@@ -691,10 +732,15 @@ print(found.__module__, found.__name__)
 
 @pytest.mark.parametrize(
     "lane, verifier",
-    [("rebench", "swe_drill.replay ReplayVerifier"), ("senior", "swe_drill.judge JudgeVerifier")],
+    [
+        ("rebench", "swe_drill.replay ReplayVerifier"),
+        ("senior", "swe_drill.judge JudgeVerifier"),
+        ("atlas-rf", "swe_drill.replay ReplayVerifier"),
+    ],
 )
 def test_the_harbor_swe_drill_runs_loads_each_lanes_verifier_with_no_pythonpath(tmp_path, lane, verifier):
-    agent = harbor_commands(make_config(tmp_path), hosts(), lane, STAMP, 1)
+    settings = dataclasses.replace(make_config(tmp_path), eval_model="gemini-4-argon")
+    agent = harbor_commands(settings, hosts(), lane, STAMP, 1)
     python = harbor_executable().read_text().splitlines()[0].removeprefix("#!")
     env = {name: value for name, value in os.environ.items() if name != "PYTHONPATH"}
 

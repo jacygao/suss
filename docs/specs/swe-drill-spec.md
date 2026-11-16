@@ -30,6 +30,7 @@ claude-code     3         58% ±8  70% @3
 | Modal | 1.5.1 or later, and the account Harbor's `modal` environment uses. `uv sync --extra modal` installs its client into SWE-drill's environment, through Harbor's own `modal` extra at the Harbor version above. A plain `uv sync` leaves it out. | The sandboxes, when `environment` is `modal`. Versions before 1.5.1 cannot take a network policy per phase. |
 | SWE-rebench | `ibragim-badertdinov/swe-rebench-07-2026` from Harbor Hub, as `harbor download` writes it | The `rebench` lane's tasks. |
 | Senior SWE-Bench | `snorkel-ai/senior-swe-bench-v2026.06` from Harbor Hub, as `harbor download` writes it | The `senior` lane's tasks. |
+| SWE Atlas | `scale-ai/swe-atlas-rf` from Harbor Hub, as `harbor download` writes it | The `atlas-rf` lane's tasks. |
 | Python | 3.12 | SWE-drill itself, whose agents and verifier Harbor imports. |
 | `uv` | any | Installs SWE-drill and Harbor. |
 | Azure CLI | any, signed in with `az login` | `scripts/azure-run.sh`, which runs one `swe-drill run` on an Azure VM's Docker and deletes the VM once its results are kept. |
@@ -119,6 +120,7 @@ is the trial's result.
 |---|---|
 | `rebench` | `swe_drill.replay:ReplayVerifier` |
 | `senior` | `swe_drill.judge:JudgeVerifier`, which grades as `ReplayVerifier` does and judges the patch first |
+| `atlas-rf` | `swe_drill.replay:ReplayVerifier` |
 
 It applies the patch with:
 
@@ -126,9 +128,10 @@ It applies the patch with:
 git apply --verbose model.patch
 ```
 
-Git applies all of the patch or none of it. The patch runs from the starting
-tree, which the verifier's sandbox also starts from, so a patch SWE-drill captured
-applies there.
+That changes the working tree alone, so `test.sh` finds the change uncommitted,
+with `HEAD` at the base. Git applies all of the patch or none of it. The patch
+runs from the starting tree, which the verifier's sandbox also starts from, so a
+patch SWE-drill captured applies there.
 
 A harness cannot change its result by changing the sandbox it worked in, because
 the grading happens in another.
@@ -432,6 +435,12 @@ The agent's own files go there too, such as Copilot CLI's stream,
     }
   }
   ```
+- On `atlas-rf`, `grader` also holds the model its rubric judge calls, from
+  `[lanes.atlas-rf.judge]`:
+
+  ```json
+  { "grader": { "dataset": "swe-atlas-rf", "judge_model": "gemini-4-argon" } }
+  ```
 - `base` is the commit. `model.patch` applies to the starting tree, which is
   the base only when the image left no change in the workspace.
 - `status` is `ok`, `harness-failed` or `timed-out`, or for
@@ -539,13 +548,13 @@ and `reported_models` stays the coding agent's:
 
 ## 5. Lanes
 
-SWE-drill has two lanes, `rebench` and `senior`. Every task gives the agent a
-repository at the commit before a real change, and an instruction about that
-change. The task's verifier grades it, and a trial resolves when its reward is
-1. Each lane is measured on its own, and nothing compares one lane with
-another. On `rebench`, `swe-drill leaderboard` ranks the arms by the share of trials
-that resolve. `senior` has no leaderboard, and each of its trials keeps its
-judges' rubric and taste scores in `verifier/judge.json`.
+SWE-drill has three lanes, `rebench`, `senior` and `atlas-rf`. Every task gives
+the agent a repository at the commit before a real change, and an instruction
+about that change. The task's verifier grades it, and a trial resolves when its
+reward is 1. Each lane is measured on its own, and nothing compares one lane
+with another. On `rebench` and `atlas-rf`, `swe-drill leaderboard` ranks the arms
+by the share of trials that resolve. `senior` has no leaderboard, and each of
+its trials keeps its judges' rubric and taste scores in `verifier/judge.json`.
 
 Each lane is a directory of copies of its tasks, built from the download that
 its key in `swe-drill.toml` names. Each task's image is built from the `Dockerfile`
@@ -644,6 +653,70 @@ above, indentation included, or with more than one, or in a `tests` directory
 that is a link, makes `swe-drill run` exit with an error naming it before it
 builds any lane or runs any job.
 
+### `atlas-rf`
+
+All 70 tasks of SWE Atlas's Refactoring set, `scale-ai/swe-atlas-rf`. Each
+instruction asks for a refactoring of a real repository, names the interfaces it
+must leave behind, and says the test files are already changed. Every task names
+16 CPUs and 16384 MiB, an agent timeout of 3600 seconds and a verifier timeout
+of 7200.
+
+The verifier's `test.sh` captures the change in the workspace with `git add -A`
+and `git diff --cached HEAD`, runs the regression tests the refactoring must
+keep passing, then runs `tests/evaluate_rubrics.py`, which asks an LLM judge
+whether the change meets each of the task's rubric items. It writes
+`reward.json`, whose `reward` is 1 when those tests pass and the judge passed
+every must-have item it gave a verdict on:
+
+```json
+{ "reward": 0.0, "tests_reward": 1.0, "must_have_pass": false, "rubrics_agg_score": 0.6, "overall_pass": false }
+```
+
+The judge's verdicts are in `verifier/rubrics_results.json`. An item the judge
+gave no verdict on, as when every call to its model failed, is
+`"evaluable": false` there and counts neither way, so a judge that reaches no
+model leaves `must_have_pass` false and the reward 0.
+
+Each copy's `task.toml` adds `[verifier] environment_mode = "separate"`, and
+changes three lines of its `[verifier.env]` so the judge calls Copilot's API:
+
+| The task's line | The copy's |
+|---|---|
+| `EVAL_API_KEY = "${OPENAI_API_KEY}"` | `EVAL_API_KEY = "${COPILOT_GITHUB_TOKEN}"` |
+| `EVAL_BASE_URL = "${OPENAI_API_BASE}"` | `EVAL_BASE_URL = "https://api.enterprise.githubcopilot.com"` |
+| `EVAL_MODEL = "${EVAL_MODEL:-anthropic/claude-opus-4-5-20251101}"` | `EVAL_MODEL = "${EVAL_MODEL}"` |
+
+The agent job's Harbor holds `COPILOT_GITHUB_TOKEN` from `.env`, and takes
+`EVAL_MODEL` as `--ve`, from `[lanes.atlas-rf.judge]`.
+
+The judge alone receives the key. Each copy's `tests/test.sh` changes two lines
+of the task's, so the tests, which run code the agent wrote, start with no
+`EVAL_API_KEY`:
+
+| The task's | The copy's |
+|---|---|
+| `set -uo pipefail` | the same, then `_judge_key=${EVAL_API_KEY-}; unset EVAL_API_KEY` |
+| `python3 /tests/evaluate_rubrics.py \|\| echo "evaluate_rubrics.py exited non-zero"` | `EVAL_API_KEY="$_judge_key" python3 /tests/evaluate_rubrics.py \|\| echo "evaluate_rubrics.py exited non-zero"` |
+
+`test.sh` itself still starts with the key in its environment.
+
+Copilot's API refuses every call without a `Copilot-Integration-Id` header, so
+each copy's `tests/evaluate_rubrics.py` makes its one client send one, and is
+otherwise the task's:
+
+```python
+client = OpenAI(api_key=api_key, base_url=base_url, default_headers={"Copilot-Integration-Id": "copilot-developer-cli"})
+```
+
+A task whose `[verifier]` sets another `environment_mode` or an `environment`
+of its own, whose `task.toml` has no line that is exactly one of the task's
+lines above or has more than one, whose three lines are not all in
+`[verifier.env]`, whose `test.sh` has not exactly one of each of its two lines
+above, whose `evaluate_rubrics.py` calls
+`OpenAI(api_key=api_key, base_url=base_url)` other than once, or whose `tests`
+directory is a link, makes `swe-drill run` exit with an error naming it before
+it builds any lane or runs any job.
+
 ### Network
 
 In the agent phase, a trial reaches the hosts in its agent class's
@@ -666,15 +739,17 @@ and `clickhouse.com`, under an agent allowing `api.anthropic.com` and
 Harbor ignores `--allow-agent-host` when the agent's network is public, which
 it is when a task's `[agent]` sets no `network_mode` and the task gives the
 network to the whole trial, with `[environment] network_mode = "public"` or with
-`allow_internet = true`. Every `rebench` task does. So the copy's `task.toml`
+`allow_internet = true`. Every `rebench` and `atlas-rf` task does. So the copy's `task.toml`
 adds `[agent] network_mode = "no-network"` where `[agent]` sets no
 `network_mode`. A `task.toml` whose `[agent]` sets `no-network` or `allowlist`,
 as every `senior` task's does, is copied unchanged. One whose `[agent]` sets any
 other `network_mode`, or sets `allowed_hosts` with no `network_mode`, makes
 `swe-drill run` exit with an error naming it before it builds any lane or runs any
 job. The verifier keeps the task's own network, which a `rebench` copy uses to
-install Python through apt on an image that has none. A `senior` task's verifier has a public
-network, through which the judge reaches Copilot.
+install Python through apt on an image that has none. A `senior` or `atlas-rf`
+task's verifier has a public network, through which the judge reaches Copilot,
+and an `atlas-rf` `test.sh` installs `openai` from PyPI on an image that lacks
+it.
 
 ## 6. Commands
 
@@ -687,13 +762,14 @@ swe-drill run copilot-gpt rebench
 
 It reads the arm from `swe-drill.toml` in the current directory. For each lane, it
 builds `lanes/<lane>/`, a directory of copies of the lane's task directories
-from the directory its key names: `swe_rebench` for `rebench`, and
-`senior_swe_bench` for `senior`. Each copy has
+from the directory its key names: `swe_rebench` for `rebench`,
+`senior_swe_bench` for `senior`, and `swe_atlas_rf` for `atlas-rf`. Each copy has
 `[agent] network_mode = "no-network"` added to its `task.toml` where its
 `[agent]` sets no `network_mode`, and the separate verifier its lane describes.
 On `senior` it also has `litellm>=1.0,<1.106` in place of `litellm>=1.0,<2.0`
 in its `tests/test.sh`, which runs the validation agent through Copilot CLI
-with the `tests/swe_drill_validate.py` the copy adds. A build removes what an
+with the `tests/swe_drill_validate.py` the copy adds. On `atlas-rf` its rubric
+judge calls Copilot's API, as its lane describes. A build removes what an
 earlier build of the lane left. Harbor builds each task's image from its
 `Dockerfile` when its trial starts.
 
@@ -721,6 +797,18 @@ On `senior` it judges them too, with the lane's judge from `swe-drill.toml`:
   --jobs-dir results/senior/copilot-gpt --job-name <stamp>-1
 ```
 
+On `atlas-rf` it gives the rubric judge its model from `swe-drill.toml`:
+
+```bash
+<env>/bin/harbor run -y -p lanes/atlas-rf -e docker -n 16 -k 1 \
+  -a swe_drill.agents.copilot_cli:CopilotCli -m gpt-6.1-sol \
+  --ak version=1.0.105 --ak reasoning_effort=high \
+  --ak arm=copilot-gpt --ak drill_config=swe-drill.toml --ak lane=atlas-rf \
+  --allow-agent-host api.github.com --allow-agent-host api.enterprise.githubcopilot.com \
+  --verifier swe_drill.replay:ReplayVerifier --ve EVAL_MODEL=gemini-4-argon \
+  --jobs-dir results/atlas-rf/copilot-gpt --job-name <stamp>-1
+```
+
 `<stamp>` is the time `swe-drill run` started, in UTC, as `20261031T142500Z`. Every
 job of the run shares it, and `-1` to `-K` tell its agent jobs apart. `<env>`
 is the Python environment SWE-drill is installed in, an absolute path SWE-drill forms
@@ -728,7 +816,7 @@ itself. Its `harbor` is the one that can import `swe_drill.agents` and SWE-drill
 verifiers, which a `harbor` elsewhere on `PATH` may not be.
 
 When a task in the lane has Harbor fill a variable from Harbor's environment,
-as every `senior` task does, every job of the lane takes `-y`, right after
+as every `senior` and `atlas-rf` task does, every job of the lane takes `-y`, right after
 `run`. Harbor asks before such a job whether its tasks may load those
 variables, and without a terminal it reads no answer and exits 1 with
 `Aborted.`. Answering yes is safe because Harbor holds only the values SWE-drill
@@ -748,13 +836,24 @@ error: /home/me/evals/.env sets no COPILOT_GITHUB_TOKEN, which SWE-drill judges 
 trials of senior with
 ```
 
+A run of `atlas-rf` exits with an error the same way when `swe-drill.toml` sets
+no `model` in `[lanes.atlas-rf.judge]`, or `.env` sets no
+`COPILOT_GITHUB_TOKEN`:
+
+```
+$ swe-drill run copilot-gpt atlas-rf
+error: /home/me/evals/swe-drill.toml: no model in [lanes.atlas-rf.judge], which
+names the model atlas-rf's rubric judge calls through Copilot, such as
+gemini-4-argon
+```
+
 Options after `--` go to every agent job. Passing any of these, under any name
 or spelling Harbor accepts, is an error that names it and says why, and runs
 nothing:
 
 - An option SWE-drill sets on the agent job, even with SWE-drill's own value: `-p`,
   `-e`, `-n`, `-k`, `-a`, `--ak`, `--allow-agent-host`, `--verifier`,
-  `--verifier-kwarg`, `--jobs-dir`, `--job-name` and `-y`. Also `-m`, which
+  `--verifier-kwarg`, `--ve`, `--jobs-dir`, `--job-name` and `-y`. Also `-m`, which
   the arm's `model` sets, and `--disable-verification` and its opposite
   `--enable-verification`, since the agent job grades its own trials.
 - `--env-file`, which would load the file into the agent job's environment,
@@ -812,6 +911,7 @@ swe-drill run copilot-gpt rebench --check
 ```toml
 swe_rebench = "../tasks/swe-rebench-07-2026"
 senior_swe_bench = "../tasks/senior/senior-swe-bench-v2026.06"
+swe_atlas_rf = "../tasks/swe-atlas-rf"
 environment = "docker"
 k = 1
 concurrency = 16
@@ -833,15 +933,20 @@ kwargs = { version = "1.0.105", reasoning_effort = "high", hve_core_commit = "55
 
 [lanes.senior.judge]
 credit_budget = 2000
+
+[lanes.atlas-rf.judge]
+model = "gemini-4-argon"
 ```
 
-- `swe_rebench` and `senior_swe_bench` name the directories of tasks that
-  `harbor download` writes, relative to the directory holding `swe-drill.toml`.
-  `swe_rebench` is `<dir>/swe-rebench-07-2026` after
-  `harbor download ibragim-badertdinov/swe-rebench-07-2026 -o <dir>`, and
+- `swe_rebench`, `senior_swe_bench` and `swe_atlas_rf` name the directories of
+  tasks that `harbor download` writes, relative to the directory holding
+  `swe-drill.toml`. `swe_rebench` is `<dir>/swe-rebench-07-2026` after
+  `harbor download ibragim-badertdinov/swe-rebench-07-2026 -o <dir>`,
   `senior_swe_bench` is `<dir>/senior-swe-bench-v2026.06` after
-  `harbor download snorkel-ai/senior-swe-bench-v2026.06 -o <dir>`. Each is
-  required only by a run of its lane, `rebench` or `senior`. A run of a lane
+  `harbor download snorkel-ai/senior-swe-bench-v2026.06 -o <dir>`, and
+  `swe_atlas_rf` is `<dir>/swe-atlas-rf` after
+  `harbor download scale-ai/swe-atlas-rf -o <dir>`. Each is required only by a
+  run of its lane, `rebench`, `senior` or `atlas-rf`. A run of a lane
   whose key is missing exits with an error naming it before it builds any lane
   or runs any job.
 - `agent` names the arm's agent class, as `module:Class`. `model` is passed as
@@ -910,14 +1015,19 @@ credit_budget = 2000
   validation_effort = "high"
   ```
 
+- `[lanes.atlas-rf.judge]` gives `model`, the model an `atlas-rf` run's rubric
+  judge calls through Copilot's API, by the name that API takes. A model that
+  is not a non-empty string, or any other key, makes `swe-drill run` exit with an error
+  before it builds any lane or runs any job.
+
   A `[lanes.<lane>]` table for a lane SWE-drill does not have, or one that sets
-  anything else, but `judge` on `senior`, makes `swe-drill run` exit with an error
-  before it builds any lane or runs any job:
+  anything but `judge` on `senior` or `atlas-rf`, makes `swe-drill run` exit
+  with an error before it builds any lane or runs any job:
 
   ```
   $ swe-drill run copilot-gpt rebench
   error: /home/me/evals/swe-drill.toml: sets [lanes.rebnech], but SWE-drill has no lane
-  named rebnech; its lanes are rebench, senior
+  named rebnech; its lanes are rebench, senior, atlas-rf
   ```
 - `max_cost_usd`, at the top or on the arm, makes `swe-drill run` exit with an error
   before it builds any lane or runs any job, with `DRY_RUN=1` and `--check` too:
@@ -943,8 +1053,8 @@ credit_budget = 2000
 swe-drill leaderboard --lane rebench
 ```
 
-It ranks every arm under `results/rebench/` in the current directory, the one
-holding `swe-drill.toml`. Each directory there is an arm, whether or not `swe-drill.toml`
+It ranks every arm under `results/<lane>/` in the current directory, the one
+holding `swe-drill.toml`, for `rebench` or `atlas-rf`. Each directory there is an arm, whether or not `swe-drill.toml`
 defines it, and trials under `checks/` never count. It prints one table, best
 resolved rate first, and arms with the same rate by name:
 
@@ -976,29 +1086,40 @@ if it had not run, so a task whose every trial in an arm is invalid is not one
 of that arm's tasks.
 
 After the table, it names each valid trial whose verifier recorded no test
-result, then each invalid trial, by arm in the table's order, then by job and
-task. A verifier records a test result when its `verifier/report.json` counts a
-test as `PASSED`, `FAILED`, `SKIPPED` or `ERROR` in `parsed_counts`.
+result, then on `atlas-rf` each valid trial whose judge gave no verdict on some
+rubric item, then each invalid trial, by arm in the table's order, then by job
+and task.
+
+- A `rebench` verifier records a test result when its `verifier/report.json`
+  counts a test as `PASSED`, `FAILED`, `SKIPPED` or `ERROR` in `parsed_counts`,
+  and an `atlas-rf` verifier when its `verifier/comparison_results.json` holds a
+  number as `tests_reward`.
+- An `atlas-rf` judge gave a verdict on every item when each entry of
+  `rubric_scores` in `verifier/rubrics_results.json` is `"evaluable": true`. A
+  file that is missing, or has no `rubric_scores`, gives none.
 
 ```
 These trials' verifiers recorded no test result, so their grading may have broken:
   claude-opus  20261109T031500Z-2  marimo-team__marimo-9766
 
+These trials' judges gave no verdict on some rubric item, so their grading may have broken:
+  copilot-gpt  20261118T011500Z-1  task-69391d8d1ce51c407be1e531
+
 These trials' verifiers judged them invalid, so the leaderboard counts none of them:
   copilot-gpt  20261108T011500Z-1  gleam-lang__gleam-4890
 ```
 
-`--lane` is required, and only `rebench` has a leaderboard:
+`--lane` is required, and only `rebench` and `atlas-rf` have a leaderboard:
 
 ```
 $ swe-drill leaderboard --lane senior
-error: swe-drill leaderboard covers rebench only, not senior
+error: swe-drill leaderboard covers rebench and atlas-rf only, not senior
 ```
 
 It exits with an error, and prints nothing else, when:
 
 - `swe-drill.toml` is missing, or an arm in it sets `baseline`.
-- `results/rebench/` holds no arm, or an arm with no trials or only invalid
+- `results/<lane>/` holds no arm, or an arm with no trials or only invalid
   ones:
 
   ```
@@ -1037,6 +1158,7 @@ src/swe_drill/
     edits.py        changing one line or key of a task's file, and nothing else
     rebench.py      what the rebench lane alone leaves out and changes
     senior.py       what the senior lane alone changes
+    atlas_rf.py     what the atlas-rf lane alone changes
   config.py         swe-drill.toml
   replay.py         ReplayVerifier, which grades a trial in Harbor's separate verifier
   judge.py          JudgeVerifier, which judges a senior trial there, then grades it

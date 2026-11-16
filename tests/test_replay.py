@@ -467,6 +467,41 @@ def test_a_patch_that_touches_no_test_file_records_two_empty_lists(
     assert (workspace / "lines.txt").read_text().splitlines()[2] == "ours"
 
 
+ATLAS_TEST_SH = (
+    Path(__file__).resolve().parent / "atlas_tasks" / "task-69391d8d1ce51c407be1e531" / "tests" / "test.sh"
+)
+
+
+def atlas_capture(workspace: Path, storage: Path) -> bytes:
+    """
+    Run, in the workspace, the lines of SWE Atlas's test.sh that capture the
+    agent's change for its judge, as the verifier runs them after the replay,
+    and return the patch they write.
+    """
+    lines = ATLAS_TEST_SH.read_text().splitlines()
+    start = lines.index("# ── Capture agent diff (including new files) ──") + 1
+    capture = "\n".join(lines[start : lines.index("", start)])
+    storage.mkdir()
+    subprocess.run(
+        ["bash", "-c", capture.replace("/tmp_artifact_storage", str(storage))], cwd=workspace, check=True
+    )
+    return (storage / "agent.patch").read_bytes()
+
+
+def test_swe_atlas_captures_the_replayed_patch_less_its_test_files_for_its_judge(
+    tmp_path, local_environment, workspace, found
+):
+    source = {"lines.txt": b"refactored\n", "pkg/buffer/buffer.go": b"package buffer\n"}
+    base = git(workspace, "rev-parse", "HEAD")
+    expected = patch_of(workspace, write(source))
+
+    regrade(tmp_path, local_environment, workspace, write({**source, "pkg/buffer/buffer_test.go": b"package buffer\n"}))
+
+    # An empty capture still grades: the judge fails every item and the reward is 0.
+    assert atlas_capture(workspace, tmp_path / "storage") == expected
+    assert git(workspace, "rev-parse", "HEAD") == base
+
+
 def test_a_reset_git_refuses_is_an_error_naming_what_git_printed(
     tmp_path, modal_environment, workspace, found, monkeypatch
 ):
