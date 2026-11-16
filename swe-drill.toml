@@ -1,5 +1,6 @@
 swe_rebench = "../tasks/swe-rebench-07-2026"
 senior_swe_bench = "../tasks/senior/senior-swe-bench-v2026.06"
+swe_atlas_rf = "../tasks/swe-atlas-rf"
 environment = "modal"
 k = 1
 concurrency = 32
@@ -51,3 +52,6 @@ kwargs = { version = "2.1.311", reasoning_effort = "high" }
 
 [lanes.senior.judge]
 credit_budget = 2000
+
+[lanes.atlas-rf.judge]
+model = "gemini-4-argon"

@@ -102,6 +102,7 @@ class Project:
         named = {
             "swe_rebench": "../tasks/swe-rebench-07-2026",
             "senior_swe_bench": "../tasks/senior/senior-swe-bench-v2026.06",
+            "swe_atlas_rf": "../tasks/swe-atlas-rf",
         }
         (self.directory / "swe-drill.toml").write_text(
             "".join(f'{key} = "{named[key]}"\n' for key in downloads)
@@ -703,7 +704,7 @@ def test_a_lane_swe_drill_does_not_have_in_swe_drill_toml_is_refused_as_the_spec
     assert code != 0
     assert err == (
         f"error: {project.directory / 'swe-drill.toml'}: sets [lanes.rebnech], but SWE-drill has no lane "
-        "named rebnech; its lanes are rebench, senior\n"
+        "named rebnech; its lanes are rebench, senior, atlas-rf\n"
     )
     assert out == ""
     assert_nothing_ran(project)
@@ -1541,3 +1542,118 @@ def test_a_class_that_is_not_a_harbor_agent_is_refused_before_anything_runs(proj
     _, err = capfd.readouterr()
     assert "is not an agent built on swe_drill.agents.Adapter" in err
     assert_nothing_ran(project)
+
+
+# atlas-rf
+
+ATLAS_TASKS = Path(__file__).resolve().parent / "atlas_tasks"
+ATLAS_JUDGE = '[lanes.atlas-rf.judge]\nmodel = "gemini-4-argon"\n'
+
+
+@pytest.fixture
+def atlas(project) -> Project:
+    """The project, with SWE Atlas's download named in swe-drill.toml and its judge's model set."""
+    shutil.copytree(ATLAS_TASKS, project.directory.parent / "tasks" / "swe-atlas-rf")
+    project.write_toml(
+        downloads=("swe_rebench", "senior_swe_bench", "swe_atlas_rf"), lane_tables=ATLAS_JUDGE
+    )
+    return project
+
+
+def write_atlas_toml(project: Project, lane_tables: str) -> None:
+    project.write_toml(downloads=("swe_atlas_rf",), lane_tables=lane_tables)
+
+
+def test_the_atlas_rf_lane_runs_k_agent_jobs_giving_the_judge_its_model_and_the_copilot_token(
+    atlas, monkeypatch
+):
+    # SWE-drill's own environment does not count: the verifier's token comes from .env alone.
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "exported-in-the-shell")
+    monkeypatch.setenv("EVAL_MODEL", "exported-in-the-shell")
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", f"64 {64 * GIB}")
+    write_dotenv(atlas, "COPILOT_GITHUB_TOKEN=gh-1\nOPENAI_API_KEY=sk-1\n")
+
+    assert atlas.run("peer-review", "atlas-rf") == 0
+
+    agents = atlas.records("harbor")
+    assert len(agents) == 2
+    for agent in agents:
+        argv = agent["argv"]
+        assert argv[:2] == ["run", "-y"]
+        assert value(argv, "-p") == "lanes/atlas-rf"
+        assert value(argv, "--verifier") == "swe_drill.replay:ReplayVerifier"
+        assert value(argv, "--ve") == "EVAL_MODEL=gemini-4-argon"
+        assert agent["env"]["COPILOT_GITHUB_TOKEN"] == "gh-1"
+        assert "EVAL_MODEL" not in agent["env"]
+        assert "OPENAI_API_KEY" not in agent["env"]
+        assert not any("gh-1" in token for token in argv)
+    copy = atlas.directory / "lanes" / "atlas-rf" / "task-69391d8d1ce51c407be1e531"
+    assert (copy / "tests" / "evaluate_rubrics.py").read_bytes().count(b"Copilot-Integration-Id") == 1
+
+
+@pytest.mark.parametrize(
+    "dry_run, check", [(False, False), (True, False), (False, True)], ids=["run", "dry-run", "check"]
+)
+@pytest.mark.parametrize("lane_tables", ["", "[lanes.atlas-rf.judge]\n"], ids=["no-table", "no-model"])
+def test_an_atlas_rf_run_with_no_judge_model_is_refused_as_the_spec_shows_before_anything_runs(
+    atlas, capfd, monkeypatch, dry_run, check, lane_tables
+):
+    if dry_run:
+        monkeypatch.setenv("DRY_RUN", "1")
+    write_dotenv(atlas, JUDGES_KEY)
+    write_atlas_toml(atlas, lane_tables)
+
+    code = atlas.run("peer-review", "atlas-rf", *(["--check"] if check else []))
+
+    out, err = capfd.readouterr()
+    assert code != 0
+    assert err == (
+        f"error: {atlas.directory / 'swe-drill.toml'}: no model in [lanes.atlas-rf.judge], which names"
+        " the model atlas-rf's rubric judge calls through Copilot, such as gemini-4-argon\n"
+    )
+    assert out == ""
+    assert_nothing_ran(atlas)
+
+
+@pytest.mark.parametrize("dotenv", ["", "COPILOT_GITHUB_TOKEN=\n"], ids=["unset", "empty"])
+def test_an_atlas_rf_run_with_no_copilot_token_is_refused_before_anything_runs(
+    atlas, capfd, monkeypatch, dotenv
+):
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "from-the-shell")
+    write_dotenv(atlas, dotenv)
+
+    code = atlas.run("peer-review", "atlas-rf")
+
+    assert code != 0
+    assert capfd.readouterr().err == (
+        f"error: {atlas.directory / '.env'} sets no COPILOT_GITHUB_TOKEN, which SWE-drill judges the"
+        " trials of atlas-rf with\n"
+    )
+    assert_nothing_ran(atlas)
+
+
+def test_one_atlas_rf_trial_that_does_not_fit_in_docker_is_refused(atlas, capfd, monkeypatch):
+    write_dotenv(atlas, JUDGES_KEY)
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", f"16 {16 * GIB - 2**20}")
+
+    code = atlas.run("peer-review", "atlas-rf", "--check")
+
+    assert code != 0
+    assert capfd.readouterr().err == (
+        "error: one trial of the first task in atlas-rf needs 16 CPUs and 16384 MiB, but Docker has "
+        "16 CPUs and 16383 MiB; give Docker more\n"
+    )
+    assert atlas.records("harbor") == []
+    assert not (atlas.directory / "lanes").exists()
+
+
+def test_a_dry_run_of_atlas_rf_names_the_token_and_never_its_value(atlas, capfd, monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "1")
+    write_dotenv(atlas, "COPILOT_GITHUB_TOKEN=gh-secret\n")
+
+    assert atlas.run("peer-review", "atlas-rf", "--check") == 0
+
+    lines = capfd.readouterr().out.splitlines()
+    assert "gh-secret" not in "\n".join(lines)
+    assert lines[0] == "# from .env: COPILOT_GITHUB_TOKEN"
+    assert "--verifier swe_drill.replay:ReplayVerifier --ve EVAL_MODEL=gemini-4-argon" in lines[1]

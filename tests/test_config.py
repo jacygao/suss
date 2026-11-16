@@ -33,6 +33,7 @@ def write_config(directory: Path, text: str) -> Path:
 TOP = """\
 swe_rebench = "../tasks/swe-rebench-07-2026"
 senior_swe_bench = "../tasks/senior/senior-swe-bench-v2026.06"
+swe_atlas_rf = "../tasks/swe-atlas-rf"
 environment = "docker"
 k = 3
 concurrency = 4
@@ -74,7 +75,7 @@ def test_a_lane_swe_drill_does_not_have_is_an_error_naming_it(tmp_path: Path):
         config.load(path, "a", "rebench")
 
     assert str(error.value) == (
-        f"{path}: sets [lanes.senoir], but SWE-drill has no lane named senoir; its lanes are rebench, senior"
+        f"{path}: sets [lanes.senoir], but SWE-drill has no lane named senoir; its lanes are rebench, senior, atlas-rf"
     )
 
 
@@ -88,6 +89,7 @@ def test_a_key_swe_drill_does_not_read_on_a_lane_is_an_error_naming_it(tmp_path:
 
     assert str(error.value) == (
         f"{path}: [lanes.rebench] sets max_cost_usd, but SWE-drill reads only [lanes.senior.judge]"
+        " and [lanes.atlas-rf.judge]"
     )
 
 
@@ -237,7 +239,8 @@ def test_a_missing_top_level_key_is_an_error_naming_it_and_the_file(
 
 
 @pytest.mark.parametrize(
-    "key, lane", [("swe_rebench", "senior"), ("senior_swe_bench", "rebench")]
+    "key, lane",
+    [("swe_rebench", "senior"), ("senior_swe_bench", "rebench"), ("swe_atlas_rf", "rebench")],
 )
 def test_a_lane_needs_no_other_lanes_download(tmp_path: Path, key: str, lane: str):
     lines = [line for line in TOP.splitlines() if not line.startswith(f"{key} =")]
@@ -252,11 +255,12 @@ def test_a_lane_needs_no_other_lanes_download(tmp_path: Path, key: str, lane: st
 TOP_DOWNLOADS = {
     "rebench": "../tasks/swe-rebench-07-2026",
     "senior": "../tasks/senior/senior-swe-bench-v2026.06",
+    "atlas-rf": "../tasks/swe-atlas-rf",
 }
 
 
 def test_each_lane_reads_the_download_its_own_key_names(spec_config: Path):
-    for lane in ("rebench", "senior"):
+    for lane in ("rebench", "senior", "atlas-rf"):
         settings = config.load(spec_config, "copilot-sonnet", lane)
 
         assert settings.download(lane) == (spec_config.parent / TOP_DOWNLOADS[lane]).resolve()
@@ -579,6 +583,7 @@ def test_a_judge_on_another_lane_is_an_error(tmp_path: Path):
 
     assert str(error.value) == (
         f"{path}: [lanes.rebench] sets judge, but SWE-drill reads only [lanes.senior.judge]"
+        " and [lanes.atlas-rf.judge]"
     )
 
 
@@ -611,4 +616,78 @@ def test_an_arm_harbor_could_not_be_given_is_refused(tmp_path, table, says):
     path = write_config(tmp_path, TOP + "[arms.a]\n" + table)
 
     with pytest.raises(config.ConfigError, match=says):
+        config.load(path, "a", "rebench")
+
+
+# The atlas-rf lane's rubric judge
+
+ATLAS_JUDGE = '[lanes.atlas-rf.judge]\nmodel = "gemini-4-argon"\n'
+
+
+def atlas_rf(tmp_path: Path, lanes_text: str, dotenv: str = "COPILOT_GITHUB_TOKEN=gh-1\n") -> config.Config:
+    path = write_config(tmp_path, TOP + lanes_text + '[arms.a]\nagent = "m:A"\n')
+    (tmp_path / ".env").write_text(dotenv)
+    return config.load(path, "a", "atlas-rf")
+
+
+def test_the_atlas_rf_lanes_judge_names_the_model_its_rubric_judge_calls(tmp_path: Path):
+    settings = atlas_rf(tmp_path, ATLAS_JUDGE)
+
+    assert settings.eval_model == "gemini-4-argon"
+    assert settings.judge is None
+    config.check_judge(settings, "atlas-rf")
+
+
+def test_another_lanes_run_takes_no_rubric_judge(tmp_path: Path):
+    path = write_config(tmp_path, TOP + ATLAS_JUDGE + JUDGE + '[arms.a]\nagent = "m:A"\n')
+
+    assert config.load(path, "a", "senior").eval_model is None
+    assert config.load(path, "a", "rebench").eval_model is None
+
+
+@pytest.mark.parametrize("lanes_text", ["", "[lanes.atlas-rf.judge]\n"], ids=["no-table", "no-model"])
+def test_an_atlas_rf_run_with_no_judge_model_is_refused_naming_the_table(tmp_path: Path, lanes_text: str):
+    settings = atlas_rf(tmp_path, lanes_text)
+
+    with pytest.raises(config.ConfigError) as error:
+        config.check_judge(settings, "atlas-rf")
+
+    assert str(error.value) == (
+        f"{settings.path}: no model in [lanes.atlas-rf.judge], which names the model atlas-rf's rubric"
+        " judge calls through Copilot, such as gemini-4-argon"
+    )
+
+
+@pytest.mark.parametrize("dotenv", ["", "COPILOT_GITHUB_TOKEN=\n"], ids=["unset", "empty"])
+def test_an_atlas_rf_run_with_no_copilot_token_is_refused_naming_it(tmp_path: Path, dotenv: str):
+    settings = atlas_rf(tmp_path, ATLAS_JUDGE, dotenv)
+
+    with pytest.raises(config.ConfigError) as error:
+        config.check_judge(settings, "atlas-rf")
+
+    assert str(error.value) == (
+        f"{tmp_path / '.env'} sets no COPILOT_GITHUB_TOKEN, which SWE-drill judges the trials of atlas-rf with"
+    )
+
+
+@pytest.mark.parametrize(
+    "text, says",
+    [
+        ("model = 5\n", "sets model to 5, which must be a non-empty string"),
+        ('model = ""\n', "sets model to '', which must be a non-empty string"),
+        ('model = "x"\ncredit_budget = 2000\n', "sets credit_budget, but SWE-drill reads only model there"),
+    ],
+    ids=["number", "empty", "other-key"],
+)
+def test_an_atlas_rf_judge_swe_drill_cannot_read_is_an_error_naming_it(tmp_path: Path, text: str, says: str):
+    with pytest.raises(config.ConfigError) as error:
+        atlas_rf(tmp_path, "[lanes.atlas-rf.judge]\n" + text)
+
+    assert str(error.value) == f"{tmp_path / 'swe-drill.toml'}: [lanes.atlas-rf.judge] {says}"
+
+
+def test_an_atlas_rf_judge_is_refused_when_another_lane_runs(tmp_path: Path):
+    path = write_config(tmp_path, TOP + '[lanes.atlas-rf.judge]\nmodel = 5\n[arms.a]\nagent = "m:A"\n')
+
+    with pytest.raises(config.ConfigError, match="must be a non-empty string"):
         config.load(path, "a", "rebench")

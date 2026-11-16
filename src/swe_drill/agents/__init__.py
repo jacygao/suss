@@ -37,7 +37,11 @@ from swe_drill.workspace import (
 
 RECORD_NAME = "suss.json"
 # The dataset each lane's tasks come from, which names its trials' grader.
-DATASETS = {lanes.REBENCH: "swe-rebench-07-2026", lanes.SENIOR: "senior-swe-bench-v2026.06"}
+DATASETS = {
+    lanes.REBENCH: "swe-rebench-07-2026",
+    lanes.SENIOR: "senior-swe-bench-v2026.06",
+    lanes.ATLAS_RF: "swe-atlas-rf",
+}
 # How long a cancelled run may take to capture the patch and write suss.json.
 CLEANUP_SECONDS = 60
 # The kwargs SWE-drill itself gives every agent, which an arm's own cannot take.
@@ -311,12 +315,15 @@ def grader(settings: config.Config, lane: str) -> dict[str, str]:
 
     On senior it adds the litellm requirement the lane's test.sh installs, the
     models senior's own judges would use, and the validation agent the lane
-    runs through Copilot CLI with its model and effort. The judges' models
+    runs through Copilot CLI with its model and effort. On atlas-rf it adds
+    the model its rubric judge calls, as `judge_model`. The judges' models
     follow from the variables `swe-drill run` gives the agent job's Harbor,
     which only the settings the lane's tasks read can reach. Raises LaneError
     when a task.toml in the download cannot be read.
     """
     found = {"dataset": DATASETS[lane]}
+    if lane == lanes.ATLAS_RF:
+        found["judge_model"] = settings.eval_model
     if lane == lanes.SENIOR:
         download = settings.download(lane)
         reads = config.host_variables(lanes.read_tasks(lanes.lane_tasks(lane, download)))

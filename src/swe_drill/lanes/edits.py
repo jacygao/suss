@@ -21,16 +21,26 @@ def read_test_sh(task: Path, doing: str) -> list[bytes]:
     """
     The lines of the task's tests/test.sh, each with its line ending.
 
-    `doing` says what the lane would do to it, such as "pin litellm in it",
-    for the errors. Raises LaneError naming the file when it is missing or
-    cannot be read, and naming tests/ when it is a link, since the copy keeps
-    the link and a file written into it would be written through it.
+    `doing` is as `read_task_file` takes it, such as "pin litellm in it".
+    Raises LaneError as `read_task_file` does.
     """
-    path = task / TEST_SH
+    return read_task_file(task, TEST_SH, doing).splitlines(keepends=True)
+
+
+def read_task_file(task: Path, name: str, doing: str) -> bytes:
+    """
+    The task's file at `name`, a path from the task.
+
+    `doing` says what the lane would do to it, for the errors. Raises LaneError
+    naming the file when it is missing or cannot be read, and naming its
+    directory when that is a link, since the copy keeps the link and a file
+    written into it would be written through it.
+    """
+    path = task / name
     if path.parent.is_symlink():
         raise LaneError(f"{path.parent}: a link, so the lane cannot write into a copy of it")
     try:
-        return path.read_bytes().splitlines(keepends=True)
+        return path.read_bytes()
     except FileNotFoundError:
         raise LaneError(f"{path}: no such file, so the lane cannot {doing}") from None
     except OSError as error:

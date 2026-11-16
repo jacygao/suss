@@ -227,6 +227,19 @@ def test_a_senior_trials_grader_names_the_lanes_validation_model_and_effort_what
     )
 
 
+def test_an_atlas_rf_trials_grader_names_the_model_its_rubric_judge_calls(tmp_path):
+    path = tmp_path / "swe-drill.toml"
+    path.write_text(
+        'swe_atlas_rf = "swe-atlas-rf"\nenvironment = "docker"\nk = 1\nconcurrency = 1\n'
+        '[lanes.atlas-rf.judge]\nmodel = "gemini-4-argon"\n[arms.a]\nagent = "m:A"\n'
+    )
+    (tmp_path / ".env").write_text("EVAL_MODEL=gpt-6.1-sol\n")
+
+    found = grader(config.load(path, "a", lanes.ATLAS_RF), lanes.ATLAS_RF)
+
+    assert found == {"dataset": "swe-atlas-rf", "judge_model": "gemini-4-argon"}
+
+
 def test_the_record_keeps_the_arms_kwargs_and_model_as_harbor_gave_them(local_environment, trial):
     agent = trial.agent(rounds=3, model_name="fake/model-1")
 

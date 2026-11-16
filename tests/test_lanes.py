@@ -8,8 +8,12 @@ from pathlib import Path
 import pytest
 from harbor.models.task.config import NetworkMode, TaskConfig, VerifierEnvironmentMode
 from harbor.models.task.verifier_mode import resolve_task_verifier_mode
+from harbor.models.trial.config import AgentConfig as TrialAgentConfig
+from harbor.models.trial.config import EnvironmentConfig as TrialEnvironmentConfig
+from harbor.models.trial.config import VerifierConfig as TrialVerifierConfig
+from harbor.trial.network_policy import resolve_trial_network_plan
 
-from swe_drill import lanes, validate
+from swe_drill import config, lanes, validate
 from swe_drill.lanes import LaneError
 
 SPEC = Path(__file__).resolve().parent.parent / "docs" / "specs" / "swe-drill-spec.md"
@@ -26,11 +30,11 @@ def test_a_lane_swe_drill_does_not_have_is_an_error_naming_its_lanes(lane: str):
     with pytest.raises(LaneError) as error:
         lanes.check_lane(lane)
 
-    assert str(error.value) == f"SWE-drill has no lane named {lane}; its lanes are rebench, senior"
+    assert str(error.value) == f"SWE-drill has no lane named {lane}; its lanes are rebench, senior, atlas-rf"
 
 
-@pytest.mark.parametrize("lane", ["rebench", "senior"])
-def test_rebench_and_senior_are_lanes(lane: str):
+@pytest.mark.parametrize("lane", ["rebench", "senior", "atlas-rf"])
+def test_rebench_senior_and_atlas_rf_are_lanes(lane: str):
     lanes.check_lane(lane)
 
 
@@ -1124,3 +1128,193 @@ def test_a_memory_harbor_cannot_read_is_an_error_naming_the_task(tmp_path: Path,
         lanes.needs(lanes.read_tasks([source / DESIGN]))
 
     assert str(error.value).startswith(f"{toml}: [environment] memory is ")
+
+
+# atlas-rf
+
+ATLAS_TASKS = Path(__file__).resolve().parent / "atlas_tasks"
+ATLAS_TASK = "task-69391d8d1ce51c407be1e531"
+EVALUATE = "tests/evaluate_rubrics.py"
+OPENAI_CALL = b"OpenAI(api_key=api_key, base_url=base_url)"
+COPILOT_CALL = (
+    b'OpenAI(api_key=api_key, base_url=base_url, default_headers={"Copilot-Integration-Id":'
+    b' "copilot-developer-cli"})'
+)
+ATLAS_VERIFIER_ENV = {
+    "EVAL_API_KEY": "${COPILOT_GITHUB_TOKEN}",
+    "EVAL_BASE_URL": "https://api.enterprise.githubcopilot.com",
+    "EVAL_MODEL": "${EVAL_MODEL}",
+}
+
+
+def make_atlas(root: Path) -> Path:
+    """A download holding one SWE Atlas task as `harbor download` writes it, less the files the lane never reads."""
+    shutil.copytree(ATLAS_TASKS, root)
+    return root
+
+
+def test_the_atlas_rf_lane_holds_a_copy_of_each_task_and_nothing_else(tmp_path: Path):
+    source = make_atlas(tmp_path / "swe-atlas-rf")
+
+    built = lanes.build(lanes.ATLAS_RF, source, tmp_path / "lanes")
+
+    assert built == tmp_path / "lanes" / "atlas-rf"
+    assert [entry.name for entry in built.iterdir()] == [ATLAS_TASK]
+
+
+def test_an_atlas_rf_copy_differs_from_its_task_in_its_task_toml_and_the_judges_client_alone(
+    tmp_path: Path,
+):
+    source = make_atlas(tmp_path / "source")
+
+    built = lanes.build(lanes.ATLAS_RF, source, tmp_path / "lanes") / ATLAS_TASK
+
+    original, copied = every_file(source / ATLAS_TASK), every_file(built)
+    assert copied.keys() == original.keys()
+    assert [path for path in original if copied[path] != original[path]] == ["task.toml", EVALUATE]
+    # Copilot's API refuses every call that does not send the header, with a 400.
+    assert copied[EVALUATE].count(COPILOT_CALL) == 1
+    assert copied[EVALUATE].replace(COPILOT_CALL, OPENAI_CALL) == original[EVALUATE]
+
+
+def test_an_atlas_rf_task_toml_changes_the_judges_settings_the_agents_network_and_verifiers_mode_alone(
+    tmp_path: Path,
+):
+    source = make_atlas(tmp_path / "source")
+
+    built = lanes.build(lanes.ATLAS_RF, source, tmp_path / "lanes")
+
+    expected = toml_of(source / ATLAS_TASK)
+    expected["agent"]["network_mode"] = "no-network"
+    expected["verifier"] = {**expected["verifier"], "environment_mode": "separate", "env": ATLAS_VERIFIER_ENV}
+    assert toml_of(built / ATLAS_TASK) == expected
+
+
+def test_harbor_reads_an_atlas_rf_copy_with_a_closed_agent_and_a_public_separate_verifier(tmp_path: Path):
+    source = make_atlas(tmp_path / "source")
+
+    built = lanes.build(lanes.ATLAS_RF, source, tmp_path / "lanes")
+
+    task = TaskConfig.model_validate_toml((built / ATLAS_TASK / "task.toml").read_text())
+    mode = resolve_task_verifier_mode(task)
+    plan = resolve_trial_network_plan(
+        task, TrialAgentConfig(), TrialEnvironmentConfig(), TrialVerifierConfig(), None,
+        verifier_mode=mode,
+    )
+    assert mode == VerifierEnvironmentMode.SEPARATE
+    assert plan.agent_phase.network_mode == NetworkMode.NO_NETWORK
+    # The judge reaches Copilot's API, and test.sh installs openai from PyPI where the image lacks it.
+    assert plan.verifier_phase.network_mode == NetworkMode.PUBLIC
+
+
+def test_an_atlas_rf_copy_reads_the_copilot_token_and_the_judges_model_from_harbors_environment_alone(
+    tmp_path: Path,
+):
+    source = make_atlas(tmp_path / "source")
+
+    built = lanes.build(lanes.ATLAS_RF, source, tmp_path / "lanes")
+
+    read = lanes.read_tasks([built / ATLAS_TASK])
+    assert config.host_variables(read) == ("COPILOT_GITHUB_TOKEN", "EVAL_MODEL")
+    assert config.host_variables(read, ("environment",)) == ()
+
+
+def test_the_lane_checks_read_an_atlas_rf_tasks_cpus_and_memory(tmp_path: Path):
+    source = make_atlas(tmp_path / "source")
+
+    assert lanes.needs(lanes.read_tasks(lanes.lane_tasks(lanes.ATLAS_RF, source))) == (16, 16384)
+
+
+@pytest.mark.parametrize(
+    "calls, change",
+    [
+        (0, lambda text: text.replace(OPENAI_CALL, b"OpenAI(api_key=api_key)")),
+        (2, lambda text: text + b"# " + OPENAI_CALL + b"\n"),
+    ],
+    ids=["none", "two"],
+)
+def test_an_evaluate_rubrics_without_exactly_one_openai_call_is_refused_naming_it(
+    tmp_path: Path, calls: int, change
+):
+    source = make_atlas(tmp_path / "source")
+    evaluate = source / ATLAS_TASK / EVALUATE
+    evaluate.write_bytes(change(evaluate.read_bytes()))
+    built = lanes.build(lanes.ATLAS_RF, make_atlas(tmp_path / "earlier"), tmp_path / "lanes")
+    before = every_file(built / ATLAS_TASK)
+
+    with pytest.raises(LaneError) as error:
+        lanes.build(lanes.ATLAS_RF, source, tmp_path / "lanes")
+
+    assert str(error.value) == (
+        f"{evaluate}: calls OpenAI(api_key=api_key, base_url=base_url) {calls} times, so the lane"
+        " cannot send Copilot's integration header from it; it takes a file that calls it once"
+    )
+    assert every_file(built / ATLAS_TASK) == before
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'EVAL_API_KEY = "${OPENAI_API_KEY}"',
+        'EVAL_BASE_URL = "${OPENAI_API_BASE}"',
+        'EVAL_MODEL = "${EVAL_MODEL:-anthropic/claude-opus-4-5-20251101}"',
+    ],
+)
+def test_an_atlas_rf_task_toml_without_one_of_the_judges_settings_is_refused_naming_it(
+    tmp_path: Path, line: str
+):
+    source = make_atlas(tmp_path / "source")
+    toml = source / ATLAS_TASK / "task.toml"
+    toml.write_text(toml.read_text().replace(line + "\n", ""))
+
+    with pytest.raises(LaneError) as error:
+        lanes.check_buildable(lanes.ATLAS_RF, source, tmp_path / "lanes")
+
+    assert str(error.value) == (
+        f"{toml}: has 0 lines that are {line}, so the lane cannot point its rubric judge at"
+        " Copilot; it takes a task.toml with exactly one"
+    )
+
+
+def test_an_atlas_rf_task_toml_whose_judges_settings_are_outside_verifier_env_is_refused_naming_it(
+    tmp_path: Path,
+):
+    source = make_atlas(tmp_path / "source")
+    toml = source / ATLAS_TASK / "task.toml"
+    moved = 'EVAL_MODEL = "${EVAL_MODEL:-anthropic/claude-opus-4-5-20251101}"\n'
+    text = toml.read_text().replace(moved, "")
+    toml.write_text(text.replace("[environment.env]\n", f"[environment.env]\n{moved}"))
+
+    with pytest.raises(LaneError) as error:
+        lanes.check_buildable(lanes.ATLAS_RF, source, tmp_path / "lanes")
+
+    assert str(error.value) == (
+        f"{toml}: its rubric judge's settings cannot be changed without changing anything else,"
+        " so they must be changed by hand"
+    )
+
+
+def test_an_atlas_rf_tests_directory_that_is_a_link_is_refused_and_the_download_left_alone(
+    tmp_path: Path,
+):
+    source = make_atlas(tmp_path / "source")
+    tests = source / ATLAS_TASK / "tests"
+    shutil.move(tests, tmp_path / "shared-tests")
+    tests.symlink_to(tmp_path / "shared-tests")
+    before = (tmp_path / "shared-tests" / "evaluate_rubrics.py").read_bytes()
+
+    with pytest.raises(LaneError) as error:
+        lanes.build(lanes.ATLAS_RF, source, tmp_path / "lanes")
+
+    assert str(error.value) == f"{tests}: a link, so the lane cannot write into a copy of it"
+    assert (tmp_path / "shared-tests" / "evaluate_rubrics.py").read_bytes() == before
+
+
+def test_the_atlas_rf_check_lane_holds_only_the_first_task_by_name(tmp_path: Path):
+    source = make_atlas(tmp_path / "source")
+    shutil.copytree(source / ATLAS_TASK, source / "task-00000000000000000000000a")
+
+    built = lanes.build(lanes.ATLAS_RF, source, tmp_path / "lanes", check=True)
+
+    assert built == tmp_path / "lanes" / "atlas-rf-check"
+    assert [entry.name for entry in built.iterdir()] == ["task-00000000000000000000000a"]

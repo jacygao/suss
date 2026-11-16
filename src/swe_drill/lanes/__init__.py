@@ -16,22 +16,23 @@ from pathlib import Path
 
 from harbor.models.task.config import EnvironmentConfig
 
-from swe_drill.lanes import rebench, senior
+from swe_drill.lanes import atlas_rf, rebench, senior
 from swe_drill.lanes.edits import LaneError, add_key
 
 MIB = 2**20
 
 REBENCH = "rebench"
 SENIOR = "senior"
+ATLAS_RF = "atlas-rf"
 
-LANES = (REBENCH, SENIOR)
+LANES = (REBENCH, SENIOR, ATLAS_RF)
 
 # Each lane's module, which names the tasks the lane leaves out as UNGRADEABLE,
 # and gives the files its copy of a task writes with `rewrite(task, toml)`.
-LANE_MODULES = {REBENCH: rebench, SENIOR: senior}
+LANE_MODULES = {REBENCH: rebench, SENIOR: senior, ATLAS_RF: atlas_rf}
 
 # The lanes whose trials Harbor grades in a sandbox of their own, in the agent job.
-SEPARATE_VERIFIER = (REBENCH, SENIOR)
+SEPARATE_VERIFIER = (REBENCH, SENIOR, ATLAS_RF)
 
 
 def check_lane(lane: str) -> None:
@@ -196,9 +197,15 @@ def lane_tasks(lane: str, download: Path) -> list[Path]:
     return found
 
 
-def check_buildable(lane: str, download: Path, lanes: Path, check: bool = False) -> None:
-    """Refuse a lane that `build` would refuse, changing nothing."""
-    _plan_build(lane, download, lanes, check)
+def check_buildable(lane: str, download: Path, lanes: Path, check: bool = False) -> dict[Path, dict]:
+    """
+    Refuse a lane that `build` would refuse, changing nothing.
+
+    Returns the task.toml each copy `build` would write, read, keyed by the
+    task it copies, as `read_tasks` gives them.
+    """
+    _, rewritten = _plan_build(lane, download, lanes, check)
+    return {task: tomllib.loads(files["task.toml"][0].decode()) for task, files in rewritten.items()}
 
 
 def build(lane: str, download: Path, lanes: Path, check: bool = False) -> Path:
