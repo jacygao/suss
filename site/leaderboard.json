@@ -1,10 +1,46 @@
 {
-  "updated": "2026-11-16",
+  "updated": "2026-11-17",
   "rebench": {
     "title": "rebench",
     "about": "SWE-rebench’s July 2026 snapshot: 108 GitHub issues from open-source repositories, each graded by its own hidden tests. Every arm runs the same tasks, graded the same way.",
     "tasks": 108,
     "arms": [
+      {
+        "name": "copilot-opus",
+        "agent": "Copilot CLI 1.0.107",
+        "harness": "Default",
+        "model": "claude-opus-5.5, effort high",
+        "rate": 0.6883,
+        "margin": 0.0756,
+        "pass": 0.7963,
+        "timedOut": 8,
+        "cost": 118.39,
+        "hours": 22.0,
+        "tokens": 1226000,
+        "where": "Docker · Azure",
+        "params": "version 1.0.107, effort high",
+        "runs": [
+          {
+            "job": "20261116T203211Z-1",
+            "date": "2026-11-16",
+            "where": "Docker on Azure, Australia East",
+            "median": 9.5
+          },
+          {
+            "job": "20261116T203507Z-1",
+            "date": "2026-11-16",
+            "where": "Docker on Azure, New Zealand North",
+            "median": 9.4
+          },
+          {
+            "job": "20261116T203832Z-1",
+            "date": "2026-11-16",
+            "where": "Docker on Azure, Korea Central",
+            "median": 9.0
+          }
+        ],
+        "note": "The three runs ran at once, one Azure region each, and no trial needed running again. Eight trials timed out with no cost recorded, and the cost per run leaves them out. apache__pulsar-25953 has no test result in any of the three runs, and counts as unresolved. Its run on Modal, which resolved 62%, and its three runs on a PC, which resolved 65% with 17 trials timed out, are left out."
+      },
       {
         "name": "claude-opus",
         "agent": "Claude Code 2.1.311",
@@ -34,42 +70,6 @@
           }
         ],
         "note": ""
-      },
-      {
-        "name": "copilot-opus",
-        "agent": "Copilot CLI 1.0.107",
-        "harness": "Default",
-        "model": "claude-opus-5.5, effort high",
-        "rate": 0.65,
-        "margin": 0.08,
-        "pass": 0.75,
-        "timedOut": 17,
-        "cost": 119.09,
-        "hours": 27.6,
-        "tokens": null,
-        "where": "Docker · PC",
-        "params": "version 1.0.107, effort high",
-        "runs": [
-          {
-            "job": "20261112T093414Z-1",
-            "date": "2026-11-12",
-            "where": "Docker on a PC",
-            "median": 10.8
-          },
-          {
-            "job": "20261112T212852Z-1",
-            "date": "2026-11-12",
-            "where": "Docker on a PC",
-            "median": 12.1
-          },
-          {
-            "job": "20261113T063106Z-1",
-            "date": "2026-11-13",
-            "where": "Docker on a PC",
-            "median": 11.5
-          }
-        ],
-        "note": "Three trials have no grade and count as unresolved: two environments failed to start, and one trial hit Harbor’s own agent timeout. Its run on Modal, which resolved 62%, is left out."
       },
       {
         "name": "copilot-sonnet",
