@@ -687,9 +687,18 @@ changes three lines of its `[verifier.env]` so the judge calls Copilot's API:
 | `EVAL_MODEL = "${EVAL_MODEL:-anthropic/claude-opus-4-5-20251101}"` | `EVAL_MODEL = "${EVAL_MODEL}"` |
 
 The agent job's Harbor holds `COPILOT_GITHUB_TOKEN` from `.env`, and takes
-`EVAL_MODEL` as `--ve`, from `[lanes.atlas-rf.judge]`. `test.sh` runs the
-regression tests with `EVAL_API_KEY` in their environment, so the token reaches
-the code the agent changed.
+`EVAL_MODEL` as `--ve`, from `[lanes.atlas-rf.judge]`.
+
+The judge alone receives the key. Each copy's `tests/test.sh` changes two lines
+of the task's, so the tests, which run code the agent wrote, start with no
+`EVAL_API_KEY`:
+
+| The task's | The copy's |
+|---|---|
+| `set -uo pipefail` | the same, then `_judge_key=${EVAL_API_KEY-}; unset EVAL_API_KEY` |
+| `python3 /tests/evaluate_rubrics.py \|\| echo "evaluate_rubrics.py exited non-zero"` | `EVAL_API_KEY="$_judge_key" python3 /tests/evaluate_rubrics.py \|\| echo "evaluate_rubrics.py exited non-zero"` |
+
+`test.sh` itself still starts with the key in its environment.
 
 Copilot's API refuses every call without a `Copilot-Integration-Id` header, so
 each copy's `tests/evaluate_rubrics.py` makes its one client send one, and is
@@ -702,7 +711,8 @@ client = OpenAI(api_key=api_key, base_url=base_url, default_headers={"Copilot-In
 A task whose `[verifier]` sets another `environment_mode` or an `environment`
 of its own, whose `task.toml` has no line that is exactly one of the task's
 lines above or has more than one, whose three lines are not all in
-`[verifier.env]`, whose `evaluate_rubrics.py` calls
+`[verifier.env]`, whose `test.sh` has not exactly one of each of its two lines
+above, whose `evaluate_rubrics.py` calls
 `OpenAI(api_key=api_key, base_url=base_url)` other than once, or whose `tests`
 directory is a link, makes `swe-drill run` exit with an error naming it before
 it builds any lane or runs any job.

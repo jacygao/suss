@@ -3,13 +3,14 @@ What the atlas-rf lane changes in each task's copy, beyond what every lane does.
 
 Each copy's rubric judge calls Copilot's API with the Copilot token from .env,
 on the model `swe-drill run` gives its verifier as EVAL_MODEL, so grading needs
-no OpenAI or Anthropic key.
+no OpenAI or Anthropic key. Its test.sh gives that token to the judge alone,
+and to no test, since the tests run code the agent wrote.
 """
 
 import tomllib
 from pathlib import Path
 
-from swe_drill.lanes.edits import LaneError, read_task_file
+from swe_drill.lanes.edits import TEST_SH, LaneError, read_task_file, read_test_sh
 
 # Every SWE Atlas Refactoring task can be graded.
 UNGRADEABLE: tuple[str, ...] = ()
@@ -41,16 +42,57 @@ VERIFIER_ENV_LINES = (
 )
 
 
+# The line of every SWE Atlas test.sh that its first command follows, and the
+# line the copy adds after it, so that no command the tests start inherits the key.
+SET_LINE = b"set -uo pipefail"
+HIDE_KEY = b"_judge_key=${EVAL_API_KEY-}; unset EVAL_API_KEY"
+# The line that runs the judge, and the copy's in its place, which gives the key back to it alone.
+JUDGE_LINE = b'python3 /tests/evaluate_rubrics.py || echo "evaluate_rubrics.py exited non-zero"'
+KEYED_JUDGE_LINE = b'EVAL_API_KEY="$_judge_key" ' + JUDGE_LINE
+
+
 def rewrite(task: Path, toml: bytes) -> dict[str, bytes]:
     """
     The files the task's copy writes, by path from the task: its task.toml
     `toml` with the judge pointed at Copilot, as `_judge_on_copilot` gives it,
-    and its tests/evaluate_rubrics.py sending Copilot's header, as
-    `_with_header` gives it.
+    its tests/evaluate_rubrics.py sending Copilot's header, as `_with_header`
+    gives it, and its tests/test.sh giving the key to the judge alone, as
+    `_key_to_judge_alone` gives it.
 
     Raises LaneError as each of them does.
     """
-    return {"task.toml": _judge_on_copilot(task, toml), EVALUATE: _with_header(task)}
+    return {
+        "task.toml": _judge_on_copilot(task, toml),
+        EVALUATE: _with_header(task),
+        TEST_SH: _key_to_judge_alone(task),
+    }
+
+
+def _key_to_judge_alone(task: Path) -> bytes:
+    """
+    The task's test.sh with HIDE_KEY inserted after its one line that is
+    SET_LINE, and its one line that is JUDGE_LINE made KEYED_JUDGE_LINE, each
+    line ending as the line it follows or replaces, its bytes otherwise
+    unchanged.
+
+    Raises LaneError as `read_test_sh` does, and naming the file when not
+    exactly one of its lines is either.
+    """
+    lines = read_test_sh(task, "keep the judge's key from the tests")
+    found = {}
+    for anchor in (SET_LINE, JUDGE_LINE):
+        at = [number for number, line in enumerate(lines) if line.rstrip(b"\r\n") == anchor]
+        if len(at) != 1:
+            raise LaneError(
+                f"{task / TEST_SH}: has {len(at)} lines that are {anchor.decode()}, so the lane cannot"
+                " keep the judge's key from the tests; it takes a test.sh with exactly one"
+            )
+        found[anchor] = at[0]
+    judge = lines[found[JUDGE_LINE]]
+    lines[found[JUDGE_LINE]] = KEYED_JUDGE_LINE + judge[len(JUDGE_LINE) :]
+    line = lines[found[SET_LINE]]
+    lines.insert(found[SET_LINE] + 1, HIDE_KEY + (line[len(SET_LINE) :] or b"\n"))
+    return b"".join(lines)
 
 
 def _judge_on_copilot(task: Path, text: bytes) -> bytes:

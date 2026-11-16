@@ -1162,7 +1162,7 @@ def test_the_atlas_rf_lane_holds_a_copy_of_each_task_and_nothing_else(tmp_path: 
     assert [entry.name for entry in built.iterdir()] == [ATLAS_TASK]
 
 
-def test_an_atlas_rf_copy_differs_from_its_task_in_its_task_toml_and_the_judges_client_alone(
+def test_an_atlas_rf_copy_differs_from_its_task_in_its_task_toml_and_the_judges_client_and_key_alone(
     tmp_path: Path,
 ):
     source = make_atlas(tmp_path / "source")
@@ -1171,10 +1171,65 @@ def test_an_atlas_rf_copy_differs_from_its_task_in_its_task_toml_and_the_judges_
 
     original, copied = every_file(source / ATLAS_TASK), every_file(built)
     assert copied.keys() == original.keys()
-    assert [path for path in original if copied[path] != original[path]] == ["task.toml", EVALUATE]
+    assert [path for path in original if copied[path] != original[path]] == [
+        "task.toml", EVALUATE, "tests/test.sh"
+    ]
     # Copilot's API refuses every call that does not send the header, with a 400.
     assert copied[EVALUATE].count(COPILOT_CALL) == 1
     assert copied[EVALUATE].replace(COPILOT_CALL, OPENAI_CALL) == original[EVALUATE]
+    before = original["tests/test.sh"].splitlines(keepends=True)
+    after = copied["tests/test.sh"].splitlines(keepends=True)
+    at = before.index(SET_LINE)
+    assert after[: at + 1] == before[: at + 1]
+    assert after[at + 1] == HIDE_KEY
+    rest_before, rest_after = before[at + 1 :], after[at + 2 :]
+    assert [(old, new) for old, new in zip(rest_before, rest_after) if old != new] == [(JUDGE_LINE, KEYED_JUDGE_LINE)]
+    assert len(rest_after) == len(rest_before)
+
+
+SET_LINE = b"set -uo pipefail\n"
+HIDE_KEY = b"_judge_key=${EVAL_API_KEY-}; unset EVAL_API_KEY\n"
+JUDGE_LINE = b'python3 /tests/evaluate_rubrics.py || echo "evaluate_rubrics.py exited non-zero"\n'
+KEYED_JUDGE_LINE = b'EVAL_API_KEY="$_judge_key" ' + JUDGE_LINE
+
+
+def test_an_atlas_rf_test_sh_gives_the_judges_key_to_the_judge_and_not_to_the_tests(tmp_path: Path):
+    source = make_atlas(tmp_path / "source")
+    built = lanes.build(lanes.ATLAS_RF, source, tmp_path / "lanes") / ATLAS_TASK
+    lines = (built / "tests" / "test.sh").read_bytes().splitlines(keepends=True)
+    # The copy's own lines up to its first command, a stand-in for the tests, then its own judge line.
+    header = lines[: next(n for n, line in enumerate(lines) if line.startswith(b"mkdir "))]
+    judge = next(line for line in lines if b"/tests/evaluate_rubrics.py" in line)
+    seen = tmp_path / "seen"
+    stand_in = (
+        b"".join(header)
+        + b'bash -c \'echo "tests: ${EVAL_API_KEY-none}"\' >> ' + str(seen).encode() + b"\n"
+        + judge.replace(
+            b"python3 /tests/evaluate_rubrics.py",
+            b"bash -c 'echo \"judge: ${EVAL_API_KEY-none}\"' >> " + str(seen).encode(),
+        )
+    )
+    script = tmp_path / "test.sh"
+    script.write_bytes(stand_in)
+
+    subprocess.run(["bash", str(script)], env={"PATH": "/usr/bin:/bin", "EVAL_API_KEY": "gh-1"}, check=True)
+
+    assert seen.read_text() == "tests: none\njudge: gh-1\n"
+
+
+@pytest.mark.parametrize("line", [SET_LINE, JUDGE_LINE], ids=["set", "judge"])
+def test_an_atlas_rf_test_sh_without_one_line_the_lane_edits_is_refused_naming_it(tmp_path: Path, line: bytes):
+    source = make_atlas(tmp_path / "source")
+    test_sh = source / ATLAS_TASK / "tests" / "test.sh"
+    test_sh.write_bytes(test_sh.read_bytes().replace(line, b""))
+
+    with pytest.raises(LaneError) as error:
+        lanes.check_buildable(lanes.ATLAS_RF, source, tmp_path / "lanes")
+
+    assert str(error.value) == (
+        f"{test_sh}: has 0 lines that are {line.decode().strip()}, so the lane cannot keep the judge's"
+        " key from the tests; it takes a test.sh with exactly one"
+    )
 
 
 def test_an_atlas_rf_task_toml_changes_the_judges_settings_the_agents_network_and_verifiers_mode_alone(
