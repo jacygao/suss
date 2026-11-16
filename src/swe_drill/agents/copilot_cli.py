@@ -37,6 +37,9 @@ class CopilotCli(Adapter, NpmCopilotCli):
         "--no-auto-update",
         "--disable-client-telemetry",
         "--no-ask-user",
+        # Copilot CLI still signs in with it, but the shells it starts never get it.
+        "--secret-env-vars",
+        TOKEN,
         "--excluded-tools",
         "web_fetch",
         "web_search",
