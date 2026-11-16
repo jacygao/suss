@@ -517,7 +517,7 @@ def test_an_agent_file_with_no_full_auto_prompt_is_refused(text):
 # squiz
 
 
-SQUIZ_VERSION = "0.3.2"
+SQUIZ_VERSION = "0.3.3"
 # Records each call, writes squiz's base.json where squiz's hooks were loaded,
 # as its SessionStart does, prints the stream, makes a change, and leaves
 # squiz-host.sh running detached, as squiz's round host outlives the run.
@@ -877,9 +877,10 @@ def test_squiz_install_fails_when_the_archive_is_another_squiz_version(box, loca
         go(squiz_agent(box).setup(local_environment))
 
 
-@pytest.mark.parametrize("version", ["0.3.1", "0.2.9", "0.1.0"])
-def test_a_squiz_before_0_3_2_is_refused_since_its_reviewer_gets_no_token(box, version):
-    with pytest.raises(ValueError, match="0.3.2"):
+# 0.3.2 drops a round's findings when its state lock is slow to take, and earlier versions' reviewers get no token.
+@pytest.mark.parametrize("version", ["0.3.2", "0.3.1", "0.2.9", "0.1.0"])
+def test_a_squiz_before_0_3_3_is_refused(box, version):
+    with pytest.raises(ValueError, match="0.3.3"):
         agent(box, CopilotCliSquiz, squiz_version=version)
 
 
