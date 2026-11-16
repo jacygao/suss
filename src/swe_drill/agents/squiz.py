@@ -20,8 +20,9 @@ NODE_SHA256 = {
     "arm64": "73afc234d558c24919875f51c2d1ea002a2ada4ea6f83601a383869fefa64eed",
 }
 EXACT_VERSION = re.compile(r"\d+\.\d+\.\d+")
-# The first squiz whose reviewer and fixer sign in from `copilotTokenFile`, since Copilot CLI gives its hooks no token.
-LEAST_VERSION = (0, 3, 2)
+# The first squiz that keeps a round's findings when its state lock is slow to take, as on a loaded machine.
+# Its reviewer and fixer also sign in from `copilotTokenFile`, since Copilot CLI gives its hooks no token.
+LEAST_VERSION = (0, 3, 3)
 SETTINGS = {"venue": "local", "reviewer": "copilot", "fixer": "copilot"}
 # The values squiz's `thinking` takes.
 REVIEWER_EFFORTS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
@@ -67,8 +68,8 @@ class CopilotCliSquiz(CopilotCli):
 
     def __init__(self, *, squiz_version: Any, reviewer_model: Any = None, reviewer_effort: Any = None, **kwargs: Any):
         """
-        Raises ValueError for a `squiz_version` that is not exact, as 0.3.2 is,
-        or is before 0.3.2, and for a `reviewer_model` or `reviewer_effort`
+        Raises ValueError for a `squiz_version` that is not exact, as 0.3.3 is,
+        or is before 0.3.3, and for a `reviewer_model` or `reviewer_effort`
         squiz would refuse.
 
         The reviewer runs on Copilot's own default model and squiz's default
@@ -79,11 +80,11 @@ class CopilotCliSquiz(CopilotCli):
         if reviewer_effort is not None and reviewer_effort not in REVIEWER_EFFORTS:
             raise ValueError(f"reviewer_effort must be one of {', '.join(REVIEWER_EFFORTS)}, not {reviewer_effort!r}")
         if not isinstance(squiz_version, str) or not EXACT_VERSION.fullmatch(squiz_version):
-            raise ValueError(f"squiz_version must be an exact version, as 0.3.2 is, not {squiz_version!r}")
+            raise ValueError(f"squiz_version must be an exact version, as 0.3.3 is, not {squiz_version!r}")
         if tuple(int(part) for part in squiz_version.split(".")) < LEAST_VERSION:
             raise ValueError(
-                f"squiz_version {squiz_version} is before 0.3.2, whose reviewer and fixer"
-                " are the first to sign in from a token file"
+                f"squiz_version {squiz_version} is before 0.3.3, the first squiz that keeps"
+                " a round's findings when its state lock is slow to take"
             )
         super().__init__(
             squiz_version=squiz_version, reviewer_model=reviewer_model, reviewer_effort=reviewer_effort, **kwargs
