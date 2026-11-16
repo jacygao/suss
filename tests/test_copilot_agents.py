@@ -233,6 +233,15 @@ def test_copilot_runs_with_builtin_mcps_web_tools_and_auto_update_off(box, local
     assert f"--prompt={INSTRUCTION}" in argv
 
 
+# Regression test for #296: the agent's shells inherited the token, so `printenv` put it in the stream.
+def test_copilot_keeps_its_token_out_of_the_agents_shells_296(box, local_environment):
+    run(box, local_environment)
+
+    argv = copilot_argv(box)
+    assert "--secret-env-vars" in argv, "copilot ran without --secret-env-vars, so its shells inherit the token"
+    assert argv[argv.index("--secret-env-vars") + 1] == "COPILOT_GITHUB_TOKEN"
+
+
 def test_copilot_gets_the_env_files_token_alone_whatever_harbors_environment_holds(
     box, local_environment, monkeypatch
 ):
