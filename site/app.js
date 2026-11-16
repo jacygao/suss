@@ -148,7 +148,7 @@
       sel.note ? el("div", { class: "note" }, [el("span", { text: sel.note })]) : null
     ])]));
 
-    var maxCost = 130, yLo = 0.6, ySpan = 0.08;
+    var maxCost = 130, yLo = 0.6, ySpan = 0.12;
     var points = arms.map(function (arm) {
       var left = (arm.cost / maxCost) * 100;
       var bottom = ((arm.rate - yLo) / ySpan) * 100;
@@ -162,7 +162,7 @@
       el("section", { class: "card", "aria-labelledby": "cost-title" }, [el("div", { class: "card-body" }, [
         el("div", {}, [el("h2", { id: "cost-title", text: "Resolved rate against cost" }), el("p", { class: "small muted", text: "Cost per run at pay-as-you-go prices. Up and to the left is better." })]),
         el("div", { class: "scatter", role: "img", "aria-label": "Resolved rate against cost per run: " + described }, [
-          el("div", { class: "y", "aria-hidden": "true" }, ["68%", "64%", "60%"].map(function (t) { return el("span", { text: t }); })),
+          el("div", { class: "y", "aria-hidden": "true" }, ["72%", "66%", "60%"].map(function (t) { return el("span", { text: t }); })),
           el("div", { class: "plot-wrap" }, [el("div", { class: "plot" }, points), el("div", { class: "x", "aria-hidden": "true" }, [0, 40, 80, 120].map(function (t) { return el("span", { text: "$" + t, style: "left: " + (t / maxCost) * 100 + "%" }); }))])
         ])
       ])]),
