@@ -13,7 +13,7 @@ from harbor.cli.utils import parse_kwargs
 
 from swe_drill import config
 from swe_drill.cli import harbor_commands, harbor_executable, stamp
-from swe_drill.config import Arm, Config, Judge
+from swe_drill.config import Arm, Config
 from swe_drill.agents.copilot_cli import CopilotCli
 
 SPEC = Path(__file__).resolve().parent.parent / "docs" / "specs" / "swe-drill-spec.md"
@@ -37,7 +37,6 @@ def make_config(
             kwargs={},
         ),
         env={},
-        judge=Judge(credit_budget=2000),
     )
 
 
@@ -97,7 +96,6 @@ def spec_config(tmp_path: Path, lane: str) -> Config:
     "lane, reads",
     [
         ("rebench", ()),
-        ("senior", ("ANTHROPIC_API_KEY",)),
         ("atlas-rf", ("COPILOT_GITHUB_TOKEN", "EVAL_MODEL")),
     ],
 )
@@ -128,25 +126,25 @@ def test_a_start_time_with_no_zone_is_refused():
 
 
 def test_the_job_is_named_from_the_stamp_and_the_trial_number(tmp_path):
-    agent = harbor_commands(make_config(tmp_path), hosts(), "senior", STAMP, 3)
+    agent = harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 3)
 
     assert agent.argv[agent.argv.index("--job-name") + 1] == f"{STAMP}-3"
 
 
 def test_a_check_takes_the_check_lane_and_writes_under_checks(tmp_path):
-    agent = harbor_commands(make_config(tmp_path), hosts(), "senior", STAMP, 1, check=True)
+    agent = harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1, check=True)
 
-    assert agent.argv[agent.argv.index("-p") + 1] == "lanes/senior-check"
-    assert agent.argv[agent.argv.index("--jobs-dir") + 1] == "checks/senior/peer-review"
+    assert agent.argv[agent.argv.index("-p") + 1] == "lanes/rebench-check"
+    assert agent.argv[agent.argv.index("--jobs-dir") + 1] == "checks/rebench/peer-review"
 
 
 def test_the_job_takes_the_environment_and_concurrency_from_the_config(tmp_path):
     agent = harbor_commands(
-        make_config(tmp_path, environment="modal", concurrency=4), hosts(), "senior", STAMP, 1
+        make_config(tmp_path, environment="modal", concurrency=4), hosts(), "rebench", STAMP, 1
     )
 
     assert agent.argv[:10] == [
-        "harbor", "run", "-p", "lanes/senior", "-e", "modal", "-n", "4", "-k", "1",
+        "harbor", "run", "-p", "lanes/rebench", "-e", "modal", "-n", "4", "-k", "1",
     ]
 
 
@@ -157,75 +155,6 @@ def test_the_agent_job_allows_each_host_its_agent_class_lists_in_order_and_no_ot
 
     allowed = [token for flag, token in zip(agent.argv, agent.argv[1:]) if flag == "--allow-agent-host"]
     assert allowed == list(listed)
-
-
-def test_an_agent_with_no_allowed_hosts_gets_no_allow_agent_host(tmp_path):
-    agent = harbor_commands(make_config(tmp_path), hosts(()), "senior", STAMP, 1)
-
-    assert agent.argv == [
-        "harbor", "run", "-p", "lanes/senior", "-e", "docker", "-n", "16", "-k", "1",
-        "-a", "swe_drill.agents.copilot_cli:CopilotCli", "--ak", "arm=peer-review", "--ak", "drill_config=swe-drill.toml",
-        "--ak", "lane=senior",
-        "--verifier", "swe_drill.judge:JudgeVerifier", "--verifier-kwarg", "credit_budget=2000",
-        "--jobs-dir", "results/senior/peer-review", "--job-name", f"{STAMP}-1",
-    ]
-
-
-def test_a_senior_agent_job_judges_and_grades_its_trials_in_swe_drill_verifier_with_no_regrade(
-    tmp_path,
-):
-    settings = with_dotenv(tmp_path, {"ANTHROPIC_API_KEY": "sk-ant-1", "COPILOT_GITHUB_TOKEN": "gh-1"})
-    settings = dataclasses.replace(
-        settings,
-        judge=Judge(
-            credit_budget=2000.5, model="gpt-6.1-sol", effort="", validation_model="claude-sonnet-5.5",
-            validation_effort="medium",
-        ),
-    )
-
-    agent = harbor_commands(
-        settings, hosts(), "senior", STAMP, 2, ["--max-retries", "1"], reads=READS,
-        verifier_reads=READS,
-    )
-
-    assert agent.argv == [
-        "harbor", "run", "-y", "-p", "lanes/senior", "-e", "docker", "-n", "16", "-k", "1",
-        "-a", "swe_drill.agents.copilot_cli:CopilotCli", "--ak", "arm=peer-review", "--ak", "drill_config=swe-drill.toml",
-        "--ak", "lane=senior",
-        "--allow-agent-host", "api.anthropic.com", "--allow-agent-host", "api.deepseek.com",
-        "--verifier", "swe_drill.judge:JudgeVerifier",
-        "--verifier-kwarg", "credit_budget=2000.5", "--verifier-kwarg", "model=gpt-6.1-sol",
-        "--verifier-kwarg", "effort=", "--verifier-kwarg", "validation_model=claude-sonnet-5.5",
-        "--verifier-kwarg", "validation_effort=medium",
-        "--jobs-dir", "results/senior/peer-review", "--job-name", f"{STAMP}-2",
-        "--max-retries", "1",
-    ]
-    assert parse_kwargs(
-        [token for flag, token in zip(agent.argv, agent.argv[1:]) if flag == "--verifier-kwarg"]
-    ) == {
-        "credit_budget": 2000.5, "model": "gpt-6.1-sol", "effort": "", "validation_model": "claude-sonnet-5.5",
-        "validation_effort": "medium",
-    }
-    assert not any("gh-1" in token for token in agent.argv), "the judge's token is an argument"
-
-
-def test_a_senior_agent_job_gives_its_verifier_no_key_for_seniors_own_judges(tmp_path):
-    settings = with_dotenv(
-        tmp_path,
-        {
-            "ANTHROPIC_API_KEY": "sk-ant-1", "OPENAI_API_KEY": "sk-oa-1", "PORTKEY_API_KEY": "pk-1",
-            "SSB_OVERRIDE_ALL_JUDGE_MODEL": "anthropic/x", "COPILOT_GITHUB_TOKEN": "gh-1",
-        },
-    )
-    reads = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PORTKEY_API_KEY", "SSB_OVERRIDE_ALL_JUDGE_MODEL")
-
-    agent = harbor_commands(
-        settings, hosts(), "senior", STAMP, 1, reads=reads, verifier_reads=reads
-    )
-
-    # They would run senior's judges and validation agent on API keys, at about $100 a run.
-    assert agent.given == {"SSB_OVERRIDE_ALL_JUDGE_MODEL": "anthropic/x"}
-    assert agent.withheld == (*reads, "COPILOT_GITHUB_TOKEN")
 
 
 def test_a_rebench_agent_job_grades_its_trials_in_swe_drill_verifier_with_no_regrade(tmp_path):
@@ -293,8 +222,8 @@ def test_a_rebench_agent_job_takes_grading_keys_from_harbors_environment_never_i
 def test_arguments_after_the_separator_go_at_the_end_of_the_agent_job(tmp_path):
     extra = ["--max-retries", "2", "--ek", "foo=bar"]
 
-    agent = harbor_commands(make_config(tmp_path), hosts(), "senior", STAMP, 1, extra)
-    plain = harbor_commands(make_config(tmp_path), hosts(), "senior", STAMP, 1)
+    agent = harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1, extra)
+    plain = harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1)
 
     assert agent.argv == plain.argv + extra
 
@@ -359,9 +288,7 @@ def options_swe_drill_sets(tmp_path) -> set[str]:
     # -y only on a lane whose tasks read Harbor's environment.
     commands = [
         harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1),
-        harbor_commands(
-            make_config(tmp_path), hosts(), "senior", STAMP, 1, reads=("ANTHROPIC_API_KEY",)
-        ),
+        harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1, reads=("GRADER_KEY",)),
         harbor_commands(
             dataclasses.replace(make_config(tmp_path), eval_model="gemini-4-argon"), hosts(),
             "atlas-rf", STAMP, 1,
@@ -390,7 +317,7 @@ def refused_options(tmp_path) -> set[str]:
 def test_every_option_swe_drill_sets_on_the_job_is_refused(tmp_path):
     emitted = options_swe_drill_sets(tmp_path)
 
-    assert len(emitted) == 13
+    assert len(emitted) == 12
     assert emitted <= refused_options(tmp_path)
 
 
@@ -411,6 +338,7 @@ def test_the_options_refused_beyond_those_swe_drill_sets_are_these(tmp_path):
         "config_path",
         "agent_import_path",
         "verifier_import_path",
+        "verifier_kwargs",
         "environment_import_path",
         "dataset_name_version",
         "registry_url",
@@ -441,7 +369,7 @@ def test_the_options_refused_beyond_those_swe_drill_sets_are_these(tmp_path):
 
 # The verifier's environment
 
-READS = ("ANTHROPIC_API_KEY", "SSB_OVERRIDE_ALL_JUDGE_MODEL", "TIMEOUT_MULTIPLIER")
+READS = ("GRADER_KEY", "GRADER_MODEL", "GRADER_RETRIES")
 
 
 def with_dotenv(tmp_path: Path, env: dict[str, str]) -> Config:
@@ -449,14 +377,14 @@ def with_dotenv(tmp_path: Path, env: dict[str, str]) -> Config:
 
 
 def test_the_job_answers_harbors_question_when_the_tasks_read_its_environment(tmp_path):
-    agent = harbor_commands(make_config(tmp_path), hosts(), "senior", STAMP, 1, reads=READS)
+    agent = harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1, reads=READS)
 
     # Without a terminal, Harbor reads no answer and aborts the job.
     assert agent.argv[:3] == ["harbor", "run", "-y"]
 
 
 def test_the_job_answers_no_question_harbor_does_not_ask(tmp_path):
-    agent = harbor_commands(make_config(tmp_path), hosts(), "senior", STAMP, 1)
+    agent = harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1)
 
     assert "-y" not in agent.argv
 
@@ -464,26 +392,26 @@ def test_the_job_answers_no_question_harbor_does_not_ask(tmp_path):
 def test_the_agent_job_withholds_every_variable_the_tasks_read_and_is_given_none_they_read_elsewhere(
     tmp_path,
 ):
-    settings = with_dotenv(tmp_path, {"SSB_OVERRIDE_ALL_JUDGE_MODEL": "anthropic/x"})
+    settings = with_dotenv(tmp_path, {"GRADER_MODEL": "grader/x"})
 
-    agent = harbor_commands(settings, hosts(), "senior", STAMP, 1, reads=READS)
+    agent = harbor_commands(settings, hosts(), "rebench", STAMP, 1, reads=READS)
 
-    assert agent.withheld == (*READS, "COPILOT_GITHUB_TOKEN")
+    assert agent.withheld == READS
     assert agent.given == {}
 
 
 def test_the_agent_job_is_given_the_values_env_sets_for_what_its_verifier_alone_reads(tmp_path):
     settings = with_dotenv(
         tmp_path,
-        {"SSB_OVERRIDE_ALL_JUDGE_MODEL": "anthropic/x", "TIMEOUT_MULTIPLIER": "", "DEEPSEEK_API_KEY": "ds-1"},
+        {"GRADER_MODEL": "grader/x", "GRADER_RETRIES": "", "DEEPSEEK_API_KEY": "ds-1"},
     )
 
     agent = harbor_commands(
-        settings, hosts(), "senior", STAMP, 1, reads=READS, verifier_reads=READS
+        settings, hosts(), "rebench", STAMP, 1, reads=READS, verifier_reads=READS
     )
 
-    assert agent.withheld == (*READS, "COPILOT_GITHUB_TOKEN")
-    assert agent.given == {"SSB_OVERRIDE_ALL_JUDGE_MODEL": "anthropic/x"}
+    assert agent.withheld == READS
+    assert agent.given == {"GRADER_MODEL": "grader/x"}
 
 
 def test_a_commands_values_from_env_never_show_in_its_repr(tmp_path):
@@ -525,10 +453,10 @@ def test_sharing_with_an_organization_is_refused_where_swe_drill_answers_harbors
     extra = ["--upload", "--share", "acme"]
 
     with pytest.raises(ValueError) as refused:
-        harbor_commands(make_config(tmp_path), hosts(), "senior", STAMP, 1, extra, reads=READS)
+        harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1, extra, reads=READS)
 
     assert str(refused.value) == (
-        "--share can't be passed after -- on senior: SWE-drill passes -y there, which would "
+        "--share can't be passed after -- on rebench: SWE-drill passes -y there, which would "
         "share the job with an organization you are not a member of without asking"
     )
 
@@ -734,7 +662,6 @@ print(found.__module__, found.__name__)
     "lane, verifier",
     [
         ("rebench", "swe_drill.replay ReplayVerifier"),
-        ("senior", "swe_drill.judge JudgeVerifier"),
         ("atlas-rf", "swe_drill.replay ReplayVerifier"),
     ],
 )
@@ -782,15 +709,15 @@ def test_the_harbor_swe_drill_runs_loads_each_lanes_verifier_with_no_pythonpath(
     ],
 )
 def test_every_ak_value_reaches_the_agent_as_the_string_it_was(arm, tmp_path):
-    agent = harbor_commands(make_config(tmp_path, arm=arm), hosts(), "senior", STAMP, 1)
+    agent = harbor_commands(make_config(tmp_path, arm=arm), hosts(), "rebench", STAMP, 1)
 
-    assert harbor_parses(agent.argv) == {"arm": arm, "drill_config": "swe-drill.toml", "lane": "senior"}
+    assert harbor_parses(agent.argv) == {"arm": arm, "drill_config": "swe-drill.toml", "lane": "rebench"}
 
 
 def test_an_ordinary_ak_value_is_not_quoted(tmp_path):
-    agent = harbor_commands(make_config(tmp_path), hosts(), "senior", STAMP, 1)
+    agent = harbor_commands(make_config(tmp_path), hosts(), "rebench", STAMP, 1)
 
-    assert ak_values(agent.argv) == {"arm": "peer-review", "drill_config": "swe-drill.toml", "lane": "senior"}
+    assert ak_values(agent.argv) == {"arm": "peer-review", "drill_config": "swe-drill.toml", "lane": "rebench"}
 
 
 def test_an_arm_harbor_would_read_as_a_number_is_quoted_as_a_json_string(tmp_path):

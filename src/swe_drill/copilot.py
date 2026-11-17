@@ -1,6 +1,9 @@
-"""Copilot CLI as the judge and the Copilot CLI adapters install it."""
+"""Copilot CLI as the Copilot CLI adapters install it, and what its sessions report."""
 
+import contextlib
+import json
 import re
+import shlex
 from typing import Any, ClassVar
 
 from harbor.agents.installed.copilot_cli import CopilotCli
@@ -9,6 +12,11 @@ from harbor.environments.base import BaseEnvironment
 # How many times `fetch` tries a download, and how much longer it waits after each failed try.
 FETCH_TRIES = 5
 FETCH_PAUSE_SECONDS = 5
+
+# The JSON lines of a session that `read_events` reads. The rest are deltas.
+EVENTS = ("model.call_start", "model.call_final_result", "session.usage_checkpoint",
+          "session.usage_record", "session.model_change")
+EVENT_LINES = shlex.quote('"type": ?"(' + "|".join(re.escape(e) for e in EVENTS) + ')"')
 
 
 def fetch() -> str:
@@ -72,3 +80,40 @@ class NpmCopilotCli(CopilotCli):
     def version_check(self) -> str:
         """The command that prints the installed Copilot CLI's version, run where $HOME/.local/bin is on PATH."""
         return " ".join(["copilot", *self.GLOBAL_FLAGS, "--version"])
+
+
+def read_events(text: str) -> dict[str, Any]:
+    """
+    What a session's JSON lines say it spent: the credits, and the models and
+    efforts Copilot CLI reports it used.
+
+    Credits are the largest `totalNanoAiu` of its usage checkpoints, over 1e9,
+    or None where it reported none. The models are those of its model calls
+    and usage records, and the efforts those its usage checkpoints and model
+    changes name.
+    """
+    events = []
+    for line in text.splitlines():
+        with contextlib.suppress(ValueError):
+            event = json.loads(line)
+            if isinstance(event, dict):
+                events.append(event)
+    data = [(event.get("type"), event.get("data") or {}) for event in events]
+    nano = [d.get("totalNanoAiu") for kind, d in data if kind == "session.usage_checkpoint"]
+    nano = [n for n in nano if isinstance(n, (int, float))]
+    models = {d.get("model") for kind, d in data if kind in ("model.call_start", "model.call_final_result")}
+    # A session's stored events have no model calls, only its usage records.
+    models |= {(d.get("usage") or {}).get("model") for kind, d in data if kind == "session.usage_record"}
+    efforts = {
+        state.get("reasoning_effort")
+        for kind, d in data
+        if kind == "session.usage_checkpoint"
+        for entry in d.get("promptCacheBreakState") or []
+        for state in (entry.get("models") or {}).values()
+    }
+    efforts |= {d.get("reasoningEffort") for kind, d in data if kind == "session.model_change"}
+    return {
+        "credits": round(max(nano) / 1e9, 4) if nano else None,
+        "reported_models": sorted(m for m in models if m),
+        "reported_efforts": sorted(e for e in efforts if e),
+    }

@@ -25,11 +25,10 @@ claude-code     3         58% ±8  70% @3
 
 | Dependency | Version | Needed for |
 |---|---|---|
-| Harbor | 0.25.0, exactly | Runs each task in a sandbox, runs each arm's agent in it, and grades the result with the task's own verifier. SWE-drill's agents and verifiers subclass Harbor's classes, so upgrading Harbor is a change of its own, and it is taken only when `uv run pytest`, `SWE_DRILL_MODAL_TESTS=1 uv run pytest tests/test_modal_sandbox.py`, a `rebench` check and a `senior` check, both on Modal, pass on the new version, and each check gives the reward it gave on the old one. |
+| Harbor | 0.25.0, exactly | Runs each task in a sandbox, runs each arm's agent in it, and grades the result with the task's own verifier. SWE-drill's agents and verifiers subclass Harbor's classes, so upgrading Harbor is a change of its own, and it is taken only when `uv run pytest`, a `rebench` check and an `atlas-rf` check, both on Modal, pass on the new version, and each check gives the reward it gave on the old one. |
 | Docker | Docker Desktop 4.86.0 or later on macOS. On Linux and Windows, a Docker engine whose kernel has `CONFIG_NFT_FIB_INET`. | The sandboxes, with `environment = "docker"` in `swe-drill.toml`. Without `CONFIG_NFT_FIB_INET`, Harbor refuses every task, because the agent phase has no network. |
 | Modal | 1.5.1 or later, and the account Harbor's `modal` environment uses. `uv sync --extra modal` installs its client into SWE-drill's environment, through Harbor's own `modal` extra at the Harbor version above. A plain `uv sync` leaves it out. | The sandboxes, when `environment` is `modal`. Versions before 1.5.1 cannot take a network policy per phase. |
 | SWE-rebench | `ibragim-badertdinov/swe-rebench-07-2026` from Harbor Hub, as `harbor download` writes it | The `rebench` lane's tasks. |
-| Senior SWE-Bench | `snorkel-ai/senior-swe-bench-v2026.06` from Harbor Hub, as `harbor download` writes it | The `senior` lane's tasks. |
 | SWE Atlas | `scale-ai/swe-atlas-rf` from Harbor Hub, as `harbor download` writes it | The `atlas-rf` lane's tasks. |
 | Python | 3.12 | SWE-drill itself, whose agents and verifier Harbor imports. |
 | `uv` | any | Installs SWE-drill and Harbor. |
@@ -86,8 +85,7 @@ In the agent phase, SWE-drill:
 6. **writes the trial record**, `suss.json`.
 
 The trial's result comes from Harbor's separate verifier, a fresh sandbox
-Harbor starts in the same agent job once the agent's sandbox has stopped. On
-`senior`, SWE-drill's judge also scores the patch there.
+Harbor starts in the same agent job once the agent's sandbox has stopped.
 
 ### Capturing the patch
 
@@ -114,13 +112,8 @@ agent's sandbox has stopped. Each task's copy in the lane sets
 agent's but `/logs/artifacts/`. SWE-drill's verifier applies the `model.patch` there
 in the workspace, found as the trial found it, puts every test file back as the
 image held it, and runs the task's own `test.sh` there, unchanged. That reward
-is the trial's result.
-
-| Lane | `--verifier` |
-|---|---|
-| `rebench` | `swe_drill.replay:ReplayVerifier` |
-| `senior` | `swe_drill.judge:JudgeVerifier`, which grades as `ReplayVerifier` does and judges the patch first |
-| `atlas-rf` | `swe_drill.replay:ReplayVerifier` |
+is the trial's result. On every lane the agent job passes
+`--verifier swe_drill.replay:ReplayVerifier`.
 
 It applies the patch with:
 
@@ -183,13 +176,13 @@ Both lists are empty when the patch changed no test file:
 ```
 
 A task can have Harbor fill a variable from Harbor's own environment, in its
-`[verifier.env]` or `[environment.env]`, as each Senior SWE-Bench task's
-verifier takes its keys:
+`[verifier.env]` or `[environment.env]`, as each `atlas-rf` copy's verifier
+takes its judge's key and model:
 
 ```toml
 [verifier.env]
-ANTHROPIC_API_KEY = "${ANTHROPIC_API_KEY:-}"
-SSB_OVERRIDE_ALL_JUDGE_MODEL = "${SSB_OVERRIDE_ALL_JUDGE_MODEL:-}"
+EVAL_API_KEY = "${COPILOT_GITHUB_TOKEN}"
+EVAL_MODEL = "${EVAL_MODEL}"
 ```
 
 SWE-drill runs the agent job's Harbor with each variable the lane's tasks name this
@@ -201,185 +194,6 @@ leaves out or leaves empty takes the task's default, and the agent phase gets on
 `harbor run` loads a `.env.local` in the directory it runs in, so a run exits
 with an error before it builds any lane or runs any job when one is beside
 `swe-drill.toml`.
-
-Every `senior` task has Senior SWE-Bench's verifier, which runs LLM judges and,
-on a design task, a validation agent. Senior's judges call their models with
-`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `PORTKEY_API_KEY`, and SWE-drill gives
-the job none of the three, whatever `.env` sets. So they never run, and
-SWE-drill's own judge scores the patch in their place. The validation agent and
-its review judge run through Copilot CLI, with no key. The settings that would
-choose senior's judges' models still reach the verifier, and `grader` records
-them beside the validation agent's:
-
-| Grades with | In `grader` as | Chosen by | Default |
-|---|---|---|---|
-| the rubric and taste judges' model | `judge_model` | `SSB_OVERRIDE_ALL_JUDGE_MODEL` | `anthropic/claude-sonnet-4-6` |
-| the patch classifier's model | `classifier_model` | `SSB_OVERRIDE_CLASSIFIER_MODEL` | `anthropic/claude-haiku-4-5-20251001` |
-| the validation agent's harness | `validation_harness` | nothing | `copilot-cli` |
-| the validation agent's and its review judge's model | `validation_model` | `validation_model` in `[lanes.senior.judge]` | `gemini-4-argon` |
-| their reasoning effort | `validation_effort` | `validation_effort` in `[lanes.senior.judge]` | `high` |
-
-### Judging
-
-On `senior`, `JudgeVerifier` scores each trial's patch with senior's rubric and
-taste judges, run through Copilot CLI on a Copilot subscription, with no API
-key. In the verifier's sandbox, after the whole patch is applied, test files
-included, and before the test files are put back, it runs the judges. Then it
-grades as `ReplayVerifier` does, so the test reward is the same whatever the
-judges do.
-
-Copilot CLI runs there read-only. It is offered `view`, `glob`, `grep` and `rg`
-alone, and denied `shell` and `write`. A session that changes the workspace
-fails, and the change is undone. When it cannot be undone, the trial fails
-with no test run.
-
-The prompts, the rubric and the answer schemas are the task's own: the task's
-`tests/run_judge.py` builds them from its `tests/`, on the host. SWE-drill keeps no
-copy. An answer that is not valid JSON, or fails its schema, is retried once in
-the same session.
-
-The judge reads `COPILOT_GITHUB_TOKEN` from the `.env` beside `swe-drill.toml`, and
-gives it to each session's command alone. Harbor's environment, `test.sh` and
-every argument go without it. Before `test.sh` runs, every file under the
-judge's directories in the sandbox that holds the token is deleted, and
-`judge.json` has it replaced with `[redacted]`.
-
-Every session of a job draws on one credit budget, kept in
-`judge-credits.jsonl` in the job's directory on the host. A session holds a
-reservation while it runs, and the budget must hold what was spent, what
-running sessions hold and its own reservation. A session the budget cannot hold
-is `skipped:budget`.
-
-The judge stops after `judge_seconds`, its install included, and has 300
-seconds more to put the workspace back. Each `senior` task's copy in the lane
-adds 2100 seconds, the default `judge_seconds` and those 300, to its
-`[verifier] timeout_sec`, or to Harbor's default of 600 where it sets none, and
-a design task's copy adds the validation agent's time too, so its tests keep
-the time the task gives them. `JudgeVerifier` fails a trial
-before it applies anything when the task's verifier timeout is no more than
-`judge_seconds` and those 300 together. A judge that Harbor stops at its verifier timeout records
-`failed:cancelled` for each judge it had not finished, and runs no test.
-
-`swe-drill run` gives it the lane's judge from `swe-drill.toml` as `--verifier-kwarg`:
-
-| Key | Default | |
-|---|---|---|
-| `credit_budget` | required | the AI credits every judge session of the job may spend together |
-| `model` | `gemini-4-argon` | the judges' model, of neither family the arms use, GPT or Claude |
-| `effort` | `high` | its reasoning effort, empty for a model that takes none |
-| `validation_model` | `gemini-4-argon` | the model of senior's validation agent and its review judge |
-| `validation_effort` | `high` | their reasoning effort, empty for a model that takes none |
-
-`swe-drill run` passes none of the others:
-
-| Key | Default | |
-|---|---|---|
-| `classifier_model` | `claude-haiku-4.5` | the model of senior's patch classifier, which the taste judge needs |
-| `copilot_version` | `1.0.105` | the Copilot CLI release it installs, as Harbor's `copilot-cli` agent installs it |
-| `dotenv` | `.env` | the file that sets `COPILOT_GITHUB_TOKEN` |
-| `session_seconds` | 1200 | when a session is stopped |
-| `judge_seconds` | 1800 | when the judge is stopped |
-| `validation_credits` | 200 | the AI credits each validation session may spend, passed as `--max-ai-credits` |
-
-It writes `judge.json` in the trial's `verifier/`, and each session's logs in
-`verifier/judge/`. Beside each session's own record, `judge.json` holds the
-judge, a status per judge, the scores in the shape senior's `reward.json` uses,
-and the AI credits the trial's sessions spent:
-
-```json
-{
-  "judge": {
-    "client": "copilot-cli",
-    "version": "1.0.105",
-    "requested_version": "1.0.105",
-    "model": "gemini-4-argon",
-    "effort": "high",
-    "classifier_model": "claude-haiku-4.5"
-  },
-  "rubric_status": "skipped:no_criteria",
-  "taste_status": "ok",
-  "scores": {
-    "taste_patch_bloat": 1.12,
-    "taste_practice_alignment": 4.0,
-    "taste_relative_taste": 3.0,
-    "rubric_judge_ok": 0,
-    "taste_judge_ok": 1
-  },
-  "credits": 28.4
-}
-```
-
-- `version` is what the installed Copilot CLI reports.
-- A status is `ok`, `skipped:<why>` or `failed:<why>`, as `skipped:no_criteria`
-  for a task with no rubric criteria, or `failed:timeout`.
-- A judge that is not `ok` records no score of its own, and its flag is 0. The
-  patch bloat comes from senior's code, not a judge, so it can be recorded
-  beside a taste judge that failed.
-
-### Validating
-
-On a `senior` design task, one with `tests/validate/validation_spec.toml`,
-`test.sh` runs senior's validation agent through Copilot CLI. Each copy holds
-`tests/swe_drill_validate.py`, a copy of `src/swe_drill/validate.py`, and its
-`test.sh` runs that where the task's runs `tests/run_validate.py`, which the
-copy keeps byte for byte. It runs `run_validate.py` with its two model calls
-made as Copilot CLI sessions:
-
-- **The validation agent**, which writes and repairs the story scripts, runs in
-  the repository with every tool but `web_fetch` and `web_search`, until the
-  `va_timeout_sec`, or for a retry the `retry_timeout_sec`, that
-  `run_validate.py` gives it.
-- **The review judge**, whose verdict decides a retry or a discard, runs in a
-  directory of its own with `view` alone, for at most 300 seconds, and answers
-  with the `submit_review` JSON. Copilot CLI lets it read nothing outside that
-  directory, so a prompt over 120,000 bytes, too long for one argument, is
-  written there as `prompt.md` for it to read. Senior's own `parse_response` and `should_discard`
-  read it. An answer they cannot read is retried once in the same session.
-  When the retry cannot be read either, `run_validate.py` exits 2.
-
-Every session runs on `validation_model` at `validation_effort`, with
-`--max-ai-credits` set to `validation_credits`. `run_validate.py` runs as
-senior's `claude_code` harness, and reads whether the agent ran from the
-`cc_output.txt` and `cc_result_subtype.txt` its session writes. An agent session
-that fails or times out is recorded in `validation_results.json` as
-`validation_agent_infrastructure_failure`. Unless the stories gave a verdict
-anyway, `run_validate.py` then exits 2. On exit 2 `test.sh` writes an empty
-reward, which makes the trial invalid rather than 0.
-
-Before `test.sh`, `JudgeVerifier` writes `settings.json`, and a file holding the
-token, to `/opt/swe-drill-judge/validation/`, and gives `test.sh` that directory
-in `SWE_DRILL_VALIDATION`. The task's own tests run while the file is there. The
-validation deletes it as it reads it, before any session, and gives the token
-to Copilot CLI's environment alone, with
-`--secret-env-vars COPILOT_GITHUB_TOKEN`, so no story script and no command the
-agent runs has it. However `test.sh` ends, the directory is removed, and every
-file under the judge's directories and `/logs/verifier` that holds the token is
-deleted, in the sandbox and in the trial's `verifier/`. Where Copilot CLI could
-not be installed, or `.env` sets no token, `settings.json` says why, and the
-validation exits 2 before any session.
-
-It writes `validation.json` in the trial's `verifier/` as each session ends,
-and each session's logs in `verifier/copilot-validation/`:
-
-```json
-{
-  "validation_agent": { "client": "copilot-cli", "version": "1.0.105", "model": "gemini-4-argon", "effort": "high" },
-  "status": "ok",
-  "sessions": [
-    { "name": "agent-1", "kind": "agent", "status": "ok", "seconds": 131.2, "credits": 20.4 },
-    { "name": "review-1", "kind": "review", "status": "ok", "seconds": 41.0, "credits": 7.1 },
-    { "name": "review-2", "kind": "review", "status": "ok", "seconds": 38.6, "credits": 7.0 }
-  ],
-  "credits": 34.5,
-  "exit": 0
-}
-```
-
-- A session's status is `ok` or `failed:<why>`, as `failed:timeout`,
-  `failed:exit_1` or, for a review answer, `failed:no_json`. A validation that
-  could not start is `failed:setup`, with its `error`.
-- `credits` is the AI credits the trial's validation sessions spent, and
-  `exit` is what `run_validate.py` exited with.
 
 ### The trial record
 
@@ -414,27 +228,6 @@ The agent's own files go there too, such as Copilot CLI's stream,
   and `kwargs` are what the arm passed Harbor.
 - `grader` names the dataset the trial's task came from. SWE-drill fails a trial on
   a lane with no dataset before its sandbox starts.
-- On `senior`, `grader` also holds the litellm requirement the lane's
-  `test.sh` installs, and the models and validation harness in the table
-  above. Each is what the verifier is given: for senior's judges, the value
-  `.env` sets, where the lane's tasks read that setting, or else the default,
-  and for the validation agent, what `[lanes.senior.judge]` sets, or else the
-  default. A setting `.env` leaves empty takes the default. A trial is judged
-  by the judge its `judge.json` names, whatever `judge_model` says.
-
-  ```json
-  {
-    "grader": {
-      "dataset": "senior-swe-bench-v2026.06",
-      "litellm": "litellm>=1.0,<1.106",
-      "judge_model": "anthropic/claude-sonnet-4-6",
-      "classifier_model": "anthropic/claude-haiku-4-5-20251001",
-      "validation_harness": "copilot-cli",
-      "validation_model": "gemini-4-argon",
-      "validation_effort": "high"
-    }
-  }
-  ```
 - On `atlas-rf`, `grader` also holds the model its rubric judge calls, from
   `[lanes.atlas-rf.judge]`:
 
@@ -548,13 +341,12 @@ and `reported_models` stays the coding agent's:
 
 ## 5. Lanes
 
-SWE-drill has three lanes, `rebench`, `senior` and `atlas-rf`. Every task gives
+SWE-drill has two lanes, `rebench` and `atlas-rf`. Every task gives
 the agent a repository at the commit before a real change, and an instruction
 about that change. The task's verifier grades it, and a trial resolves when its
 reward is 1. Each lane is measured on its own, and nothing compares one lane
-with another. On `rebench` and `atlas-rf`, `swe-drill leaderboard` ranks the arms
-by the share of trials that resolve. `senior` has no leaderboard, and each of
-its trials keeps its judges' rubric and taste scores in `verifier/judge.json`.
+with another. On each lane, `swe-drill leaderboard` ranks the arms by the share
+of trials that resolve.
 
 Each lane is a directory of copies of its tasks, built from the download that
 its key in `swe-drill.toml` names. Each task's image is built from the `Dockerfile`
@@ -593,65 +385,6 @@ fails the grade when GitHub does not answer. A `test.sh` with no line that is
 exactly `if command -v python3 >/dev/null 2>&1; then`, or with more than one, or
 in a `tests` directory that is a link, makes `swe-drill run` exit with an error
 naming it before it builds any lane or runs any job.
-
-### `senior`
-
-All 50 tasks of Snorkel's Senior SWE-Bench snapshot `senior-swe-bench-v2026.06`,
-from 12 repositories:
-
-| Language | Tasks | With no tests |
-|---|---|---|
-| Elixir | 10 | 2 |
-| Go | 8 | 0 |
-| Python | 18 | 4 |
-| Rust | 6 | 0 |
-| TypeScript | 8 | 0 |
-
-The verifier runs the task's tests, a validation agent on the 25 tasks whose
-`metadata.segment` is `design`, and LLM judges. The reward is 1 when the tests
-pass and, on a design task, the validation agent passes every story too. The
-judges' scores never change it. Senior's judges need an API key, and SWE-drill
-gives the verifier none, so SWE-drill's own judge scores every patch in their
-place. The validation agent runs through Copilot CLI. Six design tasks have no
-tests, so the
-validation agent alone sets their reward: `electric-feat-sync-service-start`,
-`harbor-add-windows-tasks-support`, `plausible-feat-shared-dashboard-deeplink`,
-`posthog-feat-prompt-versioning`, `posthog-feat-schema-ingestion-block` and
-`prefect-feat-dbt-per-node-hardening`.
-
-The agent timeout is 7200 seconds in 46 tasks and 14400 in the other four. The
-`Dockerfile`s of the 6 `gitea-*`, 2 `teleport-*` and 4 `turborepo-*` tasks
-download amd64 Go or Rust toolchains by name, whatever the host's architecture.
-
-Each copy's `task.toml` adds `[verifier] environment_mode = "separate"` and the
-judge's 2100 seconds to its `[verifier] timeout_sec`. A design task's copy adds
-the validation agent's time as well, read from its `validation_spec.toml`'s
-`[settings]` as `run_validate.py` reads it: `va_timeout_sec`, 900 where it sets
-none, the retry's `retry_timeout_sec`, or else `va_timeout_sec`, but never less
-than 600, and 1200 for two reviews of two 300-second sessions. The 25 design
-tasks gain 3000 to 6000 seconds this way. A task whose `[verifier]` sets another
-`environment_mode`, an `environment` of its own, or a `timeout_sec` that is not
-a positive number, or whose `validation_spec.toml` is not TOML or sets either
-timeout to anything but a positive number, makes `swe-drill run` exit with an
-error naming it before it builds any lane or runs any job.
-
-Each copy's `tests/test.sh` changes four lines of the task's, and the copy adds
-`tests/swe_drill_validate.py`:
-
-| The task's line | The copy's |
-|---|---|
-| `litellm>=1.0,<2.0` | `litellm>=1.0,<1.106` |
-| `_va_harness="${SSB_OVERRIDE_VA_HARNESS:-${FORCE_VA_HARNESS:-miniswe}}"` | `_va_harness=claude_code` |
-| `bash /tests/ssb_lib/scripts/install-claude-code.sh \|\| { … exit 0; }` | an `echo` that installs nothing |
-| `"$_SYS_PYTHON" /tests/run_validate.py \|\| _validation_exit=$?` | `"$_SYS_PYTHON" /tests/swe_drill_validate.py \|\| _validation_exit=$?` |
-
-Every litellm from 1.106.0, on PyPI since 18 October 2026, raises
-`No module named 'mcp'` on every judge call. The verifier still writes a reward
-from the tests, so without the pin no trial's judges would score it and nothing
-would fail. A `test.sh` with no line that is exactly one of the task's lines
-above, indentation included, or with more than one, or in a `tests` directory
-that is a link, makes `swe-drill run` exit with an error naming it before it
-builds any lane or runs any job.
 
 ### `atlas-rf`
 
@@ -723,9 +456,7 @@ In the agent phase, a trial reaches the hosts in its agent class's
 `ALLOWED_HOSTS` and the hosts in its own task's `[agent] allowed_hosts`, and no
 other host. A
 `rebench` task names no hosts of its own, so its trials reach the agent's
-alone. Every `senior`
-task names 32, such as `pypi.org` and `registry.npmjs.org`, and 19 of them name
-a few more for their repository.
+alone.
 
 SWE-drill passes each host in the agent class's `ALLOWED_HOSTS` to Harbor as
 `--allow-agent-host`, and nothing else. Harbor adds them, trial by trial, to the
@@ -741,14 +472,14 @@ it is when a task's `[agent]` sets no `network_mode` and the task gives the
 network to the whole trial, with `[environment] network_mode = "public"` or with
 `allow_internet = true`. Every `rebench` and `atlas-rf` task does. So the copy's `task.toml`
 adds `[agent] network_mode = "no-network"` where `[agent]` sets no
-`network_mode`. A `task.toml` whose `[agent]` sets `no-network` or `allowlist`,
-as every `senior` task's does, is copied unchanged. One whose `[agent]` sets any
+`network_mode`. A `task.toml` whose `[agent]` sets `no-network` or `allowlist`
+is copied unchanged. One whose `[agent]` sets any
 other `network_mode`, or sets `allowed_hosts` with no `network_mode`, makes
 `swe-drill run` exit with an error naming it before it builds any lane or runs any
 job. The verifier keeps the task's own network, which a `rebench` copy uses to
-install Python through apt on an image that has none. A `senior` or `atlas-rf`
-task's verifier has a public network, through which the judge reaches Copilot,
-and an `atlas-rf` `test.sh` installs `openai` from PyPI on an image that lacks
+install Python through apt on an image that has none. An `atlas-rf` task's
+verifier has a public network, through which the judge reaches Copilot, and its
+`test.sh` installs `openai` from PyPI on an image that lacks
 it.
 
 ## 6. Commands
@@ -762,13 +493,11 @@ swe-drill run copilot-gpt rebench
 
 It reads the arm from `swe-drill.toml` in the current directory. For each lane, it
 builds `lanes/<lane>/`, a directory of copies of the lane's task directories
-from the directory its key names: `swe_rebench` for `rebench`,
-`senior_swe_bench` for `senior`, and `swe_atlas_rf` for `atlas-rf`. Each copy has
+from the directory its key names: `swe_rebench` for `rebench`, and
+`swe_atlas_rf` for `atlas-rf`. Each copy has
 `[agent] network_mode = "no-network"` added to its `task.toml` where its
 `[agent]` sets no `network_mode`, and the separate verifier its lane describes.
-On `senior` it also has `litellm>=1.0,<1.106` in place of `litellm>=1.0,<2.0`
-in its `tests/test.sh`, which runs the validation agent through Copilot CLI
-with the `tests/swe_drill_validate.py` the copy adds. On `atlas-rf` its rubric
+On `atlas-rf` its rubric
 judge calls Copilot's API, as its lane describes. A build removes what an
 earlier build of the lane left. Harbor builds each task's image from its
 `Dockerfile` when its trial starts.
@@ -783,18 +512,6 @@ Then, K times, it runs an agent job, which grades its own trials:
   --allow-agent-host api.github.com --allow-agent-host api.enterprise.githubcopilot.com \
   --verifier swe_drill.replay:ReplayVerifier \
   --jobs-dir results/rebench/copilot-gpt --job-name <stamp>-1
-```
-
-On `senior` it judges them too, with the lane's judge from `swe-drill.toml`:
-
-```bash
-<env>/bin/harbor run -y -p lanes/senior -e docker -n 16 -k 1 \
-  -a swe_drill.agents.copilot_cli:CopilotCli -m gpt-6.1-sol \
-  --ak version=1.0.105 --ak reasoning_effort=high \
-  --ak arm=copilot-gpt --ak drill_config=swe-drill.toml --ak lane=senior \
-  --allow-agent-host api.github.com --allow-agent-host api.enterprise.githubcopilot.com \
-  --verifier swe_drill.judge:JudgeVerifier --verifier-kwarg credit_budget=2000 \
-  --jobs-dir results/senior/copilot-gpt --job-name <stamp>-1
 ```
 
 On `atlas-rf` it gives the rubric judge its model from `swe-drill.toml`:
@@ -816,29 +533,17 @@ itself. Its `harbor` is the one that can import `swe_drill.agents` and SWE-drill
 verifiers, which a `harbor` elsewhere on `PATH` may not be.
 
 When a task in the lane has Harbor fill a variable from Harbor's environment,
-as every `senior` and `atlas-rf` task does, every job of the lane takes `-y`, right after
+as every `atlas-rf` task does, every job of the lane takes `-y`, right after
 `run`. Harbor asks before such a job whether its tasks may load those
 variables, and without a terminal it reads no answer and exits 1 with
 `Aborted.`. Answering yes is safe because Harbor holds only the values SWE-drill
 gives it: those `.env` sets for the verifier alone. `-y` also agrees, without asking, to share an uploaded
 job with an organization you are not a member of.
 
-A run of `senior` exits with an error before it builds any lane or runs any
-job, with `DRY_RUN=1` and `--check` too, when `swe-drill.toml` has no
-`[lanes.senior.judge]`, or `.env` sets no `COPILOT_GITHUB_TOKEN`, or sets
-`TIMEOUT_MULTIPLIER` to anything but 1. `run_validate.py` multiplies the
-validation agent's timeouts by it, and the lane's verifier timeout makes room
-for them unmultiplied. A token set to an empty value counts as missing:
-
-```
-$ swe-drill run copilot-gpt senior
-error: /home/me/evals/.env sets no COPILOT_GITHUB_TOKEN, which SWE-drill judges the
-trials of senior with
-```
-
-A run of `atlas-rf` exits with an error the same way when `swe-drill.toml` sets
-no `model` in `[lanes.atlas-rf.judge]`, or `.env` sets no
-`COPILOT_GITHUB_TOKEN`:
+A run of `atlas-rf` exits with an error before it builds any lane or runs any
+job, with `DRY_RUN=1` and `--check` too, when `swe-drill.toml` sets no `model`
+in `[lanes.atlas-rf.judge]`, or `.env` sets no `COPILOT_GITHUB_TOKEN`. A token
+set to an empty value counts as missing:
 
 ```
 $ swe-drill run copilot-gpt atlas-rf
@@ -852,8 +557,8 @@ or spelling Harbor accepts, is an error that names it and says why, and runs
 nothing:
 
 - An option SWE-drill sets on the agent job, even with SWE-drill's own value: `-p`,
-  `-e`, `-n`, `-k`, `-a`, `--ak`, `--allow-agent-host`, `--verifier`,
-  `--verifier-kwarg`, `--ve`, `--jobs-dir`, `--job-name` and `-y`. Also `-m`, which
+  `-e`, `-n`, `-k`, `-a`, `--ak`, `--allow-agent-host`, `--verifier`, `--ve`,
+  `--jobs-dir`, `--job-name` and `-y`. Also `-m`, which
   the arm's `model` sets, and `--disable-verification` and its opposite
   `--enable-verification`, since the agent job grades its own trials.
 - `--env-file`, which would load the file into the agent job's environment,
@@ -866,7 +571,7 @@ nothing:
   from leaving a trial on this machine for its verifier: `-c`, `-d`, `-t`, `-i`,
   `-x`, `-l`, `--registry-url`, `--registry-path`, `--repo`, `--task-git-url`,
   `--task-git-commit`, `--agent-import-path`, `--verifier-import-path`,
-  `--environment-import-path`,
+  `--verifier-kwarg`, `--environment-import-path`,
   `--user-agent`, `--user-model`, `--uk`, `--user-persona-path`,
   `--user-prompt-template-path`, `--bridge`, `--bridge-prompt-path`, `--bk`,
   `--install-only`, `--launch`, `--dry-run`, `--diff` and `--print-config`.
@@ -883,8 +588,8 @@ agent job whose Harbor holds values from `.env`, it prints their names, and
 never a value:
 
 ```
-# from .env: SSB_OVERRIDE_ALL_JUDGE_MODEL
-/home/me/evals/.venv/bin/harbor run -y -p lanes/senior -e docker -n 16 -k 1 -a swe_drill.agents.copilot_cli:CopilotCli -m gpt-6.1-sol --ak version=1.0.105 --ak reasoning_effort=high --ak arm=copilot-gpt --ak drill_config=swe-drill.toml --ak lane=senior --allow-agent-host api.github.com --allow-agent-host api.enterprise.githubcopilot.com --verifier swe_drill.judge:JudgeVerifier --verifier-kwarg credit_budget=2000 --jobs-dir results/senior/copilot-gpt --job-name 20261031T142500Z-1
+# from .env: COPILOT_GITHUB_TOKEN
+/home/me/evals/.venv/bin/harbor run -y -p lanes/atlas-rf -e docker -n 16 -k 1 -a swe_drill.agents.copilot_cli:CopilotCli -m gpt-6.1-sol --ak version=1.0.105 --ak reasoning_effort=high --ak arm=copilot-gpt --ak drill_config=swe-drill.toml --ak lane=atlas-rf --allow-agent-host api.github.com --allow-agent-host api.enterprise.githubcopilot.com --verifier swe_drill.replay:ReplayVerifier --ve EVAL_MODEL=gemini-4-argon --jobs-dir results/atlas-rf/copilot-gpt --job-name 20261031T142500Z-1
 ```
 
 Each agent job runs whatever the one before it did and whatever Harbor's exit
@@ -910,7 +615,6 @@ swe-drill run copilot-gpt rebench --check
 
 ```toml
 swe_rebench = "../tasks/swe-rebench-07-2026"
-senior_swe_bench = "../tasks/senior/senior-swe-bench-v2026.06"
 swe_atlas_rf = "../tasks/swe-atlas-rf"
 environment = "docker"
 k = 1
@@ -931,24 +635,26 @@ agent = "swe_drill.agents.hve:CopilotCliHve"
 model = "gpt-6.1-sol"
 kwargs = { version = "1.0.105", reasoning_effort = "high", hve_core_commit = "55352bb8e9f0622ff40f5c6afa80363adaf6b07f" }
 
-[lanes.senior.judge]
-credit_budget = 2000
-
 [lanes.atlas-rf.judge]
 model = "gemini-4-argon"
 ```
 
-- `swe_rebench`, `senior_swe_bench` and `swe_atlas_rf` name the directories of
+- `swe_rebench` and `swe_atlas_rf` name the directories of
   tasks that `harbor download` writes, relative to the directory holding
   `swe-drill.toml`. `swe_rebench` is `<dir>/swe-rebench-07-2026` after
-  `harbor download ibragim-badertdinov/swe-rebench-07-2026 -o <dir>`,
-  `senior_swe_bench` is `<dir>/senior-swe-bench-v2026.06` after
-  `harbor download snorkel-ai/senior-swe-bench-v2026.06 -o <dir>`, and
+  `harbor download ibragim-badertdinov/swe-rebench-07-2026 -o <dir>`, and
   `swe_atlas_rf` is `<dir>/swe-atlas-rf` after
   `harbor download scale-ai/swe-atlas-rf -o <dir>`. Each is required only by a
-  run of its lane, `rebench`, `senior` or `atlas-rf`. A run of a lane
+  run of its lane, `rebench` or `atlas-rf`. A run of a lane
   whose key is missing exits with an error naming it before it builds any lane
-  or runs any job.
+  or runs any job. A `senior_swe_bench` key makes `swe-drill run` exit with an
+  error before it builds any lane or runs any job:
+
+  ```
+  $ swe-drill run copilot-gpt rebench
+  error: /home/me/evals/swe-drill.toml: sets senior_swe_bench, which SWE-drill no
+  longer reads, since it has no senior lane; remove it
+  ```
 - `agent` names the arm's agent class, as `module:Class`. `model` is passed as
   `-m`, and each of `kwargs` as `--ak`, of its own type. A class that is not
   built on `Adapter`, a kwarg it does not take, or a model or kwarg it needs
@@ -982,8 +688,8 @@ model = "gemini-4-argon"
   `docker info --format '{{.NCPU}} {{.MemTotal}}'` reports. An
   `--override-cpus` or `--override-memory-mb` passed after `--` counts in place
   of the tasks' own where it is larger. Memory is counted in MiB, as
-  `memory_mb` is, and Docker's is rounded down. A task that gives `memory`, as
-  every `senior` task does, counts as Harbor reads it: `"8G"` is 8192 MiB. When
+  `memory_mb` is, and Docker's is rounded down. A task that gives `memory`
+  counts as Harbor reads it: `"8G"` is 8192 MiB. When
   either does not fit, `swe-drill run` exits with an error before it builds any lane
   or runs any job, and does so under `DRY_RUN=1` too. A task that names no
   `cpus`, or neither `memory_mb` nor a `memory` Harbor reads, is an error that
@@ -998,36 +704,19 @@ model = "gemini-4-argon"
 
   When a single trial does not fit, the error says so and offers no
   `concurrency`.
-- `[lanes.senior.judge]` gives the judge a `senior` run is judged with:
-  `credit_budget`, which it requires, and `model`, `effort`,
-  `validation_model` and `validation_effort`, which take the judge's defaults
-  where it leaves them out. They are the `--verifier-kwarg`s
-  the agent job gives `JudgeVerifier`. A budget that is not a positive, finite
-  number, any of the other four that is not a string, or any other key, makes
-  `swe-drill run` exit with an error before it builds any lane or runs any job.
-
-  ```toml
-  [lanes.senior.judge]
-  credit_budget = 2000
-  model = "gpt-6.1-sol"
-  effort = "high"
-  validation_model = "gemini-4-argon"
-  validation_effort = "high"
-  ```
-
 - `[lanes.atlas-rf.judge]` gives `model`, the model an `atlas-rf` run's rubric
   judge calls through Copilot's API, by the name that API takes. A model that
   is not a non-empty string, or any other key, makes `swe-drill run` exit with an error
   before it builds any lane or runs any job.
 
   A `[lanes.<lane>]` table for a lane SWE-drill does not have, or one that sets
-  anything but `judge` on `senior` or `atlas-rf`, makes `swe-drill run` exit
+  anything but `judge` on `atlas-rf`, makes `swe-drill run` exit
   with an error before it builds any lane or runs any job:
 
   ```
   $ swe-drill run copilot-gpt rebench
   error: /home/me/evals/swe-drill.toml: sets [lanes.rebnech], but SWE-drill has no lane
-  named rebnech; its lanes are rebench, senior, atlas-rf
+  named rebnech; its lanes are rebench, atlas-rf
   ```
 - `max_cost_usd`, at the top or on the arm, makes `swe-drill run` exit with an error
   before it builds any lane or runs any job, with `DRY_RUN=1` and `--check` too:
@@ -1109,11 +798,11 @@ These trials' verifiers judged them invalid, so the leaderboard counts none of t
   copilot-gpt  20261108T011500Z-1  gleam-lang__gleam-4890
 ```
 
-`--lane` is required, and only `rebench` and `atlas-rf` have a leaderboard:
+`--lane` is required, and must name one of SWE-drill's lanes:
 
 ```
-$ swe-drill leaderboard --lane senior
-error: swe-drill leaderboard covers rebench and atlas-rf only, not senior
+$ swe-drill leaderboard --lane rebnech
+error: SWE-drill has no lane named rebnech; its lanes are rebench, atlas-rf
 ```
 
 It exits with an error, and prints nothing else, when:
@@ -1150,19 +839,16 @@ src/swe_drill/
     claude_code.py  ClaudeCode
     hve.py          CopilotCliHve
     squiz.py        CopilotCliSquiz
-  copilot.py        installing Copilot CLI, for the judge and the Copilot CLI agents
+  copilot.py        installing Copilot CLI for the Copilot CLI agents, and reading its sessions' usage
   sandbox.py        commands in the sandbox, and stopping what they started
   workspace.py      finding the workspace, and capturing the patch
   lanes/            building a lane's directory from the downloaded tasks
     __init__.py     the lanes, the build, and what every lane changes in a copy
     edits.py        changing one line or key of a task's file, and nothing else
     rebench.py      what the rebench lane alone leaves out and changes
-    senior.py       what the senior lane alone changes
     atlas_rf.py     what the atlas-rf lane alone changes
   config.py         swe-drill.toml
   replay.py         ReplayVerifier, which grades a trial in Harbor's separate verifier
-  judge.py          JudgeVerifier, which judges a senior trial there, then grades it
-  validate.py       senior's run_validate.py through Copilot CLI, copied into each senior task
   leaderboard.py    swe-drill leaderboard
   cli.py            the swe-drill command
 scripts/

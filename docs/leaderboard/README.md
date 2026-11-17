@@ -85,47 +85,6 @@ resolved rate, as `swe-drill leaderboard --lane rebench` does.
   `apache__hugegraph-3037` in squiz's first and third. They were not graded
   again.
 
-## `senior`
-
-Senior SWE-Bench `v2026.06`: 50 tasks, 25 investigate tasks graded by their
-tests and 25 design tasks graded by senior's validation agent. No design task
-has a reward yet, since that agent needs API credit. SWE-drill's judge scores every
-patch for quality with senior's rubric and taste judges.
-
-### Correctness
-
-| Arm | Agent | Harness | Model | Date | Investigate tasks | Runs | Resolved | Resolved share | Design tasks graded | AI credits | Agent time, sum of trials |
-|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
-| `copilot-gpt` | `copilot-cli` | Default | gpt-6.1-sol | 2026-11-05 | 25 | 1 | 8 | 32% | 0 of 25 | 4,739 (≈ $47) | 11.3 h |
-
-### Code quality
-
-| Arm | Judge | Rubric | Practice alignment | Relative taste | Patch bloat, median | Judging, AI credits |
-|---|---|---:|---:|---:|---:|---:|
-| `copilot-gpt` | `gemini-4-argon`, effort high | 0.66 (37) | 4.50 (50) | 3.58 (50) | 0.65 | 1,835 (≈ $18) |
-
-`copilot-gpt`'s scores by segment:
-
-| Segment | Rubric | Practice alignment | Relative taste | Patch bloat, median |
-|---|---:|---:|---:|---:|
-| investigate | 0.56 (16) | 4.56 (25) | 3.44 (25) | 0.81 |
-| design | 0.74 (21) | 4.44 (25) | 3.72 (25) | 0.55 |
-
-- **Rubric** is the share of a task's criteria met, from 0 to 1; the count in
-  brackets is the tasks that have criteria. **Practice alignment** and
-  **relative taste** run from 1 to 5. **Patch bloat** is the patch's source
-  lines over the reference fix's, with test and doc files left out of both.
-- **These are SWE-drill's scores, not senior's published ones,** and taste moves by
-  up to a point between judgings, so treat a gap under about 0.5 as noise.
-
-### The runs
-
-| Arm | Job | Params | Regrade |
-|---|---|---|---|
-| `copilot-gpt` | `20261105T205511Z-1` | version 1.0.105, effort high, `max_ai_credits` 1000, `max_seconds` 5400 | `20261105T205511Z-1-regrade`, by `JudgeAgent` with no API key |
-
-- Over 25 tasks, the resolved share's 95% interval is about 17% to 52%.
-
 ## How to read the columns
 
 - **Agent:** the coding agent and its version. **Harness:** what runs around
@@ -144,7 +103,9 @@ patch for quality with senior's rubric and taste judges.
   for Claude Code's tokens. A price, not what was paid, and no sandbox cost.
 - **Agent time:** every trial's run time added up.
 
-## Retired lane: SWE-bench Pro
+## Retired lanes
+
+### SWE-bench Pro
 
 SWE-bench Pro, which SWE-drill no longer runs: Sonnet 5.5 on plain Copilot CLI
 resolved 98% of `pro-go`, leaving no room to tell harnesses apart.
@@ -163,6 +124,19 @@ resolved 98% of `pro-go`, leaving no room to tell harnesses apart.
 
 - In `pro-hard51`, Copilot CLI never started on 10 trials (#113), which count as
   unresolved. `pro-hard51-rerun113` ran those 10 again.
+
+### `senior`
+
+Senior SWE-Bench `v2026.06`, which SWE-drill no longer runs: its grading needs a
+provider key, which SWE-drill could reach only by re-routing every judge through Copilot.
+
+| Lane | Arm | Agent | Harness | Model | Date | Investigate tasks | Resolved | Resolved share | Design tasks graded | AI credits | Agent time, sum of trials |
+|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|
+| `senior` | `copilot-gpt` | `copilot-cli` | Default | gpt-6.1-sol | 2026-11-05 | 25 | 8 | 32% | 0 of 25 | 4,739 (≈ $47) | 11.3 h |
+
+| Lane | Job | Params | Regrade |
+|---|---|---|---|
+| `senior` | `20261105T205511Z-1` | version 1.0.105, effort high, `max_ai_credits` 1000, `max_seconds` 5400 | `20261105T205511Z-1-regrade`, by `JudgeAgent` with no API key |
 
 ## How this page was made
 
@@ -205,8 +179,6 @@ with `<job>` a job's directory such as `results/senior/copilot-gpt/20261105T2055
 ```bash
 jq -r .status <job>/*/agent/suss.json | sort | uniq -c
 jq .verifier_result.rewards.reward <job>-regrade/*/result.json | sort | uniq -c
-jq -s 'map(.scores.rubric_score // empty) | add / length' <job>-regrade/*/agent/judge.json
-jq -s 'map(.credits) | add' <job>-regrade/*/agent/judge.json
 jq -s '[.[].run_seconds // empty] | add / 3600' <job>/*/agent/suss.json
 jq -s '((map(.finished_at) | max | sub("\\.[0-9]+";"") | fromdateiso8601) - (map(.started_at) | min | sub("\\.[0-9]+";"") | fromdateiso8601)) / 3600' <job>/*/result.json
 for f in <job>/*/agent/run.log; do

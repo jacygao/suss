@@ -23,7 +23,7 @@ from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 from harbor.utils.import_path import import_symbol
 
-from swe_drill import config, judge, lanes, sandbox, validate
+from swe_drill import config, lanes, sandbox
 from swe_drill.config import ConfigError
 from swe_drill.workspace import (
     ARTIFACTS_DIR,
@@ -39,7 +39,6 @@ RECORD_NAME = "suss.json"
 # The dataset each lane's tasks come from, which names its trials' grader.
 DATASETS = {
     lanes.REBENCH: "swe-rebench-07-2026",
-    lanes.SENIOR: "senior-swe-bench-v2026.06",
     lanes.ATLAS_RF: "swe-atlas-rf",
 }
 # How long a cancelled run may take to capture the patch and write suss.json.
@@ -89,7 +88,7 @@ class Adapter:
         never passes them. Raises TypeError when Harbor parsed `arm`, `lane` or
         `drill_config` as something other than a string, ConfigError when the
         settings cannot be read, and LaneError for a lane with no dataset in
-        DATASETS, and as `grader` does.
+        DATASETS.
         """
         for key, value in (("arm", arm), ("lane", lane), ("drill_config", drill_config)):
             if not isinstance(value, str):
@@ -311,32 +310,12 @@ class Adapter:
 
 def grader(settings: config.Config, lane: str) -> dict[str, str]:
     """
-    What grades a trial of `lane`, a lane in DATASETS: its dataset.
-
-    On senior it adds the litellm requirement the lane's test.sh installs, the
-    models senior's own judges would use, and the validation agent the lane
-    runs through Copilot CLI with its model and effort. On atlas-rf it adds
-    the model its rubric judge calls, as `judge_model`. The judges' models
-    follow from the variables `swe-drill run` gives the agent job's Harbor,
-    which only the settings the lane's tasks read can reach. Raises LaneError
-    when a task.toml in the download cannot be read.
+    What grades a trial of `lane`, a lane in DATASETS: its dataset, and on
+    atlas-rf the model its rubric judge calls, as `judge_model`.
     """
     found = {"dataset": DATASETS[lane]}
     if lane == lanes.ATLAS_RF:
         found["judge_model"] = settings.eval_model
-    if lane == lanes.SENIOR:
-        download = settings.download(lane)
-        reads = config.host_variables(lanes.read_tasks(lanes.lane_tasks(lane, download)))
-        found["litellm"] = lanes.senior.PINNED_LITELLM.decode()
-        found |= config.grading_choices(config.verifier_env(settings, reads))
-        lane_judge = settings.judge or config.Judge(credit_budget=0)
-        found["validation_harness"] = validate.CLIENT
-        found["validation_model"] = (
-            judge.MODEL if lane_judge.validation_model is None else lane_judge.validation_model
-        )
-        found["validation_effort"] = (
-            judge.EFFORT if lane_judge.validation_effort is None else lane_judge.validation_effort
-        )
     return found
 
 

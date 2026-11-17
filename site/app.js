@@ -182,67 +182,6 @@
     return out;
   }
 
-  function metric(label, value, count, fill, sub, mark) {
-    var meter = el("div", { class: "meter", "aria-hidden": "true" }, [el("div", { style: "width: " + Math.min(100, fill * 100) + "%" })]);
-    if (mark != null) meter.appendChild(el("div", { class: "mark", style: "left: " + mark * 100 + "%" }));
-    return el("div", { class: "metric" }, [
-      el("div", { class: "head" }, [el("span", { text: label }), el("span", { class: "small muted", text: count })]),
-      el("span", { class: "value", text: value }),
-      meter,
-      el("span", { class: "small muted", text: sub })
-    ]);
-  }
-
-  function senior() {
-    var lane = data.senior;
-    var out = [laneHead(lane, [["Arms", lane.arms.length], ["Tasks", lane.tasks]])];
-    out.push(el("div", { class: "note" }, [el("span", { text: lane.notice })]));
-    out.push(el("section", { class: "card", "aria-labelledby": "correct-title" }, [
-      el("div", { class: "card-head" }, [el("div", {}, [el("h2", { id: "correct-title", text: "Correctness" }), el("p", { class: "small muted", text: "Investigate tasks resolved by their own tests." })])]),
-      el("div", { class: "scroll" }, [el("table", { style: "min-width: 860px" }, [
-        el("thead", {}, [el("tr", {}, ["Arm", "Resolved share", "Resolved", "Design graded", "Cost", "Agent time"].map(function (h, i) { return el("th", { scope: "col", class: i >= 2 ? "num" : "", text: h }); }))]),
-        el("tbody", {}, lane.arms.map(function (arm) {
-          return el("tr", {}, [
-            el("td", {}, [el("div", { style: "display: flex; flex-direction: column; gap: 2px" }, [el("span", { class: "arm-name", text: arm.name }), el("span", { class: "arm-sub", text: arm.agent + " · " + arm.model })])]),
-            el("td", {}, [el("div", { class: "rate-cell" }, [el("span", { class: "rate-text", text: pct(arm.share) }),
-              el("div", { class: "track", "aria-hidden": "true" }, [el("div", { class: "axis" }), el("div", { class: "ci", style: "left: " + arm.lo * 100 + "%; width: " + (arm.hi - arm.lo) * 100 + "%" }), el("div", { class: "dot", style: "left: " + arm.share * 100 + "%" })])])]),
-            el("td", { class: "num", text: arm.resolved + " of " + arm.investigate }),
-            el("td", { class: "num", text: arm.designGraded + " of 25" }),
-            el("td", { class: "num", text: money(arm.cost) }),
-            el("td", { class: "num", text: hours(arm.hours) })
-          ]);
-        }))
-      ])]),
-      el("div", { class: "card-foot" }, [el("span", { text: "Over 25 tasks the 95% interval is wide: about 17% to 52% for one run." })])
-    ]));
-    lane.arms.forEach(function (arm) {
-      var q = arm.quality;
-      out.push(el("section", { class: "card", "aria-labelledby": "quality-" + arm.name }, [
-        el("div", { class: "card-head" }, [
-          el("div", {}, [el("h2", { id: "quality-" + arm.name }, ["Code quality: ", el("span", { class: "mono", text: arm.name })]), el("p", { class: "small muted", text: "Every patch, scored by SWE-drill’s judge with senior’s rubric and taste judges." })]),
-          el("span", { class: "small", text: "Judge: " + lane.judge })
-        ]),
-        el("div", { class: "card-body" }, [
-          el("div", { class: "metrics" }, [
-            metric("Rubric", q.rubric[0].toFixed(2), q.rubric[1] + " tasks", q.rubric[0], "Share of a task’s criteria met, 0 to 1"),
-            metric("Practice alignment", q.practice[0].toFixed(2), q.practice[1] + " tasks", (q.practice[0] - 1) / 4, "1 to 5"),
-            metric("Relative taste", q.taste[0].toFixed(2), q.taste[1] + " tasks", (q.taste[0] - 1) / 4, "1 to 5; moves by up to a point between judgings"),
-            metric("Patch bloat", q.bloat.toFixed(2), "median", q.bloat / 2, "Patch’s source lines over the reference fix’s; the mark is 1.0", 0.5)
-          ]),
-          el("div", { class: "scroll" }, [el("table", { style: "min-width: 620px" }, [
-            el("caption", { style: "text-align: left; padding-bottom: 8px; font-weight: 600", text: "By segment" }),
-            el("thead", {}, [el("tr", {}, ["Segment", "Rubric", "Practice alignment", "Relative taste", "Patch bloat"].map(function (h, i) { return el("th", { scope: "col", class: i ? "num" : "", text: h }); }))]),
-            el("tbody", {}, arm.segments.map(function (s) {
-              return el("tr", {}, [el("td", { text: s.name }), el("td", { class: "num", text: s.rubric[0].toFixed(2) + " (" + s.rubric[1] + ")" }), el("td", { class: "num", text: s.practice[0].toFixed(2) + " (" + s.practice[1] + ")" }), el("td", { class: "num", text: s.taste[0].toFixed(2) + " (" + s.taste[1] + ")" }), el("td", { class: "num", text: s.bloat.toFixed(2) })]);
-            }))
-          ])])
-        ]),
-        el("div", { class: "card-foot" }, [el("span", { text: "These are SWE-drill’s scores, not senior’s published ones. Treat a gap under about 0.5 as noise. Judging cost " + money(q.judgeCost) + "." })])
-      ]));
-    });
-    return out;
-  }
-
   // A render replaces every button, so focus goes back to the one just pressed.
   function pick(name) {
     picked = name;
@@ -252,12 +191,12 @@
   }
 
   function render() {
-    var lane = location.hash === "#senior" ? "senior" : "rebench";
+    var lane = "rebench";
     document.querySelectorAll(".tabs a").forEach(function (a) {
       if (a.dataset.lane === lane) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
     });
     document.title = "SWE-drill leaderboard: " + lane;
-    app.replaceChildren.apply(app, lane === "senior" ? senior() : rebench());
+    app.replaceChildren.apply(app, rebench());
   }
 
   fetch("leaderboard.json", { cache: "no-cache" })
@@ -265,7 +204,6 @@
     .then(function (json) {
       data = json;
       document.getElementById("updated").textContent = "Updated " + date(json.updated);
-      window.addEventListener("hashchange", render);
       render();
     })
     .catch(function (err) {

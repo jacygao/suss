@@ -49,21 +49,12 @@ DOCKER_DESKTOP_8GB = "10 8319504384"
 # check runs. One names a docker_image, which SWE-drill must still not pull.
 TASKS = ["ArcadeData__arcadedb-4281", "apache__pulsar-25793", "owner__repo-3"]
 IMAGE = ("apache__pulsar-25793", "ghcr.io/x/pulsar:latest")
-# Three tasks of Senior SWE-Bench v2026.06, as test_lanes.py describes them. By
-# code point, the first is harbor-add-agent-file-retention, at 2 CPUs and 4G.
-SENIOR_TASKS = Path(__file__).resolve().parent / "senior_tasks"
-SENIOR_NAMES = sorted(task.name for task in SENIOR_TASKS.iterdir() if task.is_dir())
-LITELLM = b"litellm>=1.0,<2.0"
-PINNED = b"litellm>=1.0,<1.106"
-# The senior lane's judge, which every swe-drill.toml here sets.
-JUDGE = "[lanes.senior.judge]\ncredit_budget = 2000\n"
 
 
 @dataclass
 class Project:
     directory: Path
     tasks: Path
-    senior_tasks: Path
     harbor: Path
     docker: Path
     log: Path
@@ -97,11 +88,10 @@ class Project:
         environment: str = "docker",
         k: str = "2",
         lane_tables: str = "",
-        downloads: tuple[str, ...] = ("swe_rebench", "senior_swe_bench"),
+        downloads: tuple[str, ...] = ("swe_rebench",),
     ) -> None:
         named = {
             "swe_rebench": "../tasks/swe-rebench-07-2026",
-            "senior_swe_bench": "../tasks/senior/senior-swe-bench-v2026.06",
             "swe_atlas_rf": "../tasks/swe-atlas-rf",
         }
         (self.directory / "swe-drill.toml").write_text(
@@ -110,7 +100,6 @@ class Project:
             f"k = {k}\n"
             "concurrency = 4\n\n"
             f"{lane_tables}\n"
-            f"{JUDGE}\n"
             "[arms.peer-review]\n"
             'agent = "test_swe_drill_run:PeerReview"\n'
             f"{arm_extra}\n"
@@ -162,8 +151,6 @@ def project(tmp_path, monkeypatch) -> Project:
     tasks = tmp_path / "evals" / "tasks" / "swe-rebench-07-2026"
     for name in TASKS:
         write_task(tasks, name, image=IMAGE[1] if name == IMAGE[0] else None)
-    senior_tasks = tmp_path / "evals" / "tasks" / "senior" / "senior-swe-bench-v2026.06"
-    shutil.copytree(SENIOR_TASKS, senior_tasks)
 
     directory = tmp_path / "evals" / "project"
     directory.mkdir(parents=True)
@@ -172,7 +159,6 @@ def project(tmp_path, monkeypatch) -> Project:
     created = Project(
         directory=directory,
         tasks=tasks,
-        senior_tasks=senior_tasks,
         harbor=stand_in(STANDINS / "harbor.py", bin_dir / "harbor"),
         docker=stand_in(STANDINS / "docker.py", bin_dir / "docker"),
         log=tmp_path / "log.jsonl",
@@ -219,21 +205,6 @@ def test_the_default_harbor_is_the_one_beside_this_python():
 
 
 # What runs, and in what order
-
-
-def test_the_senior_lane_runs_k_agent_jobs_each_judging_and_grading_its_own_trials(project):
-    write_dotenv(project, JUDGES_KEY)
-
-    assert project.run("peer-review", "senior") == 0
-
-    runs = [
-        (value(record["argv"], "-p"), value(record["argv"], "--verifier"), value(record["argv"], "--job-name"))
-        for record in project.records("harbor")
-    ]
-    assert runs == [
-        ("lanes/senior", "swe_drill.judge:JudgeVerifier", f"{STAMP}-1"),
-        ("lanes/senior", "swe_drill.judge:JudgeVerifier", f"{STAMP}-2"),
-    ]
 
 
 def test_the_rebench_lane_runs_k_agent_jobs_each_grading_its_own_trials(project):
@@ -283,8 +254,8 @@ def agent_phase_hosts(task: Path, agent_argv: list[str]) -> list[str]:
     return policy.allowed_hosts
 
 
-# Every Senior SWE-Bench v2026.06 task allows these in its agent phase.
-SENIOR_HOSTS = [
+# The package registries and mirrors a task whose agent's network is an allowlist opens.
+TASK_HOSTS = [
     "api.portkey.ai", "pypi.org", "*.pythonhosted.org", "*.pypa.io", "astral.sh",
     "*.astral.sh", "pypi-mirror.modal.local", "*.python.org", "registry.npmjs.org",
     "www.npmjs.com", "registry.yarnpkg.com", "pnpm.io", "get.pnpm.io", "nodejs.org",
@@ -309,9 +280,9 @@ def write_allowlist_task(tasks: Path, name: str, hosts: list[str]) -> Path:
 
 def test_each_trials_agent_phase_reaches_its_tasks_hosts_and_its_agents_and_no_other(project):
     write_allowlist_task(
-        project.tasks, "posthog-fix-a", [*SENIOR_HOSTS, "clickhouse.com", "*.clickhouse.com"]
+        project.tasks, "posthog-fix-a", [*TASK_HOSTS, "clickhouse.com", "*.clickhouse.com"]
     )
-    write_allowlist_task(project.tasks, "prefect-fix-b", [*SENIOR_HOSTS, "docs.sqlalchemy.org"])
+    write_allowlist_task(project.tasks, "prefect-fix-b", [*TASK_HOSTS, "docs.sqlalchemy.org"])
     # pypi.org is the tasks' as well, and must be opened once.
     toml = project.directory / "swe-drill.toml"
     toml.write_text(toml.read_text().replace(':PeerReview"', ':PeerReviewOnPypi"'))
@@ -325,10 +296,10 @@ def test_each_trials_agent_phase_reaches_its_tasks_hosts_and_its_agents_and_no_o
         "pypi.org",
     ]
     assert agent_phase_hosts(lane / "posthog-fix-a", agent) == [
-        *SENIOR_HOSTS, "clickhouse.com", "*.clickhouse.com", "api.anthropic.com",
+        *TASK_HOSTS, "clickhouse.com", "*.clickhouse.com", "api.anthropic.com",
     ]
     assert agent_phase_hosts(lane / "prefect-fix-b", agent) == [
-        *SENIOR_HOSTS, "docs.sqlalchemy.org", "api.anthropic.com",
+        *TASK_HOSTS, "docs.sqlalchemy.org", "api.anthropic.com",
     ]
     for name in TASKS:
         assert agent_phase_hosts(lane / name, agent) == ["api.anthropic.com", "pypi.org"]
@@ -408,8 +379,7 @@ def test_every_job_runs_in_swe_drill_own_environment_unchanged(project, monkeypa
 
 
 def test_arguments_after_the_separator_reach_every_agent_job(project):
-    write_dotenv(project, JUDGES_KEY)
-    assert project.run("peer-review", "senior", "--", "--max-retries", "2") == 0
+    assert project.run("peer-review", "rebench", "--", "--max-retries", "2") == 0
 
     assert len(project.records("harbor")) == 2
     for record in project.records("harbor"):
@@ -417,8 +387,7 @@ def test_arguments_after_the_separator_reach_every_agent_job(project):
 
 
 def test_harbors_output_is_shown_as_it_runs(project, capfd):
-    write_dotenv(project, JUDGES_KEY)
-    project.run("peer-review", "senior")
+    project.run("peer-review", "rebench")
 
     out, err = capfd.readouterr()
     assert f"stand-in harbor ran {STAMP}-1\n" in out
@@ -446,11 +415,10 @@ def test_ctrl_c_waits_for_harbor_to_finish_cancelling_before_swe_drill_stops(tmp
 
 
 def test_the_next_agent_job_follows_one_that_exits_non_zero(project):
-    write_dotenv(project, JUDGES_KEY)
     project.plan_jobs(**{f"{STAMP}_1": {"exit": 1}})
 
     # Harbor's exit code is not its trials' result.
-    assert project.run("peer-review", "senior") == 0
+    assert project.run("peer-review", "rebench") == 0
 
     assert project.job_names() == [f"{STAMP}-1", f"{STAMP}-2"]
 
@@ -466,10 +434,9 @@ def test_the_next_agent_job_follows_one_that_exits_non_zero(project):
     ids=["job-directory-without-a-trial", "no-job-directory", "no-trial-and-exit-0", "only-harbors-own-directory"],
 )
 def test_an_agent_job_that_leaves_no_trial_stops_the_run(project, capfd, job):
-    write_dotenv(project, JUDGES_KEY)
     project.plan_jobs(**{f"{STAMP}_2": job})
 
-    code = project.run("peer-review", "senior")
+    code = project.run("peer-review", "rebench")
 
     out, err = capfd.readouterr()
     assert code != 0
@@ -620,18 +587,19 @@ def test_a_broken_task_toml_after_the_first_is_refused_on_modal(
     assert err.startswith("error: ") and "zzz__repo-1/task.toml" in err, err
 
 
-# A .env that gives the senior lane's judge its token.
+# A .env that gives atlas-rf's rubric judge its token.
 JUDGES_KEY = "COPILOT_GITHUB_TOKEN=gh-1\n"
 
 
 @pytest.mark.parametrize("check", [False, True], ids=["run", "check"])
 def test_each_lanes_agent_jobs_name_their_lane_to_the_agent(
-    project, capfd, monkeypatch, check
+    atlas, capfd, monkeypatch, check
 ):
     monkeypatch.setenv("DRY_RUN", "1")
-    write_dotenv(project, JUDGES_KEY)
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", f"64 {64 * GIB}")
+    write_dotenv(atlas, JUDGES_KEY)
 
-    code = project.run("peer-review", "rebench", "senior", *(["--check"] if check else []))
+    code = atlas.run("peer-review", "rebench", "atlas-rf", *(["--check"] if check else []))
 
     out, err = capfd.readouterr()
     assert code == 0, err
@@ -642,7 +610,7 @@ def test_each_lanes_agent_jobs_name_their_lane_to_the_agent(
         for argv in agents
     } == {
         (f"lanes/rebench{suffix}", ("arm=peer-review", "drill_config=swe-drill.toml", "lane=rebench")),
-        (f"lanes/senior{suffix}", ("arm=peer-review", "drill_config=swe-drill.toml", "lane=senior")),
+        (f"lanes/atlas-rf{suffix}", ("arm=peer-review", "drill_config=swe-drill.toml", "lane=atlas-rf")),
     }
 
 
@@ -704,7 +672,7 @@ def test_a_lane_swe_drill_does_not_have_in_swe_drill_toml_is_refused_as_the_spec
     assert code != 0
     assert err == (
         f"error: {project.directory / 'swe-drill.toml'}: sets [lanes.rebnech], but SWE-drill has no lane "
-        "named rebnech; its lanes are rebench, senior, atlas-rf\n"
+        "named rebnech; its lanes are rebench, atlas-rf\n"
     )
     assert out == ""
     assert_nothing_ran(project)
@@ -728,11 +696,12 @@ def test_a_refused_argument_after_the_separator_is_printed_as_the_spec_shows(pro
         (["peer-review", "rebench", "-x"], "-x"),
         (["peer-review"], "lane"),
         ([], "arm"),
-        (["peer-review", "pro-go"], "no lane named pro-go; its lanes are rebench, senior"),
+        (["peer-review", "pro-go"], "no lane named pro-go; its lanes are rebench, atlas-rf"),
         (
             ["peer-review", "rebench", "pro-go"],
-            "no lane named pro-go; its lanes are rebench, senior",
+            "no lane named pro-go; its lanes are rebench, atlas-rf",
         ),
+        (["peer-review", "senior"], "no lane named senior; its lanes are rebench, atlas-rf"),
         (["peer-review", "rebench", "rebench"], "rebench is named twice"),
         (["no-such-arm", "rebench"], "arm no-such-arm is not defined"),
     ],
@@ -743,6 +712,7 @@ def test_a_refused_argument_after_the_separator_is_printed_as_the_spec_shows(pro
         "no-arm",
         "pro-lane",
         "pro-lane-after-rebench",
+        "senior-lane",
         "lane-twice",
         "unknown-arm",
     ],
@@ -1203,140 +1173,35 @@ def test_a_second_run_leaves_the_first_runs_jobs_in_place(project):
 
 # The verifier's environment
 
-# Every Senior SWE-Bench task's [verifier.env], as the v2026.06 download writes it.
-SENIOR_VERIFIER_ENV = """
+# A [verifier.env] that has Harbor fill two variables from its own environment.
+GRADER_VERIFIER_ENV = """
 [verifier.env]
-ANTHROPIC_API_KEY = "${ANTHROPIC_API_KEY:-}"
-OPENAI_API_KEY = "${OPENAI_API_KEY:-}"
-PORTKEY_API_KEY = "${PORTKEY_API_KEY:-}"
-SSB_OVERRIDE_ALL_JUDGE_MODEL = "${SSB_OVERRIDE_ALL_JUDGE_MODEL:-}"
-SSB_OVERRIDE_CLASSIFIER_MODEL = "${SSB_OVERRIDE_CLASSIFIER_MODEL:-}"
-SSB_OVERRIDE_VA_HARNESS = "${SSB_OVERRIDE_VA_HARNESS:-}"
-SSB_OVERRIDE_VA_MODEL = "${SSB_OVERRIDE_VA_MODEL:-}"
-FORCE_VA_HARNESS = "${FORCE_VA_HARNESS:-}"
-FORCE_VA_MODEL = "${FORCE_VA_MODEL:-}"
+GRADER_KEY = "${GRADER_KEY:-}"
+GRADER_MODEL = "${GRADER_MODEL:-}"
 REPO_NAME = "repo"
-TIMEOUT_MULTIPLIER = "${TIMEOUT_MULTIPLIER:-1}"
 """
-JUDGE_VARIABLES = (
-    "ANTHROPIC_API_KEY",
-    "OPENAI_API_KEY",
-    "PORTKEY_API_KEY",
-    "SSB_OVERRIDE_ALL_JUDGE_MODEL",
-    "SSB_OVERRIDE_CLASSIFIER_MODEL",
-    "SSB_OVERRIDE_VA_HARNESS",
-    "SSB_OVERRIDE_VA_MODEL",
-    "FORCE_VA_HARNESS",
-    "FORCE_VA_MODEL",
-    "TIMEOUT_MULTIPLIER",
-)
-
-
-@pytest.fixture
-def senior(project) -> Project:
-    """The project, whose senior download's tasks are graded by Senior SWE-Bench's judges."""
-    return project
 
 
 def write_dotenv(project: Project, text: str) -> None:
     (project.directory / ".env").write_text(text)
 
 
-def test_the_agent_job_takes_no_grading_key_or_token_from_env_or_swe_drill_own_environment(
-    senior, monkeypatch
+def test_the_agent_job_gets_what_env_sets_for_its_verifier_and_none_from_swe_drill_own_environment(
+    project, monkeypatch
 ):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "from-the-shell")
-    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "exported-in-the-shell")
-    write_dotenv(senior, JUDGES_KEY + "ANTHROPIC_API_KEY=from-dotenv\nPORTKEY_API_KEY=pk-1\n")
+    for name in TASKS:
+        with (project.tasks / name / "task.toml").open("a") as toml:
+            toml.write(GRADER_VERIFIER_ENV)
+    monkeypatch.setenv("GRADER_KEY", "from-the-shell")
+    write_dotenv(project, "GRADER_MODEL=grader/x\n")
 
-    assert senior.run("peer-review", "senior") == 0
+    assert project.run("peer-review", "rebench") == 0
 
-    for agent in senior.records("harbor"):
-        assert "test_swe_drill_run:PeerReview" in agent["argv"]
-        assert not {"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PORTKEY_API_KEY"} & set(agent["env"])
-        assert "COPILOT_GITHUB_TOKEN" not in agent["env"], "the judge's token is in Harbor's environment"
+    for agent in project.records("harbor"):
+        assert agent["argv"][:2] == ["run", "-y"]
+        assert agent["env"]["GRADER_MODEL"] == "grader/x"
+        assert "GRADER_KEY" not in agent["env"]
         assert agent["env"]["PATH"] == os.environ["PATH"]
-
-
-def test_the_agent_job_gets_an_override_env_sets_and_none_from_swe_drill_own_environment(
-    senior, monkeypatch
-):
-    monkeypatch.setenv("SSB_OVERRIDE_CLASSIFIER_MODEL", "anthropic/claude-opus-4-6")
-    write_dotenv(senior, JUDGES_KEY + "SSB_OVERRIDE_ALL_JUDGE_MODEL=anthropic/claude-opus-4-6\n")
-
-    assert senior.run("peer-review", "senior") == 0
-
-    agent = senior.records("harbor")[0]
-    assert agent["env"]["SSB_OVERRIDE_ALL_JUDGE_MODEL"] == "anthropic/claude-opus-4-6"
-    assert "SSB_OVERRIDE_CLASSIFIER_MODEL" not in agent["env"]
-
-
-@pytest.mark.parametrize(
-    "dry_run, check", [(False, False), (True, False), (False, True)], ids=["run", "dry-run", "check"]
-)
-@pytest.mark.parametrize("dotenv", ["", "COPILOT_GITHUB_TOKEN=\n"], ids=["unset", "empty"])
-def test_a_missing_copilot_token_is_refused_as_the_spec_shows_before_anything_runs(
-    senior, capfd, monkeypatch, dry_run, check, dotenv
-):
-    if dry_run:
-        monkeypatch.setenv("DRY_RUN", "1")
-    # SWE-drill's own environment does not count: the verifier reads the token from .env alone.
-    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "from-the-shell")
-    write_dotenv(senior, dotenv)
-
-    code = senior.run("peer-review", "senior", *(["--check"] if check else []))
-
-    out, err = capfd.readouterr()
-    assert code != 0
-    assert err == (
-        f"error: {senior.directory / '.env'} sets no COPILOT_GITHUB_TOKEN, which SWE-drill judges the"
-        " trials of senior with\n"
-    )
-    assert out == ""
-    assert_nothing_ran(senior)
-
-
-@pytest.mark.parametrize(
-    "dry_run, check", [(False, False), (True, False), (False, True)], ids=["run", "dry-run", "check"]
-)
-def test_a_senior_run_with_no_judge_is_refused_as_the_spec_shows_before_anything_runs(
-    senior, capfd, monkeypatch, dry_run, check
-):
-    if dry_run:
-        monkeypatch.setenv("DRY_RUN", "1")
-    write_dotenv(senior, JUDGES_KEY)
-    toml = senior.directory / "swe-drill.toml"
-    toml.write_text(toml.read_text().replace(JUDGE, ""))
-
-    code = senior.run("peer-review", "senior", *(["--check"] if check else []))
-
-    assert code != 0
-    assert capfd.readouterr().err == (
-        f"error: {toml}: no [lanes.senior.judge], which SWE-drill judges senior with; set its"
-        " credit_budget, the AI credits every judge session of a job may spend together\n"
-    )
-    assert_nothing_ran(senior)
-
-
-def test_a_dry_run_names_each_variable_the_agent_job_is_given_and_never_its_value(
-    senior, capfd, monkeypatch
-):
-    monkeypatch.setenv("DRY_RUN", "1")
-    write_dotenv(
-        senior,
-        "COPILOT_GITHUB_TOKEN=gh-secret\nSSB_OVERRIDE_ALL_JUDGE_MODEL=anthropic/claude-opus-4-6\n",
-    )
-
-    assert senior.run("peer-review", "senior") == 0
-
-    lines = capfd.readouterr().out.splitlines()
-    assert "gh-secret" not in "\n".join(lines)
-    assert "claude-opus-4-6" not in "\n".join(lines)
-    assert len(lines) == 4
-    names, agent = lines[:2]
-    assert names == "# from .env: SSB_OVERRIDE_ALL_JUDGE_MODEL"
-    assert "test_swe_drill_run:PeerReview" in agent and agent.split()[1:3] == ["run", "-y"]
-    assert "--verifier swe_drill.judge:JudgeVerifier --verifier-kwarg credit_budget=2000" in agent
 
 
 def test_a_rebench_job_runs_as_before_whatever_env_holds(project, capfd, monkeypatch):
@@ -1355,47 +1220,29 @@ def test_a_rebench_job_runs_as_before_whatever_env_holds(project, capfd, monkeyp
     assert not any(line.startswith("#") for line in capfd.readouterr().out.splitlines())
 
 
-# The senior lane
+# Both lanes
 
 
-def test_a_run_of_both_lanes_builds_each_from_its_own_download(project, capfd):
-    write_dotenv(project, JUDGES_KEY)
+def test_a_run_of_both_lanes_builds_each_from_its_own_download(atlas, capfd, monkeypatch):
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", f"64 {64 * GIB}")
+    write_dotenv(atlas, JUDGES_KEY)
 
-    assert project.run("peer-review", "rebench", "senior") == 0, capfd.readouterr().err
+    assert atlas.run("peer-review", "rebench", "atlas-rf") == 0, capfd.readouterr().err
 
-    rebench = project.directory / "lanes" / "rebench"
-    senior = project.directory / "lanes" / "senior"
-    assert sorted(task.name for task in rebench.iterdir()) == sorted(TASKS)
-    assert sorted(task.name for task in senior.iterdir()) == SENIOR_NAMES
-    for name in SENIOR_NAMES:
-        lines = (senior / name / "tests" / "test.sh").read_bytes().splitlines()
-        assert PINNED in lines and LITELLM not in lines, name
-    judged = [
-        (value(record["argv"], "-p"), "-y" in record["argv"])
-        for record in project.records("harbor")
-        if "swe_drill.judge:JudgeVerifier" in record["argv"]
-    ]
-    assert judged == [("lanes/senior", True)] * 2
-
-
-def test_a_senior_check_builds_the_check_lane_from_its_first_task(project, capfd):
-    write_dotenv(project, JUDGES_KEY)
-
-    assert project.run("peer-review", "senior", "--check") == 0, capfd.readouterr().err
-
-    check = project.directory / "lanes" / "senior-check"
-    assert [task.name for task in check.iterdir()] == SENIOR_NAMES[:1]
-    assert PINNED in (check / SENIOR_NAMES[0] / "tests" / "test.sh").read_bytes().splitlines()
-    assert {value(record["argv"], "-p") for record in project.records("harbor")} == {
-        "lanes/senior-check"
-    }
+    built = atlas.directory / "lanes"
+    assert sorted(task.name for task in (built / "rebench").iterdir()) == sorted(TASKS)
+    assert [task.name for task in (built / "atlas-rf").iterdir()] == [ATLAS_TASK]
+    assert [
+        (value(record["argv"], "-p"), "-y" in record["argv"], "--ve" in record["argv"])
+        for record in atlas.records("harbor")
+    ] == [("lanes/rebench", False, False)] * 2 + [("lanes/atlas-rf", True, True)] * 2
 
 
 @pytest.mark.parametrize(
     "lanes_run, missing",
     [
-        (["senior"], "senior_swe_bench"),
-        (["rebench", "senior"], "senior_swe_bench"),
+        (["atlas-rf"], "swe_atlas_rf"),
+        (["rebench", "atlas-rf"], "swe_atlas_rf"),
         (["rebench"], "swe_rebench"),
     ],
 )
@@ -1403,8 +1250,8 @@ def test_a_lane_whose_download_swe_drill_toml_does_not_name_is_refused_before_an
     project, capfd, lanes_run, missing
 ):
     write_dotenv(project, JUDGES_KEY)
-    others = tuple(key for key in ("swe_rebench", "senior_swe_bench") if key != missing)
-    project.write_toml(downloads=others)
+    others = tuple(key for key in ("swe_rebench", "swe_atlas_rf") if key != missing)
+    project.write_toml(downloads=others, lane_tables=ATLAS_JUDGE)
 
     code = project.run("peer-review", *lanes_run)
 
@@ -1414,63 +1261,30 @@ def test_a_lane_whose_download_swe_drill_toml_does_not_name_is_refused_before_an
 
 
 @pytest.mark.parametrize(
-    "lane, download", [("rebench", "swe_rebench"), ("senior", "senior_swe_bench")]
+    "lane, download", [("rebench", "swe_rebench"), ("atlas-rf", "swe_atlas_rf")]
 )
-def test_a_lane_runs_with_only_its_own_download_named(project, capfd, lane, download):
-    write_dotenv(project, JUDGES_KEY)
-    project.write_toml(downloads=(download,))
+def test_a_lane_runs_with_only_its_own_download_named(atlas, capfd, monkeypatch, lane, download):
+    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", f"64 {64 * GIB}")
+    write_dotenv(atlas, JUDGES_KEY)
+    atlas.write_toml(downloads=(download,), lane_tables=ATLAS_JUDGE)
 
-    assert project.run("peer-review", lane) == 0, capfd.readouterr().err
+    assert atlas.run("peer-review", lane) == 0, capfd.readouterr().err
 
 
-def test_a_run_of_both_lanes_without_the_judges_token_is_refused_naming_senior(project, capfd):
-    code = project.run("peer-review", "rebench", "senior")
+def test_a_run_of_both_lanes_without_the_judges_token_is_refused_naming_atlas_rf(atlas, capfd):
+    code = atlas.run("peer-review", "rebench", "atlas-rf")
 
     assert code != 0
-    assert "which SWE-drill judges the trials of senior with" in capfd.readouterr().err
-    assert_nothing_ran(project)
+    assert "which SWE-drill judges the trials of atlas-rf with" in capfd.readouterr().err
+    assert_nothing_ran(atlas)
 
 
-def test_a_rebench_task_that_names_the_judges_setting_needs_no_token(project, capfd):
+def test_a_rebench_task_that_reads_the_judges_token_needs_no_token(project, capfd):
     for name in TASKS:
         with (project.tasks / name / "task.toml").open("a") as toml:
-            toml.write(SENIOR_VERIFIER_ENV)
+            toml.write('\n[verifier.env]\nEVAL_API_KEY = "${COPILOT_GITHUB_TOKEN}"\n')
 
     assert project.run("peer-review", "rebench") == 0, capfd.readouterr().err
-
-
-@pytest.mark.parametrize("dry_run", [False, True], ids=["run", "dry-run"])
-def test_a_senior_test_sh_without_the_litellm_line_is_refused_naming_it(
-    project, capfd, monkeypatch, dry_run
-):
-    if dry_run:
-        monkeypatch.setenv("DRY_RUN", "1")
-    write_dotenv(project, JUDGES_KEY)
-    test_sh = project.senior_tasks / SENIOR_NAMES[-1] / "tests" / "test.sh"
-    test_sh.write_bytes(test_sh.read_bytes().replace(LITELLM, PINNED))
-
-    code = project.run("peer-review", "senior")
-
-    out, err = capfd.readouterr()
-    assert code != 0
-    assert err.startswith(f"error: {test_sh}: ")
-    assert out == ""
-    assert_nothing_ran(project)
-
-
-def test_one_senior_trial_that_does_not_fit_in_docker_is_refused(project, capfd, monkeypatch):
-    write_dotenv(project, JUDGES_KEY)
-    monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", DOCKER_DESKTOP_8GB)
-
-    code = project.run("peer-review", "senior")
-
-    assert code != 0
-    assert capfd.readouterr().err == (
-        "error: one trial of the tasks in senior needs 4 CPUs and 8192 MiB, but Docker has "
-        "10 CPUs and 7934 MiB; give Docker more\n"
-    )
-    assert project.records("harbor") == []
-    assert not (project.directory / "lanes").exists()
 
 
 # The arm's agent class
@@ -1547,6 +1361,7 @@ def test_a_class_that_is_not_a_harbor_agent_is_refused_before_anything_runs(proj
 # atlas-rf
 
 ATLAS_TASKS = Path(__file__).resolve().parent / "atlas_tasks"
+ATLAS_TASK = "task-69391d8d1ce51c407be1e531"
 ATLAS_JUDGE = '[lanes.atlas-rf.judge]\nmodel = "gemini-4-argon"\n'
 
 
@@ -1555,7 +1370,7 @@ def atlas(project) -> Project:
     """The project, with SWE Atlas's download named in swe-drill.toml and its judge's model set."""
     shutil.copytree(ATLAS_TASKS, project.directory.parent / "tasks" / "swe-atlas-rf")
     project.write_toml(
-        downloads=("swe_rebench", "senior_swe_bench", "swe_atlas_rf"), lane_tables=ATLAS_JUDGE
+        downloads=("swe_rebench", "swe_atlas_rf"), lane_tables=ATLAS_JUDGE
     )
     return project
 
@@ -1587,7 +1402,7 @@ def test_the_atlas_rf_lane_runs_k_agent_jobs_giving_the_judge_its_model_and_the_
         assert "EVAL_MODEL" not in agent["env"]
         assert "OPENAI_API_KEY" not in agent["env"]
         assert not any("gh-1" in token for token in argv)
-    copy = atlas.directory / "lanes" / "atlas-rf" / "task-69391d8d1ce51c407be1e531"
+    copy = atlas.directory / "lanes" / "atlas-rf" / ATLAS_TASK
     assert (copy / "tests" / "evaluate_rubrics.py").read_bytes().count(b"Copilot-Integration-Id") == 1
 
 
@@ -1615,20 +1430,28 @@ def test_an_atlas_rf_run_with_no_judge_model_is_refused_as_the_spec_shows_before
     assert_nothing_ran(atlas)
 
 
+@pytest.mark.parametrize(
+    "dry_run, check", [(False, False), (True, False), (False, True)], ids=["run", "dry-run", "check"]
+)
 @pytest.mark.parametrize("dotenv", ["", "COPILOT_GITHUB_TOKEN=\n"], ids=["unset", "empty"])
 def test_an_atlas_rf_run_with_no_copilot_token_is_refused_before_anything_runs(
-    atlas, capfd, monkeypatch, dotenv
+    atlas, capfd, monkeypatch, dry_run, check, dotenv
 ):
+    if dry_run:
+        monkeypatch.setenv("DRY_RUN", "1")
+    # SWE-drill's own environment does not count: the verifier's token comes from .env alone.
     monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "from-the-shell")
     write_dotenv(atlas, dotenv)
 
-    code = atlas.run("peer-review", "atlas-rf")
+    code = atlas.run("peer-review", "atlas-rf", *(["--check"] if check else []))
 
+    out, err = capfd.readouterr()
     assert code != 0
-    assert capfd.readouterr().err == (
+    assert err == (
         f"error: {atlas.directory / '.env'} sets no COPILOT_GITHUB_TOKEN, which SWE-drill judges the"
         " trials of atlas-rf with\n"
     )
+    assert out == ""
     assert_nothing_ran(atlas)
 
 

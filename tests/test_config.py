@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from swe_drill import config, lanes
+from swe_drill import config
 
 SPEC = Path(__file__).resolve().parent.parent / "docs" / "specs" / "swe-drill-spec.md"
 
@@ -32,7 +32,6 @@ def write_config(directory: Path, text: str) -> Path:
 
 TOP = """\
 swe_rebench = "../tasks/swe-rebench-07-2026"
-senior_swe_bench = "../tasks/senior/senior-swe-bench-v2026.06"
 swe_atlas_rf = "../tasks/swe-atlas-rf"
 environment = "docker"
 k = 3
@@ -75,7 +74,7 @@ def test_a_lane_swe_drill_does_not_have_is_an_error_naming_it(tmp_path: Path):
         config.load(path, "a", "rebench")
 
     assert str(error.value) == (
-        f"{path}: sets [lanes.senoir], but SWE-drill has no lane named senoir; its lanes are rebench, senior, atlas-rf"
+        f"{path}: sets [lanes.senoir], but SWE-drill has no lane named senoir; its lanes are rebench, atlas-rf"
     )
 
 
@@ -88,8 +87,7 @@ def test_a_key_swe_drill_does_not_read_on_a_lane_is_an_error_naming_it(tmp_path:
         config.load(path, "a", "rebench")
 
     assert str(error.value) == (
-        f"{path}: [lanes.rebench] sets max_cost_usd, but SWE-drill reads only [lanes.senior.judge]"
-        " and [lanes.atlas-rf.judge]"
+        f"{path}: [lanes.rebench] sets max_cost_usd, but SWE-drill reads only [lanes.atlas-rf.judge]"
     )
 
 
@@ -116,9 +114,7 @@ def test_paths_resolve_from_the_directory_holding_swe_drill_toml(
     settings = config.load(path, "a", "rebench")
 
     assert settings.swe_rebench == (tmp_path / "tasks" / "swe-rebench-07-2026").resolve()
-    assert settings.senior_swe_bench == (
-        tmp_path / "tasks" / "senior" / "senior-swe-bench-v2026.06"
-    ).resolve()
+    assert settings.swe_atlas_rf == (tmp_path / "tasks" / "swe-atlas-rf").resolve()
 
 
 def test_paths_resolve_from_swe_drill_toml_given_by_a_relative_path(
@@ -220,9 +216,9 @@ def test_a_swe_drill_toml_that_is_not_toml_is_an_error_naming_it(tmp_path: Path,
     "key, lane",
     [
         ("swe_rebench", "rebench"),
-        ("senior_swe_bench", "senior"),
+        ("swe_atlas_rf", "atlas-rf"),
         ("environment", "rebench"),
-        ("k", "senior"),
+        ("k", "atlas-rf"),
         ("concurrency", "rebench"),
     ],
 )
@@ -240,7 +236,7 @@ def test_a_missing_top_level_key_is_an_error_naming_it_and_the_file(
 
 @pytest.mark.parametrize(
     "key, lane",
-    [("swe_rebench", "senior"), ("senior_swe_bench", "rebench"), ("swe_atlas_rf", "rebench")],
+    [("swe_rebench", "atlas-rf"), ("swe_atlas_rf", "rebench")],
 )
 def test_a_lane_needs_no_other_lanes_download(tmp_path: Path, key: str, lane: str):
     lines = [line for line in TOP.splitlines() if not line.startswith(f"{key} =")]
@@ -254,13 +250,12 @@ def test_a_lane_needs_no_other_lanes_download(tmp_path: Path, key: str, lane: st
 
 TOP_DOWNLOADS = {
     "rebench": "../tasks/swe-rebench-07-2026",
-    "senior": "../tasks/senior/senior-swe-bench-v2026.06",
     "atlas-rf": "../tasks/swe-atlas-rf",
 }
 
 
 def test_each_lane_reads_the_download_its_own_key_names(spec_config: Path):
-    for lane in ("rebench", "senior", "atlas-rf"):
+    for lane in ("rebench", "atlas-rf"):
         settings = config.load(spec_config, "copilot-sonnet", lane)
 
         assert settings.download(lane) == (spec_config.parent / TOP_DOWNLOADS[lane]).resolve()
@@ -296,6 +291,32 @@ def test_an_old_swe_drill_toml_without_swe_rebench_is_refused_for_its_old_keys(t
 
     with pytest.raises(config.ConfigError, match="sets swe_bench_pro and dataset"):
         config.load(path, "a", "rebench")
+
+
+def test_an_old_swe_drill_toml_that_names_seniors_download_is_refused_naming_it(tmp_path: Path):
+    path = write_config(
+        tmp_path,
+        'senior_swe_bench = "../tasks/senior/senior-swe-bench-v2026.06"\n' + TOP + '[arms.a]\nagent = "m:A"\n',
+    )
+
+    with pytest.raises(config.ConfigError) as error:
+        config.load(path, "a", "rebench")
+
+    assert str(error.value) == (
+        f"{path}: sets senior_swe_bench, which SWE-drill no longer reads, since it has no senior lane;"
+        " remove it"
+    )
+
+
+def test_an_old_swe_drill_toml_that_sets_seniors_judge_is_refused_naming_the_lane(tmp_path: Path):
+    path = write_config(tmp_path, TOP + '[lanes.senior.judge]\ncredit_budget = 2000\n[arms.a]\nagent = "m:A"\n')
+
+    with pytest.raises(config.ConfigError) as error:
+        config.load(path, "a", "rebench")
+
+    assert str(error.value) == (
+        f"{path}: sets [lanes.senior], but SWE-drill has no lane named senior; its lanes are rebench, atlas-rf"
+    )
 
 
 def test_an_arm_without_an_agent_is_an_error_naming_the_key_the_arm_and_the_file(
@@ -376,32 +397,14 @@ def test_check_arms_refuses_a_file_that_is_not_toml(tmp_path: Path):
 
 # The verifier's environment
 
-# Every Senior SWE-Bench task's [verifier.env], as the v2026.06 download writes it.
-SENIOR_VERIFIER_ENV = {
-    "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY:-}",
-    "OPENAI_API_KEY": "${OPENAI_API_KEY:-}",
-    "PORTKEY_API_KEY": "${PORTKEY_API_KEY:-}",
-    "SSB_OVERRIDE_ALL_JUDGE_MODEL": "${SSB_OVERRIDE_ALL_JUDGE_MODEL:-}",
-    "SSB_OVERRIDE_CLASSIFIER_MODEL": "${SSB_OVERRIDE_CLASSIFIER_MODEL:-}",
-    "SSB_OVERRIDE_VA_HARNESS": "${SSB_OVERRIDE_VA_HARNESS:-}",
-    "SSB_OVERRIDE_VA_MODEL": "${SSB_OVERRIDE_VA_MODEL:-}",
-    "FORCE_VA_HARNESS": "${FORCE_VA_HARNESS:-}",
-    "FORCE_VA_MODEL": "${FORCE_VA_MODEL:-}",
+# Every SWE Atlas task's [verifier.env], as the download writes it, with a literal value added.
+ATLAS_VERIFIER_ENV = {
+    "EVAL_API_KEY": "${OPENAI_API_KEY}",
+    "EVAL_BASE_URL": "${OPENAI_API_BASE}",
+    "EVAL_MODEL": "${EVAL_MODEL:-anthropic/claude-opus-4-5-20251101}",
     "REPO_NAME": "turborepo",
-    "TIMEOUT_MULTIPLIER": "${TIMEOUT_MULTIPLIER:-1}",
 }
-SENIOR_VARIABLES = (
-    "ANTHROPIC_API_KEY",
-    "FORCE_VA_HARNESS",
-    "FORCE_VA_MODEL",
-    "OPENAI_API_KEY",
-    "PORTKEY_API_KEY",
-    "SSB_OVERRIDE_ALL_JUDGE_MODEL",
-    "SSB_OVERRIDE_CLASSIFIER_MODEL",
-    "SSB_OVERRIDE_VA_HARNESS",
-    "SSB_OVERRIDE_VA_MODEL",
-    "TIMEOUT_MULTIPLIER",
-)
+ATLAS_VARIABLES = ("EVAL_MODEL", "OPENAI_API_BASE", "OPENAI_API_KEY")
 
 
 def with_env(tmp_path: Path, dotenv: str) -> config.Config:
@@ -412,7 +415,7 @@ def with_env(tmp_path: Path, dotenv: str) -> config.Config:
 
 def test_the_variables_tasks_read_from_harbors_environment_are_those_their_templates_name():
     tasks = {
-        Path("one"): {"verifier": {"env": SENIOR_VERIFIER_ENV}},
+        Path("one"): {"verifier": {"env": ATLAS_VERIFIER_ENV}},
         Path("two"): {
             "environment": {"env": {"BUILD_TOKEN": "${BUILD_TOKEN}", "LANG": "C"}},
             # Harbor reads [solution.env] only for its oracle agent, which SWE-drill never runs.
@@ -420,7 +423,7 @@ def test_the_variables_tasks_read_from_harbors_environment_are_those_their_templ
         },
     }
 
-    assert config.host_variables(tasks) == tuple(sorted((*SENIOR_VARIABLES, "BUILD_TOKEN")))
+    assert config.host_variables(tasks) == tuple(sorted((*ATLAS_VARIABLES, "BUILD_TOKEN")))
 
 
 def test_a_task_with_only_literal_env_values_reads_nothing_from_harbors_environment():
@@ -434,157 +437,16 @@ def test_the_grading_job_gets_each_variable_the_tasks_read_that_env_sets_and_no_
 ):
     settings = with_env(
         tmp_path,
-        "ANTHROPIC_API_KEY=sk-ant-1\nSSB_OVERRIDE_ALL_JUDGE_MODEL=openai/gpt-5.5\n"
-        "TIMEOUT_MULTIPLIER=\nDEEPSEEK_API_KEY=ds-1\n",
+        "OPENAI_API_KEY=sk-oa-1\nEVAL_MODEL=openai/gpt-5.5\n"
+        "OPENAI_API_BASE=\nDEEPSEEK_API_KEY=ds-1\n",
     )
 
-    assert config.verifier_env(settings, SENIOR_VARIABLES) == {
-        "ANTHROPIC_API_KEY": "sk-ant-1",
-        "SSB_OVERRIDE_ALL_JUDGE_MODEL": "openai/gpt-5.5",
+    assert config.verifier_env(settings, ATLAS_VARIABLES) == {
+        "OPENAI_API_KEY": "sk-oa-1",
+        "EVAL_MODEL": "openai/gpt-5.5",
     }
 
 
-
-
-# The senior lane's judge
-
-JUDGE = '[lanes.senior.judge]\ncredit_budget = 2000\n'
-
-
-def senior(tmp_path: Path, lanes_text: str, dotenv: str = "COPILOT_GITHUB_TOKEN=gh-1\n") -> config.Config:
-    path = write_config(tmp_path, TOP + lanes_text + '[arms.a]\nagent = "m:A"\n')
-    (tmp_path / ".env").write_text(dotenv)
-    return config.load(path, "a", "senior")
-
-
-def test_the_senior_lanes_judge_is_read_with_its_defaults_left_to_the_verifier(tmp_path: Path):
-    settings = senior(tmp_path, JUDGE)
-
-    assert settings.judge == config.Judge(credit_budget=2000)
-    config.check_judge(settings, "senior")
-
-
-def test_the_senior_lanes_judge_names_its_model_and_effort(tmp_path: Path):
-    settings = senior(tmp_path, JUDGE + 'model = "gpt-6.1-sol"\neffort = ""\n')
-
-    assert settings.judge == config.Judge(credit_budget=2000, model="gpt-6.1-sol", effort="")
-
-
-def test_the_senior_lanes_judge_names_its_validation_agents_model_and_effort(tmp_path: Path):
-    settings = senior(tmp_path, JUDGE + 'validation_model = "gpt-6.1-sol"\nvalidation_effort = ""\n')
-
-    assert settings.judge == config.Judge(
-        credit_budget=2000, validation_model="gpt-6.1-sol", validation_effort=""
-    )
-
-
-@pytest.mark.parametrize("key", ["validation_model", "validation_effort"])
-def test_a_validation_setting_that_is_not_a_string_is_an_error(tmp_path: Path, key: str):
-    with pytest.raises(config.ConfigError, match=f"sets {key} to 5, which must be a string"):
-        senior(tmp_path, JUDGE + f"{key} = 5\n")
-
-
-def test_another_lanes_run_takes_no_judge(tmp_path: Path):
-    path = write_config(tmp_path, TOP + JUDGE + '[arms.a]\nagent = "m:A"\n')
-
-    settings = config.load(path, "a", "rebench")
-
-    assert settings.judge is None
-    config.check_judge(settings, "rebench")
-
-
-def test_a_senior_run_with_no_judge_is_refused_naming_the_table(tmp_path: Path):
-    settings = senior(tmp_path, "")
-
-    with pytest.raises(config.ConfigError) as error:
-        config.check_judge(settings, "senior")
-
-    assert str(error.value) == (
-        f"{settings.path}: no [lanes.senior.judge], which SWE-drill judges senior with; set its"
-        " credit_budget, the AI credits every judge session of a job may spend together"
-    )
-
-
-@pytest.mark.parametrize("dotenv", ["", "COPILOT_GITHUB_TOKEN=\n"], ids=["unset", "empty"])
-def test_a_senior_run_with_no_copilot_token_is_refused_naming_it(tmp_path: Path, dotenv: str):
-    settings = senior(tmp_path, JUDGE, dotenv)
-
-    with pytest.raises(config.ConfigError) as error:
-        config.check_judge(settings, "senior")
-
-    assert str(error.value) == (
-        f"{tmp_path / '.env'} sets no COPILOT_GITHUB_TOKEN, which SWE-drill judges the trials of senior with"
-    )
-
-
-@pytest.mark.parametrize("value", ["", "1"])
-def test_a_senior_run_takes_no_timeout_multiplier_or_one_of_one(tmp_path: Path, value: str):
-    config.check_judge(senior(tmp_path, JUDGE, f"COPILOT_GITHUB_TOKEN=gh-1\nTIMEOUT_MULTIPLIER={value}\n"), "senior")
-
-
-def test_a_senior_run_with_a_timeout_multiplier_is_refused_naming_it(tmp_path: Path):
-    settings = senior(tmp_path, JUDGE, "COPILOT_GITHUB_TOKEN=gh-1\nTIMEOUT_MULTIPLIER=3\n")
-
-    with pytest.raises(config.ConfigError) as error:
-        config.check_judge(settings, "senior")
-
-    assert str(error.value) == (
-        f"{tmp_path / '.env'} sets TIMEOUT_MULTIPLIER=3, which would lengthen senior's validation agent past"
-        " the verifier timeout the lane gives it; leave it unset"
-    )
-
-
-def test_a_senior_run_needs_no_key_for_seniors_own_judges(tmp_path: Path):
-    settings = senior(tmp_path, JUDGE)
-
-    assert not set(config.GRADING_KEYS) & set(settings.env)
-    config.check_judge(settings, "senior")
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "[lanes.senior.judge]\nmodel = \"x\"\n",
-        "[lanes.senior.judge]\ncredit_budget = 0\n",
-        "[lanes.senior.judge]\ncredit_budget = \"lots\"\n",
-        "[lanes.senior.judge]\ncredit_budget = true\n",
-        "[lanes.senior.judge]\ncredit_budget = nan\n",
-        "[lanes.senior.judge]\ncredit_budget = inf\n",
-    ],
-    ids=["missing", "zero", "string", "bool", "nan", "infinity"],
-)
-def test_a_judge_with_no_positive_credit_budget_is_an_error(tmp_path: Path, text: str):
-    with pytest.raises(config.ConfigError, match=r"\[lanes.senior.judge\] must set credit_budget"):
-        senior(tmp_path, text)
-
-
-def test_a_judge_key_swe_drill_does_not_read_is_an_error_naming_it(tmp_path: Path):
-    with pytest.raises(config.ConfigError) as error:
-        senior(tmp_path, JUDGE + "classifier = 1\n")
-
-    assert str(error.value) == (
-        f"{tmp_path / 'swe-drill.toml'}: [lanes.senior.judge] sets classifier, but SWE-drill reads only"
-        " credit_budget, model, effort, validation_model and validation_effort there"
-    )
-
-
-def test_a_judge_model_that_is_not_a_string_is_an_error(tmp_path: Path):
-    with pytest.raises(config.ConfigError, match="sets model to 5, which must be a string"):
-        senior(tmp_path, JUDGE + "model = 5\n")
-
-
-def test_a_judge_on_another_lane_is_an_error(tmp_path: Path):
-    path = write_config(
-        tmp_path, TOP + '[lanes.rebench.judge]\ncredit_budget = 1\n[arms.a]\nagent = "m:A"\n'
-    )
-
-    with pytest.raises(config.ConfigError) as error:
-        config.load(path, "a", "rebench")
-
-    assert str(error.value) == (
-        f"{path}: [lanes.rebench] sets judge, but SWE-drill reads only [lanes.senior.judge]"
-        " and [lanes.atlas-rf.judge]"
-    )
 
 
 @pytest.mark.parametrize("retired", ["harness", "params"])
@@ -634,15 +496,27 @@ def test_the_atlas_rf_lanes_judge_names_the_model_its_rubric_judge_calls(tmp_pat
     settings = atlas_rf(tmp_path, ATLAS_JUDGE)
 
     assert settings.eval_model == "gemini-4-argon"
-    assert settings.judge is None
     config.check_judge(settings, "atlas-rf")
 
 
-def test_another_lanes_run_takes_no_rubric_judge(tmp_path: Path):
-    path = write_config(tmp_path, TOP + ATLAS_JUDGE + JUDGE + '[arms.a]\nagent = "m:A"\n')
+def test_another_lanes_run_takes_no_rubric_judge_and_needs_no_token(tmp_path: Path):
+    path = write_config(tmp_path, TOP + ATLAS_JUDGE + '[arms.a]\nagent = "m:A"\n')
 
-    assert config.load(path, "a", "senior").eval_model is None
-    assert config.load(path, "a", "rebench").eval_model is None
+    settings = config.load(path, "a", "rebench")
+
+    assert settings.eval_model is None
+    config.check_judge(settings, "rebench")
+
+
+def test_a_judge_on_another_lane_is_an_error(tmp_path: Path):
+    path = write_config(tmp_path, TOP + '[lanes.rebench.judge]\nmodel = "x"\n[arms.a]\nagent = "m:A"\n')
+
+    with pytest.raises(config.ConfigError) as error:
+        config.load(path, "a", "rebench")
+
+    assert str(error.value) == (
+        f"{path}: [lanes.rebench] sets judge, but SWE-drill reads only [lanes.atlas-rf.judge]"
+    )
 
 
 @pytest.mark.parametrize("lanes_text", ["", "[lanes.atlas-rf.judge]\n"], ids=["no-table", "no-model"])
@@ -675,7 +549,7 @@ def test_an_atlas_rf_run_with_no_copilot_token_is_refused_naming_it(tmp_path: Pa
     [
         ("model = 5\n", "sets model to 5, which must be a non-empty string"),
         ('model = ""\n', "sets model to '', which must be a non-empty string"),
-        ('model = "x"\ncredit_budget = 2000\n', "sets credit_budget, but SWE-drill reads only model there"),
+        ('model = "x"\neffort = "high"\n', "sets effort, but SWE-drill reads only model there"),
     ],
     ids=["number", "empty", "other-key"],
 )

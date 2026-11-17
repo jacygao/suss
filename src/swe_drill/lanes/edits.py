@@ -21,7 +21,7 @@ def read_test_sh(task: Path, doing: str) -> list[bytes]:
     """
     The lines of the task's tests/test.sh, each with its line ending.
 
-    `doing` is as `read_task_file` takes it, such as "pin litellm in it".
+    `doing` is as `read_task_file` takes it, such as "install Python in it".
     Raises LaneError as `read_task_file` does.
     """
     return read_task_file(task, TEST_SH, doing).splitlines(keepends=True)
@@ -52,56 +52,16 @@ def _header(table: str) -> re.Pattern:
     return re.compile(rf"[ \t]*\[[ \t]*{table}[ \t]*\][ \t]*(#.*)?\r?\n?\Z")
 
 
-def replace_key(
-    path: Path, text: bytes, original: dict, table: str, key: str, value: float
-) -> bytes:
-    """
-    The task.toml `text`, read from `path` as `original`, with the line that
-    sets `key` in its `[table]` made `key = value`, its text otherwise
-    unchanged.
-
-    Raises LaneError naming the file when no one line sets it, or when the
-    result does not parse to the original with that one value changed.
-    """
-    lines = text.decode().splitlines(keepends=True)
-    headers = [number for number, found in enumerate(lines) if _header(table).match(found)]
-    setting = re.compile(rf"[ \t]*{key}[ \t]*=")
-    found = []
-    if len(headers) == 1:
-        for number in range(headers[0] + 1, len(lines)):
-            if lines[number].lstrip().startswith("["):
-                break
-            if setting.match(lines[number]):
-                found.append(number)
-    expected = {**original, table: {**original[table], key: value}}
-    if len(found) == 1:
-        line = lines[found[0]]
-        lines[found[0]] = f"{key} = {value!r}" + line[len(line.rstrip("\r\n")) :]
-        changed = "".join(lines)
-        try:
-            if tomllib.loads(changed) == expected:
-                return changed.encode()
-        except tomllib.TOMLDecodeError:
-            pass
-    raise LaneError(
-        f"{path}: [{table}] {key} cannot be changed without changing anything else,"
-        " so it must be changed by hand"
-    )
-
-
-def add_key(
-    path: Path, text: bytes, original: dict, table: str, key: str, value: str | float
-) -> bytes:
+def add_key(path: Path, text: bytes, original: dict, table: str, key: str, value: str) -> bytes:
     """
     The task.toml `text`, read from `path` as `original`, with `key = value`
-    added to its `[table]`, its text otherwise unchanged. A string value is
-    quoted.
+    added to its `[table]`, the value quoted, its text otherwise unchanged.
 
     The line goes directly under the table's header, or under a new one at
     the end where there is none. Raises LaneError naming the file when the
     result does not parse to the original plus that one key.
     """
-    line = f'{key} = "{value}"' if isinstance(value, str) else f"{key} = {value!r}"
+    line = f'{key} = "{value}"'
     lines = text.decode().splitlines(keepends=True)
     headers = [number for number, found in enumerate(lines) if _header(table).match(found)]
     if len(headers) == 1:

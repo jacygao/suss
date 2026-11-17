@@ -8,7 +8,7 @@ from harbor.agents.installed.base import NonZeroAgentExitCodeError, PackageSpec
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
-from swe_drill import judge
+from swe_drill import copilot
 from swe_drill.agents import RECORD_NAME
 from swe_drill.agents.copilot_cli import CopilotCli
 from swe_drill.copilot import fetch
@@ -350,8 +350,8 @@ async def _sessions_usage(environment: BaseEnvironment, listing: str) -> dict[st
     credits: float | None = 0.0
     models: set[str] = set()
     for path in paths:
-        result = await environment.exec(f"grep -E {judge.EVENT_LINES} {shlex.quote(path)}")
-        events = judge.read_events(result.stdout or "")
+        result = await environment.exec(f"grep -E {copilot.EVENT_LINES} {shlex.quote(path)}")
+        events = copilot.read_events(result.stdout or "")
         credits = None if credits is None or events["credits"] is None else credits + events["credits"]
         models.update(events["reported_models"])
     return {

@@ -1,4 +1,3 @@
-import hashlib
 import re
 import shutil
 import subprocess
@@ -13,7 +12,7 @@ from harbor.models.trial.config import EnvironmentConfig as TrialEnvironmentConf
 from harbor.models.trial.config import VerifierConfig as TrialVerifierConfig
 from harbor.trial.network_policy import resolve_trial_network_plan
 
-from swe_drill import config, lanes, validate
+from swe_drill import config, lanes
 from swe_drill.lanes import LaneError
 
 SPEC = Path(__file__).resolve().parent.parent / "docs" / "specs" / "swe-drill-spec.md"
@@ -25,16 +24,16 @@ def test_the_lanes_are_the_specs():
     assert named == list(lanes.LANES)
 
 
-@pytest.mark.parametrize("lane", ["pro-go", "pro-hard51", "rebench-check", "Rebench", "Senior"])
+@pytest.mark.parametrize("lane", ["pro-go", "pro-hard51", "rebench-check", "Rebench", "senior"])
 def test_a_lane_swe_drill_does_not_have_is_an_error_naming_its_lanes(lane: str):
     with pytest.raises(LaneError) as error:
         lanes.check_lane(lane)
 
-    assert str(error.value) == f"SWE-drill has no lane named {lane}; its lanes are rebench, senior, atlas-rf"
+    assert str(error.value) == f"SWE-drill has no lane named {lane}; its lanes are rebench, atlas-rf"
 
 
-@pytest.mark.parametrize("lane", ["rebench", "senior", "atlas-rf"])
-def test_rebench_senior_and_atlas_rf_are_lanes(lane: str):
+@pytest.mark.parametrize("lane", ["rebench", "atlas-rf"])
+def test_rebench_and_atlas_rf_are_lanes(lane: str):
     lanes.check_lane(lane)
 
 
@@ -106,6 +105,14 @@ def make_rebench(root: Path, names: list[str], toml: str = REBENCH_TOML) -> Path
         (task / "tests" / "test.sh").write_bytes(REBENCH_TEST_SH)
         (task / "solution" / "solve.sh").write_text("#!/bin/bash\nexit 0\n")
     return root
+
+
+def every_file(task: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(task)): path.read_bytes()
+        for path in sorted(task.rglob("*"))
+        if path.is_file()
+    }
 
 
 def toml_of(task: Path) -> dict:
@@ -243,7 +250,7 @@ def test_a_task_that_opens_the_agents_network_is_an_error_naming_it(tmp_path: Pa
     assert (source / "owner__repo-2" / "task.toml").read_text() == toml
 
 
-# An [agent] table as Senior SWE-Bench's v2026.06 tasks write it, with fewer hosts.
+# An [agent] table that opens the agent's network to the hosts it lists alone.
 ALLOWLIST_AGENT = """\
 [agent]
 timeout_sec = 3000.0
@@ -540,273 +547,6 @@ def test_check_buildable_passes_a_lane_a_build_would_replace(tmp_path: Path):
     assert (tmp_path / "lanes" / "rebench" / "stray.txt").exists()
 
 
-# The senior lane
-
-# Three tasks of Senior SWE-Bench v2026.06, each with tests/test.sh as the
-# download holds it, its task.toml with stand-ins for the narrative that
-# describes the fix, and every other file a stand-in but those named below:
-# - paperless-ngx-perf-workflow-queries, an investigate task, graded by tests;
-# - harbor-add-agent-file-retention, a design task with tests, whose agent
-#   timeout is 14400 seconds;
-# - prefect-feat-dbt-per-node-hardening, a design task with no tests, with
-#   senior's tests/run_validate.py and tests/ssb_lib/ as the download holds
-#   them.
-# Each design task's validation_spec.toml has its own [settings] alone.
-SENIOR_TASKS = Path(__file__).resolve().parent / "senior_tasks"
-INVESTIGATE = "paperless-ngx-perf-workflow-queries"
-DESIGN = "harbor-add-agent-file-retention"
-NO_TESTS = "prefect-feat-dbt-per-node-hardening"
-LITELLM = b"litellm>=1.0,<2.0"
-PINNED = b"litellm>=1.0,<1.106"
-# The lines of senior's test.sh that run the validation agent, and what each
-# senior copy runs in their place.
-VALIDATION_LINES = [
-    (
-        b'    _va_harness="${SSB_OVERRIDE_VA_HARNESS:-${FORCE_VA_HARNESS:-miniswe}}"',
-        b"    _va_harness=claude_code",
-    ),
-    (
-        b"            bash /tests/ssb_lib/scripts/install-claude-code.sh || { : > /logs/verifier/reward.txt;"
-        b" rm -f /logs/verifier/reward.json; exit 0; }",
-        b'            echo "SWE-drill runs the validation agent through the Copilot CLI its judge installed"',
-    ),
-    (
-        b'        "$_SYS_PYTHON" /tests/run_validate.py || _validation_exit=$?',
-        b'        "$_SYS_PYTHON" /tests/swe_drill_validate.py || _validation_exit=$?',
-    ),
-]
-VALIDATE = "tests/swe_drill_validate.py"
-
-
-def make_senior(root: Path) -> Path:
-    """A download holding the three tasks, beside a file and a directory that are not tasks."""
-    shutil.copytree(SENIOR_TASKS, root)
-    (root / "README.md").write_text("# senior-swe-bench-v2026.06\n")
-    (root / "notes").mkdir()
-    (root / "notes" / "todo.md").write_text("not a task\n")
-    return root
-
-
-def every_file(task: Path) -> dict[str, bytes]:
-    return {
-        str(path.relative_to(task)): path.read_bytes()
-        for path in sorted(task.rglob("*"))
-        if path.is_file()
-    }
-
-
-def test_the_senior_fixtures_have_the_shapes_they_stand_for():
-    shared = (SENIOR_TASKS / INVESTIGATE / "tests" / "test.sh").read_bytes()
-    assert shared.splitlines().count(LITELLM) == 1
-    for name in (DESIGN, NO_TESTS):
-        assert (SENIOR_TASKS / name / "tests" / "test.sh").read_bytes() == shared, name
-    assert (SENIOR_TASKS / INVESTIGATE / "tests" / "verify").is_dir()
-    assert not (SENIOR_TASKS / INVESTIGATE / "tests" / "validate").exists()
-    assert (SENIOR_TASKS / DESIGN / "tests" / "validate").is_dir()
-    assert (SENIOR_TASKS / DESIGN / "tests" / "verify").is_dir()
-    assert (SENIOR_TASKS / NO_TESTS / "tests" / "validate").is_dir()
-    assert not (SENIOR_TASKS / NO_TESTS / "tests" / "verify").exists()
-    for old, _ in VALIDATION_LINES:
-        assert shared.splitlines().count(old) == 1, old
-    assert (SENIOR_TASKS / NO_TESTS / "tests" / "run_validate.py").is_file()
-
-
-def test_the_senior_lane_holds_a_copy_of_each_task_and_nothing_else(tmp_path: Path):
-    source = make_senior(tmp_path / "senior-swe-bench-v2026.06")
-
-    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes")
-
-    assert built == tmp_path / "lanes" / "senior"
-    assert sorted(entry.name for entry in built.iterdir()) == sorted([INVESTIGATE, DESIGN, NO_TESTS])
-    assert not any((built / name).is_symlink() for name in (INVESTIGATE, DESIGN, NO_TESTS))
-
-
-@pytest.mark.parametrize("name", [INVESTIGATE, DESIGN, NO_TESTS])
-def test_each_senior_copy_differs_from_its_task_in_its_verifier_test_sh_and_validation_alone(
-    tmp_path: Path, name: str
-):
-    source = make_senior(tmp_path / "source")
-
-    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / name
-
-    original, copied = every_file(source / name), every_file(built)
-    assert copied.keys() == original.keys() | {VALIDATE}
-    changed = [path for path in original if copied[path] != original[path]]
-    assert changed == ["task.toml", "tests/test.sh"]
-    assert copied[VALIDATE] == Path(validate.__file__).read_bytes()
-    before = original["tests/test.sh"].splitlines(keepends=True)
-    after = copied["tests/test.sh"].splitlines(keepends=True)
-    assert len(after) == len(before)
-    changed = [(old, new) for old, new in zip(before, after) if old != new]
-    assert changed == [(LITELLM + b"\n", PINNED + b"\n")] + [
-        (old + b"\n", new + b"\n") for old, new in VALIDATION_LINES
-    ]
-
-
-def test_a_design_copy_keeps_seniors_runner_byte_for_byte(tmp_path: Path):
-    source = make_senior(tmp_path / "source")
-
-    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / NO_TESTS
-
-    runner = "tests/run_validate.py"
-    assert hashlib.sha256((built / runner).read_bytes()).hexdigest() == hashlib.sha256(
-        (source / NO_TESTS / runner).read_bytes()
-    ).hexdigest()
-    assert (built / VALIDATE).is_file()
-
-
-@pytest.mark.parametrize("line", range(len(VALIDATION_LINES)))
-@pytest.mark.parametrize("count", [0, 2])
-def test_a_test_sh_without_one_of_each_validation_line_is_refused_naming_it(
-    tmp_path: Path, line: int, count: int
-):
-    source = make_senior(tmp_path / "source")
-    test_sh = source / DESIGN / "tests" / "test.sh"
-    old = VALIDATION_LINES[line][0]
-    test_sh.write_bytes(test_sh.read_bytes().replace(old + b"\n", (old + b"\n") * count))
-
-    with pytest.raises(LaneError) as error:
-        lanes.check_buildable(lanes.SENIOR, source, tmp_path / "lanes")
-
-    assert str(error.value).startswith(f"{test_sh}: has {count} lines that are {old.decode().strip()}")
-    assert "validation agent" in str(error.value)
-
-
-def test_a_senior_copy_keeps_its_modes_and_is_rebuilt_over_a_read_only_tests_directory(
-    tmp_path: Path,
-):
-    source = make_senior(tmp_path / "source")
-    tests = source / INVESTIGATE / "tests"
-    (tests / "test.sh").chmod(0o555)
-    tests.chmod(0o555)
-    try:
-        lanes.build(lanes.SENIOR, source, tmp_path / "lanes")
-        built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / INVESTIGATE
-
-        for path in ("tests", "tests/test.sh", "solution/solve.sh"):
-            assert oct((built / path).stat().st_mode) == oct(
-                (source / INVESTIGATE / path).stat().st_mode
-            ), path
-        assert PINNED in (built / "tests" / "test.sh").read_bytes().splitlines()
-    finally:
-        # Left read-only, they would stop pytest removing tmp_path.
-        for directory in tmp_path.rglob("*"):
-            if directory.is_dir():
-                directory.chmod(0o755)
-
-
-def test_a_line_that_names_litellm_otherwise_is_left_as_it_is(tmp_path: Path):
-    source = make_senior(tmp_path / "source")
-    test_sh = source / INVESTIGATE / "tests" / "test.sh"
-    extra = [b"# litellm>=1.0,<2.0 once broke the judges\n", b"  litellm>=1.0,<2.0\n"]
-    test_sh.write_bytes(b"".join(extra) + test_sh.read_bytes())
-
-    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / INVESTIGATE
-
-    copied = (built / "tests" / "test.sh").read_bytes().splitlines(keepends=True)
-    assert copied[:2] == extra
-    assert copied.count(PINNED + b"\n") == 1
-
-
-def test_a_test_sh_with_crlf_lines_keeps_them(tmp_path: Path):
-    source = make_senior(tmp_path / "source")
-    test_sh = source / INVESTIGATE / "tests" / "test.sh"
-    test_sh.write_bytes(test_sh.read_bytes().replace(b"\n", b"\r\n"))
-
-    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / INVESTIGATE
-
-    expected = test_sh.read_bytes().replace(LITELLM + b"\r\n", PINNED + b"\r\n")
-    for old, new in VALIDATION_LINES:
-        expected = expected.replace(old + b"\r\n", new + b"\r\n")
-    assert (built / "tests" / "test.sh").read_bytes() == expected
-
-
-@pytest.mark.parametrize(
-    "rewrite",
-    [
-        lambda text: text.replace(LITELLM + b"\n", b""),
-        lambda text: text.replace(LITELLM, PINNED),
-        lambda text: text.replace(LITELLM, LITELLM + b" "),
-        lambda text: text.replace(LITELLM, b"litellm>=1.0,<3.0"),
-        lambda text: text.replace(LITELLM + b"\n", (LITELLM + b"\n") * 2),
-        None,
-    ],
-    ids=["no-line", "already-pinned", "trailing-space", "other-range", "twice", "no-test-sh"],
-)
-def test_a_test_sh_without_the_one_litellm_line_is_refused_naming_it_and_changes_nothing(
-    tmp_path: Path, rewrite
-):
-    source = make_senior(tmp_path / "source")
-    earlier = lanes.build(lanes.SENIOR, source, tmp_path / "lanes")
-    test_sh = source / DESIGN / "tests" / "test.sh"
-    if rewrite is None:
-        test_sh.unlink()
-    else:
-        test_sh.write_bytes(rewrite(test_sh.read_bytes()))
-    before = {str(path): path.read_bytes() for path in earlier.rglob("*") if path.is_file()}
-
-    with pytest.raises(LaneError) as error:
-        lanes.check_buildable(lanes.SENIOR, source, tmp_path / "lanes")
-    with pytest.raises(LaneError):
-        lanes.build(lanes.SENIOR, source, tmp_path / "lanes")
-
-    assert str(error.value).startswith(f"{test_sh}: ")
-    assert "pin litellm" in str(error.value)
-    assert {str(path): path.read_bytes() for path in earlier.rglob("*") if path.is_file()} == before
-
-
-@pytest.mark.parametrize("absolute", [True, False], ids=["absolute", "relative"])
-def test_a_tests_directory_that_is_a_link_is_refused_and_the_download_left_alone(
-    tmp_path: Path, absolute: bool
-):
-    source = make_senior(tmp_path / "source")
-    earlier = lanes.build(lanes.SENIOR, source, tmp_path / "lanes")
-    tests = source / DESIGN / "tests"
-    shutil.move(tests, source / DESIGN / "real-tests")
-    tests.symlink_to(source / DESIGN / "real-tests" if absolute else "real-tests")
-    downloaded = every_file(source)
-    built = every_file(earlier)
-
-    with pytest.raises(LaneError) as error:
-        lanes.build(lanes.SENIOR, source, tmp_path / "lanes")
-
-    assert str(error.value).startswith(f"{tests}: ")
-    assert every_file(source) == downloaded
-    assert every_file(earlier) == built
-
-
-def test_the_senior_check_lane_holds_only_the_first_task_by_name(tmp_path: Path):
-    source = make_senior(tmp_path / "source")
-
-    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes", check=True)
-
-    assert built == tmp_path / "lanes" / "senior-check"
-    assert [entry.name for entry in built.iterdir()] == [DESIGN]
-    assert PINNED in (built / DESIGN / "tests" / "test.sh").read_bytes().splitlines()
-    assert not (tmp_path / "lanes" / "senior").exists()
-
-
-def test_the_senior_lane_takes_every_task_of_its_download(tmp_path: Path):
-    source = make_senior(tmp_path / "source")
-    # Named as a task the rebench lane leaves out, which the senior lane must not.
-    shutil.copytree(source / INVESTIGATE, source / UNGRADEABLE[0])
-
-    assert [task.name for task in lanes.lane_tasks(lanes.SENIOR, source)] == sorted(
-        [INVESTIGATE, DESIGN, NO_TESTS, UNGRADEABLE[0]]
-    )
-
-
-def test_a_rebench_build_leaves_its_test_sh_unpinned(tmp_path: Path):
-    source = make_rebench(tmp_path / "source", ["owner__repo-1"])
-    (source / "owner__repo-1" / "tests" / "test.sh").write_bytes(REBENCH_TEST_SH + LITELLM + b"\n")
-
-    built = lanes.build(lanes.REBENCH, source, tmp_path / "lanes")
-
-    copied = (built / "owner__repo-1" / "tests" / "test.sh").read_bytes().splitlines()
-    assert copied[-1] == LITELLM
-    assert PINNED not in copied
-
-
 INSTALL_LINES = [line + b"\n" for line in lanes.rebench.INSTALL_PYTHON]
 
 
@@ -998,134 +738,21 @@ def test_a_rebench_task_whose_verifier_sets_its_own_sandbox_is_refused_naming_it
     assert str(error.value).startswith(f"{source / 'owner__repo-1' / 'task.toml'}: ")
 
 
-def test_harbor_reads_a_senior_copy_with_its_own_agent_allowlist_and_a_separate_verifier(
-    tmp_path: Path,
-):
-    source = make_senior(tmp_path / "source")
+def test_the_lane_checks_read_a_tasks_memory_as_harbor_does(tmp_path: Path):
+    toml = REBENCH_TOML.replace("cpus = 1\nmemory_mb = 4096\n", 'cpus = 4\nmemory = "8G"\n')
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"], toml)
 
-    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes")
-
-    for name in (INVESTIGATE, DESIGN, NO_TESTS):
-        task = TaskConfig.model_validate_toml((built / name / "task.toml").read_text())
-        assert task.agent.network_mode == NetworkMode.ALLOWLIST
-        assert "pypi.org" in task.agent.allowed_hosts
-        assert resolve_task_verifier_mode(task) == VerifierEnvironmentMode.SEPARATE
-        assert task.verifier.network_mode == NetworkMode.PUBLIC
-
-
-def test_the_judges_margin_is_its_limit_and_its_cleanup():
-    assert lanes.senior.JUDGE_MARGIN_SECONDS == lanes.senior.JUDGE_SECONDS + lanes.senior.JUDGE_CLEANUP_SECONDS == 2100
-
-
-# A design task's validation agent may take its first run's va_timeout_sec and
-# its retry's, which is at least 600 seconds, and its review judge two reviews
-# of two sessions of 300 seconds each.
-@pytest.mark.parametrize(
-    "name, timeout, validation",
-    [(INVESTIGATE, 600.0, 0), (DESIGN, 1800.0, 1500 + 1500 + 1200), (NO_TESTS, 1200.0, 1800 + 1800 + 1200)],
-)
-def test_each_senior_verifier_timeout_gains_the_judges_and_validations_margin_and_nothing_else_changes(
-    tmp_path: Path, name: str, timeout: float, validation: int
-):
-    source = make_senior(tmp_path / "source")
-
-    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / name
-
-    original = toml_of(source / name)
-    assert original["verifier"]["timeout_sec"] == timeout
-    raised = timeout + 2100 + validation
-    expected = {
-        **original,
-        "verifier": {**original["verifier"], "environment_mode": "separate", "timeout_sec": raised},
-    }
-    assert toml_of(built) == expected, "the verifier cannot hold the judge, the validation and the task's tests"
-    before = (source / name / "task.toml").read_text().splitlines()
-    after = (built / "task.toml").read_text().splitlines()
-    assert [line for line in after if line not in before] == [SEPARATE, f"timeout_sec = {raised}"]
-
-
-@pytest.mark.parametrize(
-    "settings, validation",
-    [("", 900 + 900), ("va_timeout_sec = 300\n", 300 + 600), ("va_timeout_sec = 300\nretry_timeout_sec = 700\n", 300 + 700)],
-    ids=["defaults", "short-retry-floored", "retry-set"],
-)
-def test_a_design_tasks_margin_follows_its_validation_settings_as_run_validate_reads_them(
-    tmp_path: Path, settings: str, validation: int
-):
-    source = make_senior(tmp_path / "source")
-    spec = source / DESIGN / "tests" / "validate" / "validation_spec.toml"
-    spec.write_text(f'stack_profile = "python-library"\n\n[settings]\n{settings}')
-
-    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / DESIGN
-
-    assert toml_of(built)["verifier"]["timeout_sec"] == 1800.0 + 2100 + validation + 1200
-
-
-@pytest.mark.parametrize("text", ['[settings]\nva_timeout_sec = "long"\n', "[settings\n"], ids=["not-a-number", "not-toml"])
-def test_a_validation_spec_whose_timeouts_cannot_be_read_is_refused_naming_it(tmp_path: Path, text: str):
-    source = make_senior(tmp_path / "source")
-    spec = source / DESIGN / "tests" / "validate" / "validation_spec.toml"
-    spec.write_text(text)
-
-    with pytest.raises(LaneError) as error:
-        lanes.check_buildable(lanes.SENIOR, source, tmp_path / "lanes")
-
-    assert str(error.value).startswith(f"{spec}: ")
-
-
-def test_the_shortest_senior_verifier_timeout_leaves_its_tests_their_own_time(tmp_path: Path):
-    source = make_senior(tmp_path / "source")
-    toml = source / INVESTIGATE / "task.toml"
-    toml.write_text(toml.read_text().replace("timeout_sec = 600.0", "timeout_sec = 300"))
-
-    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / INVESTIGATE
-
-    task = TaskConfig.model_validate_toml((built / "task.toml").read_text())
-    assert task.verifier.timeout_sec == 300 + lanes.senior.JUDGE_SECONDS + lanes.senior.JUDGE_CLEANUP_SECONDS
-
-
-def test_a_senior_verifier_with_no_timeout_gains_the_margin_on_harbors_default(tmp_path: Path):
-    source = make_senior(tmp_path / "source")
-    toml = source / INVESTIGATE / "task.toml"
-    toml.write_text(toml.read_text().replace("timeout_sec = 600.0\n", "", 1))
-    assert "timeout_sec" not in toml_of(source / INVESTIGATE)["verifier"]
-
-    built = lanes.build(lanes.SENIOR, source, tmp_path / "lanes") / INVESTIGATE
-
-    assert toml_of(built)["verifier"]["timeout_sec"] == 600.0 + 2100
-
-
-@pytest.mark.parametrize("value", ['"600"', "true", "0"])
-def test_a_senior_verifier_timeout_that_is_not_a_positive_number_is_refused_naming_it(
-    tmp_path: Path, value: str
-):
-    source = make_senior(tmp_path / "source")
-    toml = source / INVESTIGATE / "task.toml"
-    toml.write_text(toml.read_text().replace("timeout_sec = 600.0", f"timeout_sec = {value}"))
-
-    with pytest.raises(LaneError) as error:
-        lanes.check_buildable(lanes.SENIOR, source, tmp_path / "lanes")
-
-    assert str(error.value).startswith(f"{toml}: [verifier] timeout_sec is ")
-
-
-def test_the_lane_checks_read_a_senior_tasks_memory_as_harbor_does(tmp_path: Path):
-    source = make_senior(tmp_path / "source")
-    read = lanes.read_tasks(lanes.lane_tasks(lanes.SENIOR, source))
-
-    # 4 CPUs and 8G in the no-test task, 2 and 4G in the design task, 2 and 8G in the other.
-    assert lanes.needs(read) == (4, 8192)
-    assert lanes.needs({task: read[task] for task in read if task.name == DESIGN}) == (2, 4096)
+    assert lanes.needs(lanes.read_tasks([source / "owner__repo-1"])) == (4, 8192)
 
 
 @pytest.mark.parametrize("memory", ['"8 gigabytes"', "8"])
 def test_a_memory_harbor_cannot_read_is_an_error_naming_the_task(tmp_path: Path, memory: str):
-    source = make_senior(tmp_path / "source")
-    toml = source / DESIGN / "task.toml"
-    toml.write_text(toml.read_text().replace('memory = "4G"', f"memory = {memory}"))
+    toml = REBENCH_TOML.replace("memory_mb = 4096\n", f"memory = {memory}\n")
+    source = make_rebench(tmp_path / "source", ["owner__repo-1"], toml)
+    toml = source / "owner__repo-1" / "task.toml"
 
     with pytest.raises(LaneError) as error:
-        lanes.needs(lanes.read_tasks([source / DESIGN]))
+        lanes.needs(lanes.read_tasks([source / "owner__repo-1"]))
 
     assert str(error.value).startswith(f"{toml}: [environment] memory is ")
 

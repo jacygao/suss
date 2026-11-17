@@ -16,9 +16,6 @@ from pathlib import Path
 
 from swe_drill import config, lanes
 
-# The lanes that have a leaderboard.
-RANKED = (lanes.REBENCH, lanes.ATLAS_RF)
-
 # The keys of parsed_counts in a rebench verifier's report.
 TEST_OUTCOMES = ("PASSED", "FAILED", "SKIPPED", "ERROR")
 
@@ -262,7 +259,7 @@ class Standing:
 def report(directory: Path, lane: str = lanes.REBENCH) -> str:
     """
     What `swe-drill leaderboard --lane <lane>` prints, run in `directory`, the
-    directory holding swe-drill.toml, for a lane in RANKED.
+    directory holding swe-drill.toml, for any lane.
 
     Each arm is a directory under `results/<lane>/`. An invalid trial counts
     nowhere, so a task whose every trial in an arm is invalid is not one of

@@ -12,7 +12,6 @@ import dataclasses
 import json
 import re
 import shlex
-import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -188,43 +187,6 @@ def test_a_whole_trial_leaves_the_patch_and_a_record_with_the_specs_fields(
     assert record["run_seconds"] >= 0
     assert record["patch_bytes"] == len((trial.logs / "model.patch").read_bytes()) > 0
     assert record["usage"] is None
-
-
-SENIOR_TASKS = Path(__file__).resolve().parent / "senior_tasks"
-
-
-def senior_settings(tmp_path: Path, judge: str = "") -> config.Config:
-    shutil.copytree(SENIOR_TASKS, tmp_path / "senior-swe-bench-v2026.06")
-    path = tmp_path / "swe-drill.toml"
-    path.write_text(
-        'senior_swe_bench = "senior-swe-bench-v2026.06"\nenvironment = "docker"\nk = 1\nconcurrency = 1\n'
-        f'[lanes.senior.judge]\ncredit_budget = 10\n{judge}[arms.a]\nagent = "m:A"\n'
-    )
-    return config.load(path, "a", "senior")
-
-
-def test_a_senior_trials_grader_names_the_validation_agent_copilot_cli_runs_by_default_on_argon(tmp_path):
-    assert grader(senior_settings(tmp_path), lanes.SENIOR) == {
-        "dataset": "senior-swe-bench-v2026.06",
-        "litellm": "litellm>=1.0,<1.106",
-        "judge_model": "anthropic/claude-sonnet-4-6",
-        "classifier_model": "anthropic/claude-haiku-4-5-20251001",
-        "validation_harness": "copilot-cli",
-        "validation_model": "gemini-4-argon",
-        "validation_effort": "high",
-    }
-
-
-def test_a_senior_trials_grader_names_the_lanes_validation_model_and_effort_whatever_env_sets(tmp_path):
-    settings = senior_settings(tmp_path, 'validation_model = "gpt-6.1-sol"\nvalidation_effort = ""\n')
-    (tmp_path / ".env").write_text("SSB_OVERRIDE_VA_HARNESS=miniswe\nSSB_OVERRIDE_VA_MODEL=anthropic/claude-opus-4-6\n")
-    settings = config.load(settings.path, "a", "senior")
-
-    found = grader(settings, lanes.SENIOR)
-
-    assert (found["validation_harness"], found["validation_model"], found["validation_effort"]) == (
-        "copilot-cli", "gpt-6.1-sol", ""
-    )
 
 
 def test_an_atlas_rf_trials_grader_names_the_model_its_rubric_judge_calls(tmp_path):
