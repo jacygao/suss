@@ -122,15 +122,6 @@ dl.read dd { margin: 0; }
 .acard dd { margin: 0; font-weight: 600; }
 .acard .note { font-size: 13px; padding: 10px 12px; }
 
-.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
-.metric { border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
-.metric .head { display: flex; justify-content: space-between; align-items: baseline; }
-.metric .head span:first-child { font-weight: 600; }
-.metric .value { font-family: var(--display); font-size: 32px; font-weight: 600; }
-.meter { position: relative; height: 8px; border-radius: 4px; background: var(--line-2); }
-.meter > div { height: 8px; border-radius: 4px; background: var(--accent); }
-.meter .mark { position: absolute; top: -3px; width: 2px; height: 14px; background: var(--muted); }
-
 @media (max-width: 720px) {
   h1 { font-size: 32px; }
   .wrap { padding-top: 24px; gap: 20px; }

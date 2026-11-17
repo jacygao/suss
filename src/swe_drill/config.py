@@ -1,6 +1,5 @@
 """The settings one named arm runs with, read from swe-drill.toml and the .env beside it."""
 
-import math
 import tomllib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -28,32 +27,16 @@ class Arm:
 
 
 @dataclass(frozen=True)
-class Judge:
-    """What JudgeVerifier judges a senior run with, from `[lanes.senior.judge]`."""
-
-    credit_budget: float
-    # Each None takes JudgeVerifier's own default.
-    model: str | None = None
-    effort: str | None = None
-    # The model and effort of senior's validation agent and its review judge.
-    validation_model: str | None = None
-    validation_effort: str | None = None
-
-
-@dataclass(frozen=True)
 class Config:
     path: Path
-    # rebench's download, as senior_swe_bench is senior's; each None where swe-drill.toml names none.
+    # rebench's download, as swe_atlas_rf is atlas-rf's; each None where swe-drill.toml names none.
     swe_rebench: Path | None
     environment: str
     k: int
     concurrency: int
     arm: Arm
     env: dict[str, str]
-    senior_swe_bench: Path | None = None
     swe_atlas_rf: Path | None = None
-    # Senior's judge, on a senior run; None where swe-drill.toml sets none.
-    judge: Judge | None = None
     # The model atlas-rf's rubric judge calls, on an atlas-rf run; None where swe-drill.toml sets none.
     eval_model: str | None = None
 
@@ -68,7 +51,6 @@ class Config:
 # The key that names each lane's download.
 DOWNLOADS = {
     lanes.REBENCH: "swe_rebench",
-    lanes.SENIOR: "senior_swe_bench",
     lanes.ATLAS_RF: "swe_atlas_rf",
 }
 REQUIRED = ("environment", "k", "concurrency")
@@ -79,11 +61,6 @@ REQUIRED_IN_ARM = ("agent",)
 RETIRED_IN_ARM = ("harness", "params")
 # Set by SWE-drill on every agent, so an arm's own kwargs cannot take them.
 RESERVED_KWARGS = ("arm", "lane", "drill_config")
-JUDGE_KEYS = ("credit_budget", "model", "effort", "validation_model", "validation_effort")
-# The lanes whose [lanes.<lane>.judge] SWE-drill reads.
-JUDGED = (lanes.SENIOR, lanes.ATLAS_RF)
-# The judge's keys that `swe-drill run` passes on as strings, where they are set.
-JUDGE_STRINGS = JUDGE_KEYS[1:]
 
 
 def load(path: Path, arm: str, lane: str) -> Config:
@@ -93,15 +70,15 @@ def load(path: Path, arm: str, lane: str) -> Config:
     Paths in the file resolve from the directory holding it, whatever the
     current directory is. The download of each lane but `lane` is optional.
     Raises ConfigError, naming the file, when it is missing or is not TOML,
-    when it sets `swe_bench_pro` or `dataset`, when a required key is missing,
-    when `k` is not a whole number of at least 1, when the file does not
-    define `arm`, when the arm sets `harness` or `params`, has no `agent`, or
-    has a `model` or `kwargs` it cannot pass to Harbor, when the top or `arm`
-    sets `max_cost_usd`, when a `[lanes.<lane>]` table names a lane SWE-drill does
-    not have or sets a key other than `judge` on senior or atlas-rf, when
-    `[lanes.senior.judge]` is not as `_judge` takes it or `[lanes.atlas-rf.judge]`
-    as `_eval_model` takes it, when any arm sets `baseline`, or when a .env line
-    is not NAME=VALUE.
+    when it sets `swe_bench_pro`, `dataset` or `senior_swe_bench`, when a
+    required key is missing, when `k` is not a whole number of at least 1,
+    when the file does not define `arm`, when the arm sets `harness` or
+    `params`, has no `agent`, or has a `model` or `kwargs` it cannot pass to
+    Harbor, when the top or `arm` sets `max_cost_usd`, when a `[lanes.<lane>]`
+    table names a lane SWE-drill does not have or sets a key other than
+    `judge` on atlas-rf, when
+    `[lanes.atlas-rf.judge]` is not as `_eval_model` takes it, when any arm sets
+    `baseline`, or when a .env line is not NAME=VALUE.
     """
     path, data = _read(path)
     _refuse_baseline(path, data)
@@ -111,6 +88,12 @@ def load(path: Path, arm: str, lane: str) -> Config:
         raise ConfigError(
             f"{path}: sets {' and '.join(retired)}, which SWE-drill no longer reads; name the "
             "directory of downloaded SWE-rebench tasks with swe_rebench"
+        )
+    # Ignored, it would leave its author believing SWE-drill still runs the senior lane.
+    if "senior_swe_bench" in data:
+        raise ConfigError(
+            f"{path}: sets senior_swe_bench, which SWE-drill no longer reads, since it has no senior lane;"
+            " remove it"
         )
     required = (DOWNLOADS[lane],) if lane in DOWNLOADS else ()
     for key in (*required, *REQUIRED):
@@ -146,7 +129,6 @@ def load(path: Path, arm: str, lane: str) -> Config:
     return Config(
         path=path,
         swe_rebench=_path(directory, data.get("swe_rebench")),
-        senior_swe_bench=_path(directory, data.get("senior_swe_bench")),
         swe_atlas_rf=_path(directory, data.get("swe_atlas_rf")),
         environment=data["environment"],
         k=data["k"],
@@ -158,7 +140,6 @@ def load(path: Path, arm: str, lane: str) -> Config:
             kwargs=table.get("kwargs", {}),
         ),
         env=_read_env(directory / ".env"),
-        judge=_judge(path, judge) if lane == lanes.SENIOR and judge is not None else None,
         eval_model=_eval_model(path, judge) if lane == lanes.ATLAS_RF and judge is not None else None,
     )
 
@@ -234,8 +215,8 @@ def _lanes(path: Path, data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     The file's `[lanes.<lane>]` tables, keyed by lane.
 
     Raises ConfigError, naming the file, for a lane SWE-drill does not have, a key
-    other than `judge` on a lane in JUDGED, a judge `_judge` or `_eval_model`
-    refuses, or lanes that are not tables.
+    other than `judge` on atlas-rf, a judge `_eval_model` refuses, or lanes
+    that are not tables.
     """
     found = data.get("lanes", {})
     if not isinstance(found, dict):
@@ -249,39 +230,13 @@ def _lanes(path: Path, data: dict[str, Any]) -> dict[str, dict[str, Any]]:
         if not isinstance(table, dict):
             raise ConfigError(f"{path}: lanes.{name} must be a table, as [lanes.{name}]")
         for key in table:
-            if key != "judge" or name not in JUDGED:
-                read = " and ".join(f"[lanes.{judged}.judge]" for judged in JUDGED)
-                raise ConfigError(f"{path}: [lanes.{name}] sets {key}, but SWE-drill reads only {read}")
+            if key != "judge" or name != lanes.ATLAS_RF:
+                raise ConfigError(
+                    f"{path}: [lanes.{name}] sets {key}, but SWE-drill reads only [lanes.{lanes.ATLAS_RF}.judge]"
+                )
         if "judge" in table:
-            (_judge if name == lanes.SENIOR else _eval_model)(path, table["judge"])
+            _eval_model(path, table["judge"])
     return found
-
-
-def _judge(path: Path, table: Any) -> Judge:
-    """
-    The judge `[lanes.senior.judge]` sets.
-
-    Raises ConfigError, naming the file, when it is not a table, sets another
-    key, has no positive `credit_budget`, or sets any of JUDGE_STRINGS to
-    something other than a string.
-    """
-    where = f"{path}: [lanes.{lanes.SENIOR}.judge]"
-    if not isinstance(table, dict):
-        raise ConfigError(f"{path}: lanes.{lanes.SENIOR}.judge must be a table, as [lanes.{lanes.SENIOR}.judge]")
-    for key in table:
-        if key not in JUDGE_KEYS:
-            raise ConfigError(f"{where} sets {key}, but SWE-drill reads only {_and(list(JUDGE_KEYS))} there")
-    budget = table.get("credit_budget")
-    # TOML reads nan and inf as floats, which Harbor would not parse back as numbers.
-    if isinstance(budget, bool) or not isinstance(budget, int | float) or not 0 < budget < math.inf:
-        raise ConfigError(
-            f"{where} must set credit_budget, the AI credits every judge session of a job may"
-            f" spend together, to a positive finite number, not {budget!r}"
-        )
-    for key in JUDGE_STRINGS:
-        if key in table and not isinstance(table[key], str):
-            raise ConfigError(f"{where} sets {key} to {table[key]!r}, which must be a string")
-    return Judge(budget, **{key: table.get(key) for key in JUDGE_STRINGS})
 
 
 def _eval_model(path: Path, table: Any) -> str | None:
@@ -338,77 +293,28 @@ def verifier_env(settings: Config, variables: Iterable[str]) -> dict[str, str]:
     return {name: settings.env[name] for name in variables if settings.env.get(name)}
 
 
-# Read by Senior SWE-Bench's verifier alone, which grades with LLM judges.
-JUDGE_SETTING = "SSB_OVERRIDE_ALL_JUDGE_MODEL"
-# Each model senior's own judges would call, by its name in a senior trial's
-# grader: the settings that choose it, the first set one winning, and its default.
-GRADING_MODELS = {
-    "judge_model": ((JUDGE_SETTING,), "anthropic/claude-sonnet-4-6"),
-    "classifier_model": (("SSB_OVERRIDE_CLASSIFIER_MODEL",), "anthropic/claude-haiku-4-5-20251001"),
-}
-
-
-def _chosen(env: Mapping[str, str], names: tuple[str, ...], default: str) -> tuple[str | None, str]:
-    """The first of `names` that `env` sets non-empty, and its value, else None and `default`."""
-    setting = next((name for name in names if env.get(name)), None)
-    return setting, env[setting] if setting else default
-
-
-def grading_choices(env: Mapping[str, str]) -> dict[str, str]:
-    """
-    The model of each of GRADING_MODELS that the senior verifier, given
-    `env`, would grade with.
-
-    `env` is what the agent job's Harbor holds, as `verifier_env` gives it.
-    """
-    return {name: _chosen(env, *choice)[1] for name, choice in GRADING_MODELS.items()}
-
-
-# The keys senior's own judges and validation agent call their models with.
-# SWE-drill judges senior itself, on a Copilot subscription, so no job is given them.
-GRADING_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PORTKEY_API_KEY")
 TOKEN_NAME = "COPILOT_GITHUB_TOKEN"
-TIMEOUT_MULTIPLIER = "TIMEOUT_MULTIPLIER"
 
 
 def check_judge(settings: Config, lane: str) -> None:
     """
-    Refuse a senior run with no judge: no `[lanes.senior.judge]` in swe-drill.toml,
-    or no COPILOT_GITHUB_TOKEN in .env. Refuse one whose .env sets
-    TIMEOUT_MULTIPLIER to other than 1 too, since run_validate.py multiplies
-    the validation agent's timeouts by it and the lane's verifier timeout does
-    not. Refuse an atlas-rf run with no model in `[lanes.atlas-rf.judge]`, or
-    no COPILOT_GITHUB_TOKEN in .env. Every other lane passes.
+    Refuse an atlas-rf run with no model in `[lanes.atlas-rf.judge]`, or no
+    COPILOT_GITHUB_TOKEN in .env. Every other lane passes.
 
     An empty token counts as unset. Raises ConfigError naming what is missing.
     """
-    if lane not in JUDGED:
+    if lane != lanes.ATLAS_RF:
         return
-    if lane == lanes.ATLAS_RF and settings.eval_model is None:
+    if settings.eval_model is None:
         raise ConfigError(
             f"{settings.path}: no model in [lanes.{lane}.judge], which names the model {lane}'s rubric"
             " judge calls through Copilot, such as gemini-4-argon"
-        )
-    if lane == lanes.SENIOR and settings.judge is None:
-        raise ConfigError(
-            f"{settings.path}: no [lanes.{lane}.judge], which SWE-drill judges {lane} with; set its"
-            " credit_budget, the AI credits every judge session of a job may spend together"
         )
     if not settings.env.get(TOKEN_NAME):
         raise ConfigError(
             f"{settings.path.parent / '.env'} sets no {TOKEN_NAME}, which SWE-drill judges the trials"
             f" of {lane} with"
         )
-    multiplier = settings.env.get(TIMEOUT_MULTIPLIER, "")
-    if lane == lanes.SENIOR and multiplier not in ("", "1"):
-        raise ConfigError(
-            f"{settings.path.parent / '.env'} sets {TIMEOUT_MULTIPLIER}={multiplier}, which would lengthen"
-            f" senior's validation agent past the verifier timeout the lane gives it; leave it unset"
-        )
-
-
-def _and(items: list[str]) -> str:
-    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
 
 
 def _read_env(path: Path) -> dict[str, str]:

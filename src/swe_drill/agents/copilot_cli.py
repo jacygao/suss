@@ -5,7 +5,7 @@ from typing import Any
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
-from swe_drill import judge
+from swe_drill import copilot
 from swe_drill.agents import Adapter
 from swe_drill.config import ConfigError
 from swe_drill.copilot import NpmCopilotCli
@@ -108,10 +108,10 @@ class CopilotCli(Adapter, NpmCopilotCli):
     async def _usage(self, environment: BaseEnvironment) -> dict[str, Any]:
         """
         The credits, models and efforts Copilot CLI's stream reports, as
-        `judge.read_events` reads them. Harbor's agent parses none of them.
+        `copilot.read_events` reads them. Harbor's agent parses none of them.
         """
         stream = shlex.quote(f"{self.sandbox_logs.rstrip('/')}/{self._TRAJECTORY_FILENAME}")
-        result = await environment.exec(f"grep -E {judge.EVENT_LINES} {stream} 2>/dev/null")
+        result = await environment.exec(f"grep -E {copilot.EVENT_LINES} {stream} 2>/dev/null")
         return _usage_of(result.stdout or "")
 
     def populate_context_post_run(self, context: AgentContext) -> None:
@@ -138,7 +138,7 @@ class CopilotCli(Adapter, NpmCopilotCli):
 
 
 def _usage_of(text: str) -> dict[str, Any]:
-    events = judge.read_events(text)
+    events = copilot.read_events(text)
     return {
         "ai_credits": events["credits"],
         "reported_models": events["reported_models"],

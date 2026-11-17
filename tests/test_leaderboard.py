@@ -890,12 +890,12 @@ def test_an_arm_that_sets_baseline_is_an_error_naming_it_and_the_key(results, ca
 
 
 @pytest.mark.parametrize("lane", ["senior", "pro-go"])
-def test_a_lane_other_than_rebench_or_atlas_rf_is_an_error(results, capsys, lane):
+def test_a_lane_swe_drill_does_not_have_is_an_error_naming_its_lanes(results, capsys, lane):
     code = cli.main(["leaderboard", "--lane", lane], directory=results)
 
     out, err = capsys.readouterr()
     assert code != 0
-    assert (out, err) == ("", f"error: swe-drill leaderboard covers rebench and atlas-rf only, not {lane}\n")
+    assert (out, err) == ("", f"error: SWE-drill has no lane named {lane}; its lanes are rebench, atlas-rf\n")
 
 
 def test_the_lane_is_required(results, capsys):

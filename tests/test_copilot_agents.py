@@ -25,7 +25,6 @@ from harbor.agents.installed.copilot_cli import CopilotCli as HarborCopilotCli
 from harbor.models.agent.context import AgentContext
 from harbor.models.trial.config import AgentConfig as TrialAgentConfig
 
-from swe_drill import judge
 from swe_drill.agents.copilot_cli import CopilotCli
 from swe_drill.agents import squiz as squiz_agent_module
 from swe_drill.agents.hve import CopilotCliHve, full_auto_prompt
@@ -731,12 +730,12 @@ def test_a_squiz_sessions_model_and_effort_are_read_from_its_stored_events():
         {"type": "session.usage_record", "data": {"usage": {"model": "claude-sonnet-5.5", "outputTokens": 131}}},
     ))
 
-    events = judge.read_events(stored)
+    events = copilot_module.read_events(stored)
 
     assert events["reported_models"] == ["claude-sonnet-5.5"]
     assert events["reported_efforts"] == ["high"]
-    assert re.search(judge.EVENT_LINES.strip("'"), '"type": "session.usage_record"'), "the grep drops the record"
-    assert re.search(judge.EVENT_LINES.strip("'"), '"type": "session.model_change"'), "the grep drops the change"
+    assert re.search(copilot_module.EVENT_LINES.strip("'"), '"type": "session.usage_record"'), "the grep drops the record"
+    assert re.search(copilot_module.EVENT_LINES.strip("'"), '"type": "session.model_change"'), "the grep drops the change"
 
 
 def test_squizs_reviewer_and_fixer_get_the_token_from_a_private_file_removed_after_the_run(

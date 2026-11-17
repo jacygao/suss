@@ -19,12 +19,11 @@ from harbor.cli.utils import parse_kwargs
 
 from swe_drill import agents, config, lanes, leaderboard
 from swe_drill.leaderboard import LeaderboardError
-from swe_drill.config import GRADING_KEYS, JUDGE_STRINGS, TOKEN_NAME, Config, ConfigError, verifier_env
+from swe_drill.config import Config, ConfigError, verifier_env
 from swe_drill.lanes import LaneError, atlas_rf
 
 
 VERIFIER = "swe_drill.replay:ReplayVerifier"
-JUDGE_VERIFIER = "swe_drill.judge:JudgeVerifier"
 
 
 @dataclass(frozen=True)
@@ -61,8 +60,7 @@ def harbor_commands(
 ) -> Command:
     """
     The `harbor run` command for agent job `trial` of the arm on `lane`, which
-    grades each trial itself in Harbor's separate verifier: ReplayVerifier on
-    rebench and atlas-rf, and on senior JudgeVerifier, given the lane's judge.
+    grades each trial itself with ReplayVerifier in Harbor's separate verifier.
     On atlas-rf it gives the verifier the rubric judge's model as EVAL_MODEL,
     with `--ve`.
 
@@ -75,9 +73,8 @@ def harbor_commands(
     as `config.host_variables` gives them. The job does not take them from
     SWE-drill's own environment. It is given those of `verifier_reads` that .env
     sets, which the tasks read in `[verifier.env]` alone and so reach the
-    verifier's test.sh and no sandbox. On senior that leaves out GRADING_KEYS,
-    and it withholds the judge's token too. On atlas-rf it leaves out
-    EVAL_MODEL, which `--ve` sets.
+    verifier's test.sh and no sandbox. On atlas-rf it leaves out EVAL_MODEL,
+    which `--ve` sets.
 
     Raises ValueError, with a message for the user, when `harbor_args` include
     a positional argument, an option SWE-drill sets on the job, an option that
@@ -109,10 +106,7 @@ def harbor_commands(
     ]
     for host in allowed_hosts:
         agent += ["--allow-agent-host", host]
-    if lane == lanes.SENIOR:
-        agent += ["--verifier", JUDGE_VERIFIER, *_judge_kwargs(config)]
-    else:
-        agent += ["--verifier", VERIFIER]
+    agent += ["--verifier", VERIFIER]
     if lane == lanes.ATLAS_RF:
         agent += ["--ve", f"{atlas_rf.EVAL_MODEL}={config.eval_model}"]
     agent += ["--jobs-dir", str(jobs_dir), "--job-name", job_name]
@@ -121,31 +115,9 @@ def harbor_commands(
         _refuse_sharing(harbor_args, lane)
     agent += harbor_args
     given = verifier_env(config, verifier_reads)
-    withheld = tuple(reads)
-    if lane == lanes.SENIOR:
-        given = {name: value for name, value in given.items() if name not in GRADING_KEYS}
-        # The judge reads it from .env itself, and gives it to its sessions alone.
-        withheld += (TOKEN_NAME,)
     if lane == lanes.ATLAS_RF:
         given = {name: value for name, value in given.items() if name != atlas_rf.EVAL_MODEL}
-    return Command(agent, withheld, given)
-
-
-def _judge_kwargs(config: Config) -> list[str]:
-    """
-    The `--verifier-kwarg`s that give JudgeVerifier the lane's judge.
-
-    The token is not among them: Harbor writes each into the job's records,
-    so the verifier reads it from .env itself.
-    """
-    judge = config.judge
-    # A number, which Harbor parses as JSON into one.
-    kwargs = [f"credit_budget={judge.credit_budget}"]
-    for key in JUDGE_STRINGS:
-        value = getattr(judge, key)
-        if value is not None:
-            kwargs.append(_kwarg(key, value))
-    return [part for kwarg in kwargs for part in ("--verifier-kwarg", kwarg)]
+    return Command(agent, tuple(reads), given)
 
 
 def _refuse_sharing(harbor_args: Sequence[str], lane: str) -> None:
@@ -179,10 +151,7 @@ _ALL_TASKS = "a run covers every task in its lanes"
 _NO_SIMULATED_USER = "SWE-drill runs the arm's agent alone, with no simulated user"
 _HARBOR_STOPS = "it stops harbor before the job runs; DRY_RUN=1 prints SWE-drill's commands instead"
 _OWN_MODELS = "the arm's agent reaches its model through the harness's own service, as it ships"
-_GRADED = (
-    "SWE-drill grades each trial with its own verifier, which applies the trial's patch, and on"
-    " senior judges it"
-)
+_GRADED = "SWE-drill grades each trial with its own verifier, which applies the trial's patch"
 
 # Every option refused after --, keyed by Harbor's name for it, with where its
 # setting comes from instead, or why SWE-drill cannot honour it.
@@ -393,8 +362,7 @@ def _parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         allow_abbrev=False,
         usage="swe-drill run <arm> <lane>... [--check] [-- <harbor args>]",
         help="run an arm's agent jobs on one or more lanes",
-        description="Run K agent jobs on each lane, each graded in its own verifier, "
-        "and on senior judged there too. "
+        description="Run K agent jobs on each lane, each graded in its own verifier. "
         "Arguments after -- go to every agent job. "
         "With DRY_RUN=1, print the harbor commands instead of running them.",
     )
@@ -411,9 +379,9 @@ def _parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         usage="swe-drill leaderboard --lane <lane>",
         help="rank every arm's results on a lane",
         description="Print each arm under results/<lane>/ with its runs, its resolved rate "
-        "and pass@k, best resolved rate first. Only rebench and atlas-rf have a leaderboard.",
+        "and pass@k, best resolved rate first.",
     )
-    ranking.add_argument("--lane", required=True, help=", ".join(leaderboard.RANKED))
+    ranking.add_argument("--lane", required=True, help=", ".join(lanes.LANES))
     return parser.parse_args(argv), harbor_args
 
 
@@ -485,9 +453,7 @@ def _run(argv: list[str], directory: Path, harbor: Path, docker: str, clock) -> 
 def _leaderboard(lane: str, harbor_args: list[str], directory: Path) -> int:
     if harbor_args:
         raise _Stop("swe-drill leaderboard takes nothing after --")
-    if lane not in leaderboard.RANKED:
-        ranked = " and ".join(leaderboard.RANKED)
-        raise _Stop(f"swe-drill leaderboard covers {ranked} only, not {lane}")
+    lanes.check_lane(lane)
     # Printed whole, after every check, so that an error leaves no partial table.
     print(leaderboard.report(directory, lane), end="")
     return 0
