@@ -78,6 +78,16 @@ class CopilotCli(Adapter, NpmCopilotCli):
                 f" {type(self).__name__} gives Copilot CLI"
             )
 
+    @classmethod
+    def parse_options(cls, kwargs=None, env=None):
+        """
+        Harbor's parse, without `fusion_tier`. Harbor's agent would pass it as
+        --fusion-tier, which Copilot CLI does not take, since it reads the tier
+        only from its settings.
+        """
+        kept = {key: value for key, value in (kwargs or {}).items() if key != "fusion_tier"}
+        return super().parse_options(kept, env)
+
     def build_cli_flags(self) -> str:
         return " ".join([super().build_cli_flags(), *self.GLOBAL_FLAGS, *self.FLAGS]).strip()
 

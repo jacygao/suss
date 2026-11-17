@@ -152,6 +152,7 @@ _NO_SIMULATED_USER = "SWE-drill runs the arm's agent alone, with no simulated us
 _HARBOR_STOPS = "it stops harbor before the job runs; DRY_RUN=1 prints SWE-drill's commands instead"
 _OWN_MODELS = "the arm's agent reaches its model through the harness's own service, as it ships"
 _GRADED = "SWE-drill grades each trial with its own verifier, which applies the trial's patch"
+_LOCAL = "SWE-drill runs each agent job locally, where its verifier reads the trial on the host"
 
 # Every option refused after --, keyed by Harbor's name for it, with where its
 # setting comes from instead, or why SWE-drill cannot honour it.
@@ -205,7 +206,9 @@ _REFUSED = {
     "bridge_prompt_path": _NO_SIMULATED_USER,
     "bridge_kwargs": _NO_SIMULATED_USER,
     "install_only": "it skips the agent run, so the verifier would find no patch to grade",
-    "launch": "SWE-drill runs each agent job locally, where its verifier reads the trial on the host",
+    "launch": _LOCAL,
+    "server": _LOCAL,
+    "watch": "it watches a job given to --server, which SWE-drill refuses",
     "dry_run": "it validates a --launch, and SWE-drill runs each agent job locally",
     "print_config": _HARBOR_STOPS,
     "diff_sources": "it reuses or regrades another job's trials in place of running the arm's agent",
