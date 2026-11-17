@@ -1,20 +1,48 @@
+import contextlib
 import json
+import re
 import shlex
-from typing import Any
+from typing import Any, ClassVar
 
+from harbor.agents.installed.copilot_cli import CopilotCli as HarborCopilotCli
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
-from swe_drill import copilot
 from swe_drill.agents import Adapter
 from swe_drill.config import ConfigError
-from swe_drill.copilot import NpmCopilotCli
+
+# How many times `fetch` tries a download, and how much longer it waits after each failed try.
+FETCH_TRIES = 5
+FETCH_PAUSE_SECONDS = 5
+
+# The JSON lines of a session that `read_events` reads. The rest are deltas.
+EVENTS = ("model.call_start", "model.call_final_result", "session.usage_checkpoint",
+          "session.usage_record", "session.model_change")
+EVENT_LINES = shlex.quote('"type": ?"(' + "|".join(re.escape(e) for e in EVENTS) + ')"')
 
 
-class CopilotCli(Adapter, NpmCopilotCli):
+def fetch() -> str:
     """
-    Harbor's Copilot CLI agent, with the built-in MCP servers, the web tools,
-    auto-update and client telemetry off, and only the arm's own token.
+    A shell function, `fetch <file> <url>`, that downloads with curl and tries
+    again on any failure, FETCH_TRIES times in all. curl's own --retry skips a
+    dropped connection, which is how a download most often fails.
+    """
+    return (
+        "fetch() { tries=1; until curl -fsSL --retry 5 -o \"$1\" \"$2\"; do code=$?;"
+        f' [ "$tries" -lt {FETCH_TRIES} ] || return "$code"; rm -f "$1";'
+        f' sleep "$((tries * {FETCH_PAUSE_SECONDS}))"; tries=$((tries + 1)); done; }}; '
+    )
+
+
+class CopilotCli(Adapter, HarborCopilotCli):
+    """
+    Harbor's Copilot CLI agent, installed from npm's registry, with the
+    built-in MCP servers, the web tools, auto-update and client telemetry off,
+    and only the arm's own token.
+
+    npm's package for each platform holds the same binary as GitHub's release
+    of the version, and needs no Node to run. GitHub's release downloads fail
+    for hours at a time while npm's registry serves.
 
     Copilot CLI's built-in GitHub MCP server reaches GitHub through the model
     host the agent phase allows, so leaving it on lets a model read a task's
@@ -23,6 +51,8 @@ class CopilotCli(Adapter, NpmCopilotCli):
     phase's commands.
     """
 
+    # Flags every Copilot CLI command this agent starts passes, its install's check of the version among them.
+    GLOBAL_FLAGS: ClassVar[tuple[str, ...]] = ()
     ALLOWED_HOSTS = ("api.github.com", "api.enterprise.githubcopilot.com")
     KWARGS = ("version", "reasoning_effort", "fusion_tier")
     REQUIRED_KWARGS = ("version",)
@@ -50,6 +80,8 @@ class CopilotCli(Adapter, NpmCopilotCli):
         Raises ConfigError, before a sandbox starts, when .env gives no
         COPILOT_GITHUB_TOKEN, the model names a provider, or `fusion_tier` is
         not a tier of Fusion's, or is set for another model, which ignores it.
+        Raises ValueError for a version that is not exact, as 1.0.107 is, since
+        npm names each package file for its exact version, never a tag.
 
         Harbor runs a model that names a provider, as `anthropic/<model>`,
         against that provider's own API, with a key it takes from its own
@@ -58,6 +90,8 @@ class CopilotCli(Adapter, NpmCopilotCli):
         if fusion_tier is not None:
             kwargs["fusion_tier"] = fusion_tier
         super().__init__(**kwargs)
+        if not re.fullmatch(r"\d+\.\d+\.\d+", self._version or ""):
+            raise ValueError(f"Copilot CLI's version must be an exact version, as 1.0.107 is, not {self._version!r}")
         if "/" in (self.model_name or ""):
             raise ConfigError(
                 f"{self.settings.path}: [arms.{self.settings.arm.name}] model ="
@@ -99,12 +133,39 @@ class CopilotCli(Adapter, NpmCopilotCli):
         Install Copilot CLI, and write the arm's `fusion_tier` to its
         settings, the one place Copilot CLI reads it from.
         """
-        await super().install(environment)
+        await self._install_copilot(environment)
         if self.fusion_tier is not None:
             settings = shlex.quote(json.dumps({"fusionTier": self.fusion_tier}))
             await self.exec_as_agent(
                 environment, f"mkdir -p ~/.copilot && printf %s {settings} > ~/.copilot/settings.json"
             )
+
+    async def _install_copilot(self, environment: BaseEnvironment) -> None:
+        """Install Copilot CLI at the agent's version into $HOME/.local/bin. Raises when it cannot."""
+        await self.ensure_system_dependencies(environment, ("curl", "bash", "git", "tar"))
+        version = self._version
+        await self.exec_as_agent(
+            environment,
+            command=(
+                f"set -euo pipefail; {fetch()}"
+                'case "$(uname -m)" in x86_64|amd64) arch=x64;; aarch64|arm64) arch=arm64;; '
+                '*) echo "no Copilot CLI build for $(uname -m)"; exit 1;; esac; '
+                "libc=linux; if ls /lib/ld-musl-* >/dev/null 2>&1; then libc=linuxmusl; fi; "
+                'package="copilot-$libc-$arch"; '
+                "dir=$(mktemp -d); trap 'rm -rf \"$dir\"' EXIT; "
+                'fetch "$dir/copilot.tgz" '
+                f'"https://registry.npmjs.org/@github/$package/-/$package-{version}.tgz"; '
+                'tar -xzf "$dir/copilot.tgz" -C "$dir"; '
+                'mkdir -p "$HOME/.local/bin"; install -m 755 "$dir/package/copilot" "$HOME/.local/bin/copilot"; '
+                "echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc; "
+                'export PATH="$HOME/.local/bin:$PATH"; '
+                f"{self.version_check()}"
+            ),
+        )
+
+    def version_check(self) -> str:
+        """The command that prints the installed Copilot CLI's version, run where $HOME/.local/bin is on PATH."""
+        return " ".join(["copilot", *self.GLOBAL_FLAGS, "--version"])
 
     async def exec_as_agent(self, environment, command, env=None, cwd=None, timeout_sec=None):
         """Give the command no token but the arm's, and that one only in the agent phase."""
@@ -118,10 +179,10 @@ class CopilotCli(Adapter, NpmCopilotCli):
     async def _usage(self, environment: BaseEnvironment) -> dict[str, Any]:
         """
         The credits, models and efforts Copilot CLI's stream reports, as
-        `copilot.read_events` reads them. Harbor's agent parses none of them.
+        `read_events` reads them. Harbor's agent parses none of them.
         """
         stream = shlex.quote(f"{self.sandbox_logs.rstrip('/')}/{self._TRAJECTORY_FILENAME}")
-        result = await environment.exec(f"grep -E {copilot.EVENT_LINES} {stream} 2>/dev/null")
+        result = await environment.exec(f"grep -E {EVENT_LINES} {stream} 2>/dev/null")
         return _usage_of(result.stdout or "")
 
     def populate_context_post_run(self, context: AgentContext) -> None:
@@ -147,8 +208,45 @@ class CopilotCli(Adapter, NpmCopilotCli):
                 setattr(context, field, value)
 
 
+def read_events(text: str) -> dict[str, Any]:
+    """
+    What a session's JSON lines say it spent: the credits, and the models and
+    efforts Copilot CLI reports it used.
+
+    Credits are the largest `totalNanoAiu` of its usage checkpoints, over 1e9,
+    or None where it reported none. The models are those of its model calls
+    and usage records, and the efforts those its usage checkpoints and model
+    changes name.
+    """
+    events = []
+    for line in text.splitlines():
+        with contextlib.suppress(ValueError):
+            event = json.loads(line)
+            if isinstance(event, dict):
+                events.append(event)
+    data = [(event.get("type"), event.get("data") or {}) for event in events]
+    nano = [d.get("totalNanoAiu") for kind, d in data if kind == "session.usage_checkpoint"]
+    nano = [n for n in nano if isinstance(n, (int, float))]
+    models = {d.get("model") for kind, d in data if kind in ("model.call_start", "model.call_final_result")}
+    # A session's stored events have no model calls, only its usage records.
+    models |= {(d.get("usage") or {}).get("model") for kind, d in data if kind == "session.usage_record"}
+    efforts = {
+        state.get("reasoning_effort")
+        for kind, d in data
+        if kind == "session.usage_checkpoint"
+        for entry in d.get("promptCacheBreakState") or []
+        for state in (entry.get("models") or {}).values()
+    }
+    efforts |= {d.get("reasoningEffort") for kind, d in data if kind == "session.model_change"}
+    return {
+        "credits": round(max(nano) / 1e9, 4) if nano else None,
+        "reported_models": sorted(m for m in models if m),
+        "reported_efforts": sorted(e for e in efforts if e),
+    }
+
+
 def _usage_of(text: str) -> dict[str, Any]:
-    events = copilot.read_events(text)
+    events = read_events(text)
     return {
         "ai_credits": events["credits"],
         "reported_models": events["reported_models"],

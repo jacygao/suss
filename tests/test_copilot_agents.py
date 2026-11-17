@@ -32,15 +32,14 @@ from swe_drill.agents import squiz as squiz_agent_module
 from swe_drill.agents.hve import CopilotCliHve, full_auto_prompt
 from swe_drill.agents.squiz import CopilotCliSquiz
 from swe_drill.config import ConfigError
-from swe_drill import copilot as copilot_module
-from swe_drill.copilot import NpmCopilotCli
+from swe_drill.agents import copilot_cli as copilot_module
 
 TOKEN = "github_pat_from_the_env_file"
 INSTRUCTION = "Fix the bug.\n"
 COMMIT = "55352bb8e9f0622ff40f5c6afa80363adaf6b07f"
 FULL_AUTO = "Run every phase in full auto mode."
 # The real install, taken before the box fixture stubs it out.
-INSTALL = NpmCopilotCli.install
+INSTALL = CopilotCli._install_copilot
 AGENT_FILE = f"""---
 name: RPI Agent
 handoffs:
@@ -158,7 +157,7 @@ def box(tmp_path, local_environment, monkeypatch):
     local_environment._persistent_env = {"HOME": str(home), "PATH": f"{bin_dir}:/usr/bin:/bin"}
     local_environment._resolve_user = lambda user: None if user == "root" else user
     # The install downloads from npm's registry, which no test reaches.
-    monkeypatch.setattr(NpmCopilotCli, "install", _no_install)
+    monkeypatch.setattr(CopilotCli, "_install_copilot", _no_install)
     monkeypatch.setattr(HarborCopilotCli, "ensure_system_dependencies", _no_install)
     return tmp_path
 

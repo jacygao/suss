@@ -7,8 +7,7 @@ from typing import Any
 from harbor.agents.installed.base import NonZeroAgentExitCodeError
 from harbor.environments.base import BaseEnvironment
 
-from swe_drill.agents.copilot_cli import CopilotCli
-from swe_drill.copilot import fetch
+from swe_drill.agents.copilot_cli import CopilotCli, fetch
 
 
 RPI_AGENT = ".github/agents/hve-core/rpi-agent.agent.md"
