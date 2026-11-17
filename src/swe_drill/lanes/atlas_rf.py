@@ -15,6 +15,30 @@ from swe_drill.lanes.edits import TEST_SH, LaneError, read_task_file, read_test_
 # Every SWE Atlas Refactoring task can be graded.
 UNGRADEABLE: tuple[str, ...] = ()
 
+# The tasks whose image's entrypoint is /bin/bash. Docker runs Harbor's
+# keepalive command as arguments to it, so bash reads `sh` as a script and the
+# container exits 126 before the agent starts.
+BASH_ENTRYPOINT = (
+    "task-69b7c2a04b6f8ff9ed98812c",
+    "task-69b7c2a04b6f8ff9ed98812d",
+    "task-69b7c2a04b6f8ff9ed98812e",
+    "task-69b7c2a04b6f8ff9ed98812f",
+    "task-69b7c2a04b6f8ff9ed988131",
+    "task-69b7c2a04b6f8ff9ed988134",
+    "task-69b7c2a04b6f8ff9ed988137",
+    "task-69b7c2a04b6f8ff9ed98813a",
+    "task-69b7c2a04b6f8ff9ed98813b",
+    "task-69b7c2a04b6f8ff9ed98813d",
+    "task-69d196f015a150488265afc0",
+    "task-69d196f015a150488265afc1",
+    "task-69d196f015a150488265afc2",
+    "task-69d196f015a150488265afc3",
+    "task-69d196f015a150488265afc4",
+)
+COMPOSE = "environment/docker-compose.yaml"
+# Harbor merges a task's compose file over its own, so the container runs Harbor's command alone.
+NO_ENTRYPOINT = b"services:\n  main:\n    entrypoint: []\n"
+
 EVALUATE = "tests/evaluate_rubrics.py"
 # The judge's one client in evaluate_rubrics.py, and the copy's in its place.
 # Copilot's API refuses a call without the header with a 400.
@@ -57,15 +81,43 @@ def rewrite(task: Path, toml: bytes) -> dict[str, bytes]:
     `toml` with the judge pointed at Copilot, as `_judge_on_copilot` gives it,
     its tests/evaluate_rubrics.py sending Copilot's header, as `_with_header`
     gives it, and its tests/test.sh giving the key to the judge alone, as
-    `_key_to_judge_alone` gives it.
+    `_key_to_judge_alone` gives it. A task in BASH_ENTRYPOINT also gets
+    NO_ENTRYPOINT as its environment/docker-compose.yaml, as
+    `_without_entrypoint` gives it.
 
     Raises LaneError as each of them does.
     """
-    return {
+    files = {
         "task.toml": _judge_on_copilot(task, toml),
         EVALUATE: _with_header(task),
         TEST_SH: _key_to_judge_alone(task),
     }
+    if task.name in BASH_ENTRYPOINT:
+        files[COMPOSE] = _without_entrypoint(task)
+    return files
+
+
+def _without_entrypoint(task: Path) -> bytes:
+    """
+    NO_ENTRYPOINT, for the task's environment/docker-compose.yaml.
+
+    Raises LaneError naming the task's environment directory when it is
+    missing or a link, and naming its docker-compose.yaml when it has one,
+    which the lane would replace.
+    """
+    path = task / COMPOSE
+    if path.parent.is_symlink():
+        raise LaneError(f"{path.parent}: a link, so the lane cannot write into a copy of it")
+    if not path.parent.is_dir():
+        raise LaneError(
+            f"{path.parent}: no such directory, so the lane cannot clear its image's entrypoint"
+        )
+    if path.exists() or path.is_symlink():
+        raise LaneError(
+            f"{path}: the lane would replace it to clear the image's entrypoint, so it must be"
+            " changed by hand"
+        )
+    return NO_ENTRYPOINT
 
 
 def _key_to_judge_alone(task: Path) -> bytes:
