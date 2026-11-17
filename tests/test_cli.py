@@ -360,6 +360,8 @@ def test_the_options_refused_beyond_those_swe_drill_sets_are_these(tmp_path):
         "bridge_kwargs",
         "install_only",
         "launch",
+        "server",
+        "watch",
         "dry_run",
         "print_config",
         "env_file",
@@ -521,6 +523,16 @@ def test_sharing_with_an_organization_passes_through_where_harbor_asks_no_questi
             ["--launch"],
             "--launch can't be passed after --: SWE-drill runs each agent job locally, where its"
             " verifier reads the trial on the host",
+        ),
+        (
+            ["--server", "http://localhost:8390"],
+            "--server can't be passed after --: SWE-drill runs each agent job locally, where its"
+            " verifier reads the trial on the host",
+        ),
+        (
+            ["--watch"],
+            "--watch can't be passed after --: it watches a job given to --server, which SWE-drill"
+            " refuses",
         ),
         (
             ["--print-config"],

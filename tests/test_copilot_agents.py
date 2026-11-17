@@ -3,8 +3,10 @@ Run CopilotCli and CopilotCliHve through Harbor's own run, in the
 stand-in environment, with a stand-in `copilot` that records how it was
 started and prints the JSON lines a test gives it.
 
-Harbor's run writes the stream to a fixed path under /logs/agent, so each test
-points the agent's paths at its own sandbox directory instead.
+Harbor's run writes the stream under the agent's environment_logs_dir, which
+each test points at its own sandbox directory. The stand-in's --help lists no
+--usage-output-file, as an older Copilot CLI's does, unless a test gives it a
+help.txt.
 """
 
 import asyncio
@@ -16,7 +18,7 @@ import shlex
 import subprocess
 import sys
 import tarfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 from harbor.agents.factory import AgentFactory
@@ -81,16 +83,24 @@ STREAM = [
     {"type": "result", "exitCode": 0},
 ]
 
-# Records its argv, prints the stream, and makes a change in the workspace.
+# Records its argv, prints the stream, writes usage.json where it is given a
+# usage file, and makes a change in the workspace.
 COPILOT = """#!{python}
 import json, sys
 from pathlib import Path
 here = Path(__file__).parent
+if sys.argv[1:] == ["--help"]:
+    help_text = here / "help.txt"
+    print(help_text.read_text() if help_text.exists() else "Usage: copilot [options]")
+    sys.exit(0)
 (here / "copilot.argv").write_text(json.dumps(sys.argv[1:]))
 if sys.argv[1:] == ["--version"]:
     print("GitHub Copilot CLI 1.0.105.")
     sys.exit(0)
 print((here / "stream.jsonl").read_text(), end="")
+usage = [arg.split("=", 1)[1] for arg in sys.argv[1:] if arg.startswith("--usage-output-file=")]
+if usage and (here / "usage.json").exists():
+    Path(usage[0]).write_text((here / "usage.json").read_text())
 with open("hello.txt", "a") as f:
     f.write("a known change\\n")
 sys.exit(int((here / "exit").read_text()) if (here / "exit").exists() else 0)
@@ -172,18 +182,16 @@ def logs(box: Path) -> Path:
 def agent(box: Path, cls=CopilotCli, **kwargs):
     kwargs.setdefault("version", "1.0.105")
     kwargs.setdefault("model_name", "gpt-6.1-sol")
-    found = cls(
+    return cls(
         arm="copilot-gpt",
         lane="rebench",
         drill_config=str(box / "host" / "swe-drill.toml"),
         logs=str(logs(box)),
         artifacts=str(box / "sandbox" / "logs" / "artifacts"),
         logs_dir=logs(box),
+        environment_logs_dir=PurePosixPath(logs(box)),
         **kwargs,
     )
-    found._TRAJECTORY_PATH = logs(box) / found._TRAJECTORY_FILENAME
-    found._OUTPUT_PATH = logs(box) / "copilot-cli.txt"
-    return found
 
 
 def run(box: Path, env, the_agent=None) -> tuple[CopilotCli, AgentContext, list]:
@@ -304,6 +312,30 @@ def test_the_credits_models_and_efforts_of_the_stream_reach_the_record_and_harbo
     assert context.metadata == usage
     assert (context.n_input_tokens, context.n_cache_tokens) == (440002, 395564)
     assert context.n_output_tokens == 12, "Harbor's own count was replaced"
+
+
+# As Copilot CLI writes --usage-output-file, for the session STREAM reports.
+USAGE = {
+    "sessionStartTime": "2026-11-17T00:00:00Z",
+    "totalPremiumRequestCost": 0,
+    "modelMetrics": {
+        "gpt-6.1-sol": {
+            "usage": {"inputTokens": 400002, "outputTokens": 4489, "cacheReadTokens": 395564},
+            "totalNanoAiu": 18_439_490_000,
+        },
+    },
+}
+
+
+def test_harbors_token_counts_from_copilots_usage_file_are_kept(box, local_environment):
+    (bin_dir(box) / "help.txt").write_text("  --usage-output-file <path>  write usage on exit\n")
+    (bin_dir(box) / "usage.json").write_text(json.dumps(USAGE))
+
+    _, context, _ = run(box, local_environment)
+
+    assert (context.n_input_tokens, context.n_cache_tokens, context.n_output_tokens) == (400002, 395564, 4489)
+    assert context.metadata["ai_credits"] == 18.4395
+    assert "copilot_usage" in context.metadata, "SWE-drill's usage replaced Harbor's metadata"
 
 
 def test_harbors_trajectory_is_kept(box, local_environment):
@@ -428,6 +460,14 @@ def test_a_fusion_tier_is_written_to_copilots_settings_before_it_runs(box, local
     assert record(box)["kwargs"]["fusion_tier"] == "high", "suss.json does not say which tier ran"
 
 
+def test_a_fusion_tier_never_reaches_copilot_as_a_flag(box, local_environment):
+    run(box, local_environment, agent(box, model_name="fusion", fusion_tier="high"))
+
+    assert "--fusion-tier" not in copilot_argv(box), (
+        "Harbor's agent passed --fusion-tier, which Copilot CLI 1.0.107 does not take"
+    )
+
+
 @pytest.mark.parametrize(("model", "tier"), [("fusion", "turbo"), ("gpt-6.1-sol", "high")])
 def test_a_fusion_tier_copilot_would_not_use_is_refused(box, model, tier):
     with pytest.raises(ConfigError, match="fusion_tier"):
@@ -534,6 +574,9 @@ import json, os, shutil, subprocess, sys
 from pathlib import Path
 here = Path(__file__).parent
 argv = sys.argv[1:]
+if argv == ["--help"]:
+    print("Usage: copilot [options]")
+    sys.exit(0)
 with open(here / "copilot.calls", "a") as calls:
     calls.write(json.dumps(argv) + "\\n")
 if "--version" in argv:

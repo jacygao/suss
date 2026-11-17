@@ -54,9 +54,10 @@ class Adapter:
     started and writes model.patch to the logs and artifacts directories, the
     same bytes.
 
-    A run whose patch cannot be written raises the capture's error, which
-    Harbor does not treat as the agent's, so the trial fails rather than
-    being graded as the unchanged repository.
+    A run whose patch cannot be written raises the capture's error and leaves
+    no patch in the artifacts directory. The verifier refuses to grade a trial
+    with none, so the trial fails rather than being graded as the unchanged
+    repository.
 
     A class takes the arm kwargs in KWARGS, and needs those in REQUIRED_KWARGS
     and, where REQUIRES_MODEL is set, a model. ALLOWED_HOSTS are the hosts its
@@ -245,8 +246,8 @@ class Adapter:
             async with asyncio.timeout(cleanup):
                 await self._record(environment, status, run_seconds)
         except BaseException as error:
-            # Harbor grades a trial whose agent raised its own error, which an
-            # empty or missing patch would then pass as the unchanged repository.
+            # The capture's error is the trial's, since with no patch the
+            # verifier grades nothing, whatever the agent raised.
             if raised is not None and not isinstance(raised, asyncio.CancelledError):
                 raise error from raised
             raise
