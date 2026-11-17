@@ -840,11 +840,10 @@ Python 3.12, managed with `uv`.
 src/swe_drill/
   agents/           the agent classes arms run on
     __init__.py     Adapter, the contract every agent class keeps
-    copilot_cli.py  CopilotCli
+    copilot_cli.py  CopilotCli, its install from npm, and reading its sessions' usage
     claude_code.py  ClaudeCode
     hve.py          CopilotCliHve
     squiz.py        CopilotCliSquiz
-  copilot.py        installing Copilot CLI for the Copilot CLI agents, and reading its sessions' usage
   sandbox.py        commands in the sandbox, and stopping what they started
   workspace.py      finding the workspace, and capturing the patch
   lanes/            building a lane's directory from the downloaded tasks
