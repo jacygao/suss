@@ -1,10 +1,13 @@
+import os
 import re
 import shutil
 import subprocess
+import time
 import tomllib
 from pathlib import Path
 
 import pytest
+from harbor.environments.docker import COMPOSE_PREBUILT_PATH
 from harbor.models.task.config import NetworkMode, TaskConfig, VerifierEnvironmentMode
 from harbor.models.task.verifier_mode import resolve_task_verifier_mode
 from harbor.models.trial.config import AgentConfig as TrialAgentConfig
@@ -12,6 +15,7 @@ from harbor.models.trial.config import EnvironmentConfig as TrialEnvironmentConf
 from harbor.models.trial.config import VerifierConfig as TrialVerifierConfig
 from harbor.trial.network_policy import resolve_trial_network_plan
 
+from conftest import require_docker
 from swe_drill import config, lanes
 from swe_drill.lanes import LaneError
 
@@ -1000,3 +1004,94 @@ def test_the_atlas_rf_check_lane_holds_only_the_first_task_by_name(tmp_path: Pat
 
     assert built == tmp_path / "lanes" / "atlas-rf-check"
     assert [entry.name for entry in built.iterdir()] == ["task-00000000000000000000000a"]
+
+
+BASH_TASK = lanes.atlas_rf.BASH_ENTRYPOINT[0]
+COMPOSE = "environment/docker-compose.yaml"
+
+
+def make_bash_atlas(root: Path) -> Path:
+    """A download holding the fixture task under the name of a task whose image's entrypoint is /bin/bash."""
+    root.mkdir()
+    shutil.copytree(ATLAS_TASKS / ATLAS_TASK, root / BASH_TASK)
+    return root
+
+
+def test_the_atlas_rf_tasks_whose_entrypoint_is_cleared_are_the_specs():
+    sentences = re.findall(r'set `ENTRYPOINT \["/bin/bash"\]`: ([^.]*)\.', SPEC.read_text().replace("\n", " "))
+
+    assert len(sentences) == 1, f"expected one sentence naming the tasks whose image runs bash in {SPEC}"
+    assert sorted(re.findall(r"`([^`]+)`", sentences[0])) == sorted(lanes.atlas_rf.BASH_ENTRYPOINT)
+
+
+def test_an_atlas_rf_copy_of_a_task_whose_image_runs_bash_adds_a_compose_file_clearing_its_entrypoint(
+    tmp_path: Path,
+):
+    plain = lanes.build(lanes.ATLAS_RF, make_atlas(tmp_path / "plain"), tmp_path / "plain-lanes")
+    bash = lanes.build(lanes.ATLAS_RF, make_bash_atlas(tmp_path / "bash"), tmp_path / "bash-lanes")
+
+    copied = every_file(bash / BASH_TASK)
+    assert copied.pop(COMPOSE) == b"services:\n  main:\n    entrypoint: []\n"
+    assert copied == every_file(plain / ATLAS_TASK)
+
+
+def test_an_atlas_rf_task_whose_image_runs_bash_and_has_a_compose_file_is_refused_naming_it(
+    tmp_path: Path,
+):
+    source = make_bash_atlas(tmp_path / "source")
+    compose = source / BASH_TASK / COMPOSE
+    compose.write_text("services:\n  db:\n    image: mariadb\n")
+
+    with pytest.raises(LaneError) as error:
+        lanes.check_buildable(lanes.ATLAS_RF, source, tmp_path / "lanes")
+
+    assert str(error.value) == (
+        f"{compose}: the lane would replace it to clear the image's entrypoint, so it must be"
+        " changed by hand"
+    )
+
+
+def test_an_atlas_rf_environment_directory_that_is_a_link_is_refused_and_the_download_left_alone(
+    tmp_path: Path,
+):
+    source = make_bash_atlas(tmp_path / "source")
+    environment = source / BASH_TASK / "environment"
+    shutil.move(environment, tmp_path / "shared-environment")
+    environment.symlink_to(tmp_path / "shared-environment")
+
+    with pytest.raises(LaneError) as error:
+        lanes.build(lanes.ATLAS_RF, source, tmp_path / "lanes")
+
+    assert str(error.value) == f"{environment}: a link, so the lane cannot write into a copy of it"
+    assert [entry.name for entry in (tmp_path / "shared-environment").iterdir()] == ["Dockerfile"]
+
+
+@pytest.mark.parametrize("cleared, running", [(False, False), (True, True)], ids=["task", "copy"])
+def test_harbors_docker_compose_keeps_a_bash_image_running_only_with_the_copys_compose_file(
+    tmp_path: Path, cleared: bool, running: bool
+):
+    require_docker()
+    image = "swe-drill-test/entrypoint:bash"
+    built = subprocess.run(
+        ["docker", "build", "-q", "-t", image, "-"],
+        input='FROM ubuntu:24.04\nENTRYPOINT ["/bin/bash"]\n',
+        capture_output=True,
+        text=True,
+    )
+    assert built.returncode == 0, f"cannot build {image}: {built.stderr}"
+    files = ["-f", str(COMPOSE_PREBUILT_PATH)]
+    if cleared:
+        copy = lanes.build(lanes.ATLAS_RF, make_bash_atlas(tmp_path / "source"), tmp_path / "lanes")
+        files += ["-f", str(copy / BASH_TASK / COMPOSE)]
+    project = ["docker", "compose", "-p", f"swe-drill-entrypoint-{tmp_path.name.lower()}", *files]
+    env = {**os.environ, "PREBUILT_IMAGE_NAME": image}
+    try:
+        subprocess.run([*project, "up", "-d"], env=env, capture_output=True, check=True)
+        # A container whose command bash cannot run has exited by now.
+        time.sleep(2)
+        state = subprocess.run(
+            [*project, "ps", "-a", "--format", "{{.State}}"], env=env, capture_output=True, text=True, check=True
+        )
+        assert (state.stdout.strip() == "running") is running, state.stdout
+    finally:
+        subprocess.run([*project, "down", "-t", "0"], env=env, capture_output=True)

@@ -445,6 +445,28 @@ otherwise the task's:
 client = OpenAI(api_key=api_key, base_url=base_url, default_headers={"Copilot-Integration-Id": "copilot-developer-cli"})
 ```
 
+Harbor's Docker environment starts a task's image with its own command,
+`sh -c "sleep infinity"`, and keeps the image's entrypoint. Fifteen tasks'
+images set `ENTRYPOINT ["/bin/bash"]`: `task-69b7c2a04b6f8ff9ed98812c`,
+`task-69b7c2a04b6f8ff9ed98812d`, `task-69b7c2a04b6f8ff9ed98812e`,
+`task-69b7c2a04b6f8ff9ed98812f`, `task-69b7c2a04b6f8ff9ed988131`,
+`task-69b7c2a04b6f8ff9ed988134`, `task-69b7c2a04b6f8ff9ed988137`,
+`task-69b7c2a04b6f8ff9ed98813a`, `task-69b7c2a04b6f8ff9ed98813b`,
+`task-69b7c2a04b6f8ff9ed98813d`, `task-69d196f015a150488265afc0`,
+`task-69d196f015a150488265afc1`, `task-69d196f015a150488265afc2`,
+`task-69d196f015a150488265afc3` and `task-69d196f015a150488265afc4`. bash reads
+`sh` as a script, and the container exits 126 before the agent starts. Each of
+those tasks' copies adds an `environment/docker-compose.yaml`, which Harbor
+merges over its own, so the container runs Harbor's command alone:
+
+```yaml
+services:
+  main:
+    entrypoint: []
+```
+
+On Modal, a task with that file runs under Docker in Docker.
+
 A task whose `[verifier]` sets another `environment_mode` or an `environment`
 of its own, whose `task.toml` has no line that is exactly one of the task's
 lines above or has more than one, whose three lines are not all in
@@ -452,7 +474,9 @@ lines above or has more than one, whose three lines are not all in
 above, whose `evaluate_rubrics.py` calls
 `OpenAI(api_key=api_key, base_url=base_url)` other than once, or whose `tests`
 directory is a link, makes `swe-drill run` exit with an error naming it before
-it builds any lane or runs any job.
+it builds any lane or runs any job. So does one of the fifteen whose
+`environment` directory is missing or a link, or already holds a
+`docker-compose.yaml`.
 
 ### Network
 
