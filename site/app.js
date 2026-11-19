@@ -194,7 +194,7 @@
   function laneView(lane) {
     if (!picked || !lane.arms.some(function (a) { return a.name === picked; })) picked = lane.arms[0].name;
     var sel = lane.arms.filter(function (a) { return a.name === picked; })[0];
-    return [board(lane), el("div", { class: "pair" }, [details(sel), costChart(lane)])];
+    return [board(lane), el("div", { class: "pair" }, [costChart(lane), details(sel)])];
   }
 
   // A render replaces every button, so focus goes back to the one just pressed.
