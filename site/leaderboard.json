@@ -214,7 +214,8 @@
             "median": 5.6
           }
         ],
-        "note": "The three runs ran at once, one Azure region each. Copilot CLI never started on 12 trials, refused by Copilot’s model router or out of time in setup, and those 12 ran again on a fresh VM. Its run on Modal, which resolved 62%, is left out."
+        "note": "The three runs ran at once, one Azure region each. Copilot CLI never started on 12 trials, refused by Copilot’s model router or out of time in setup, and those 12 ran again on a fresh VM. Its run on Modal, which resolved 62%, is left out.",
+        "label": "below"
       },
       {
         "name": "copilot-gpt-6.1-sol",
@@ -278,7 +279,8 @@
         "66%",
         "60%"
       ]
-    }
+    },
+    "tab": "SWE-rebench"
   },
   "pro-hard51": {
     "title": "pro-hard51",
@@ -454,7 +456,7 @@
           }
         ],
         "note": "Each run started once its region’s Opus run had finished. The Australia East run failed while its VM was set up, before any agent ran, and ran again on a fresh VM. 37 tasks were resolved in all three runs, and 43 in at least one. Three trials, all of flipt-c1728053, record no test result: each patch applied but left the package failing to build, so they count as unresolved.",
-        "labelLeft": true
+        "label": "left"
       }
     ]
   }

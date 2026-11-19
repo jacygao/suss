@@ -7,9 +7,9 @@
 (function () {
   "use strict";
 
-  var SVG = "http://www.w3.org/2000/svg";
   var LANES = ["rebench", "pro-hard51"];
   var app = document.getElementById("app");
+  var hero = document.getElementById("hero");
   var data = null;
   var picked = null;
   // The lane being drawn, whose axis `at` and `track` read.
@@ -27,23 +27,6 @@
     return node;
   }
 
-  function icon(path) {
-    var svg = document.createElementNS(SVG, "svg");
-    svg.setAttribute("aria-hidden", "true");
-    svg.setAttribute("width", "16");
-    svg.setAttribute("height", "16");
-    svg.setAttribute("viewBox", "0 0 16 16");
-    svg.setAttribute("fill", "none");
-    svg.setAttribute("stroke", "currentColor");
-    svg.setAttribute("stroke-width", "1.5");
-    var circle = document.createElementNS(SVG, "circle");
-    circle.setAttribute("cx", "8"); circle.setAttribute("cy", "8"); circle.setAttribute("r", "6.5");
-    var line = document.createElementNS(SVG, "path");
-    line.setAttribute("d", path); line.setAttribute("stroke-linecap", "round");
-    svg.appendChild(circle); svg.appendChild(line);
-    return svg;
-  }
-
   function pct(x) { return Math.round(x * 100) + "%"; }
   function money(x) { return "$" + x.toFixed(2); }
   function hours(x) { return x.toFixed(1) + " h"; }
@@ -51,6 +34,16 @@
   function at(x) { return ((x - current.axis.lo) / current.axis.span) * 100; }
   function date(iso) {
     return new Date(iso + "T00:00:00Z").toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+  }
+
+  // The agent's name without its version, which the arm's params already give.
+  function agentName(arm) { return arm.agent.replace(/\s+[\d.]+$/, ""); }
+
+  // The value most of the lane's arms share, so that only an arm that differs is marked.
+  function usual(arms, key) {
+    var counts = {};
+    arms.forEach(function (a) { counts[a[key]] = (counts[a[key]] || 0) + 1; });
+    return Object.keys(counts).sort(function (x, y) { return counts[y] - counts[x]; })[0];
   }
 
   function track(arm) {
@@ -70,119 +63,149 @@
 
   function passText(arm) { return arm.pass == null ? "—" : pct(arm.pass) + " @" + arm.runs.length; }
 
-  function laneHead(lane, stats) {
-    return el("section", { class: "lane-head", "aria-labelledby": "lane-title" }, [
-      el("div", {}, [
-        el("p", { class: "eyebrow", text: "Lane" }),
-        el("h1", { id: "lane-title", text: lane.title }),
-        el("p", { class: "about", text: lane.about })
-      ]),
-      el("dl", { class: "stats" }, stats.map(function (s) {
-        return el("div", { class: "stat" }, [el("dt", { text: s[0] }), el("dd", { text: String(s[1]) })]);
-      }))
-    ]);
+  function chips(arm, arms) {
+    var out = [];
+    if (arm.harness !== usual(arms, "harness")) out.push(el("span", { class: "chip chip-accent", text: arm.harness, title: arm.harnessDetail || arm.harness }));
+    if (arm.where !== usual(arms, "where")) out.push(el("span", { class: "chip", text: arm.where }));
+    return out;
   }
 
-  function laneView(lane) {
-    var arms = lane.arms;
-    if (!picked || !arms.some(function (a) { return a.name === picked; })) picked = arms[arms.length - 1].name;
-    var runs = arms.reduce(function (n, a) { return n + a.runs.length; }, 0);
-    var out = [laneHead(lane, [["Arms", arms.length], ["Runs", runs], ["Trials", (runs * lane.tasks).toLocaleString("en-AU")]])];
+  function drawHero(lane) {
+    var runs = lane.arms.reduce(function (n, a) { return n + a.runs.length; }, 0);
+    var facts = [
+      lane.tasks + " tasks",
+      lane.arms.length + " arms",
+      (runs * lane.tasks).toLocaleString("en-AU") + " graded trials",
+      "updated " + date(data.updated)
+    ];
+    hero.replaceChildren(
+      el("p", { class: "eyebrow" }, ["Lane ", el("span", { class: "mono", text: lane.title })]),
+      el("h1", { id: "lane-title", text: lane.tab || lane.title }),
+      el("p", { class: "about", text: lane.about }),
+      el("ul", { class: "facts", "aria-label": "About this lane" }, facts.map(function (f) { return el("li", { text: f }); }))
+    );
+  }
 
+  function board(lane) {
+    var arms = lane.arms;
     var rows = arms.map(function (arm, i) {
       var selected = arm.name === picked;
       return el("tr", { class: selected ? "selected" : "" }, [
-        el("td", { class: "rank", text: String(i + 1) }),
+        el("td", { class: "rank" }, [el("span", { class: "badge" + (i === 0 ? " first" : ""), text: String(i + 1) })]),
         el("td", {}, [el("button", { type: "button", class: "arm-btn", "data-arm": arm.name, "aria-pressed": String(selected), on: { click: function () { pick(arm.name); } } }, [
-          el("span", { class: "arm-name", text: arm.name }),
-          el("span", { class: "arm-sub", text: arm.agent + " · " + arm.model })
+          el("span", { class: "arm-line" }, [el("span", { class: "arm-name", text: arm.name })].concat(chips(arm, arms))),
+          el("span", { class: "arm-sub", text: agentName(arm) + " · " + arm.model })
         ])]),
-        el("td", {}, [el("span", { class: "chip", text: arm.harness, title: arm.harnessDetail || arm.harness })]),
         el("td", {}, [el("div", { class: "rate-cell" }, [el("span", { class: "rate-text", text: pct(arm.rate), title: rateText(arm) }), track(arm)])]),
         el("td", { class: "num", text: passText(arm) }),
-        el("td", { class: "num", text: String(arm.runs.length) }),
-        el("td", { class: "num", text: String(arm.timedOut) }),
         el("td", { class: "num", text: money(arm.cost) }),
         el("td", { class: "num", text: hours(arm.hours) }),
         el("td", { class: "num", text: tokens(arm.tokens) }),
-        el("td", {}, [el("span", { class: "chip", text: arm.where })])
+        el("td", { class: "num" + (arm.timedOut ? "" : " faint"), text: String(arm.timedOut) })
       ]);
     });
-    var heads = ["#", "Arm", "Harness", "Resolved rate", "pass@k", "Runs", "Timed out", "Cost / run", "Agent time / run", "Tokens / trial", "Ran on"];
+    var heads = ["#", "Arm", "Resolved rate", "pass@k", "Cost / run", "Agent time / run", "Tokens / trial", "Timed out"];
     var thead = el("tr", {}, heads.map(function (h, i) {
-      var cls = i >= 4 && i <= 9 ? "num" : "";
-      if (h !== "Resolved rate") return el("th", { scope: "col", class: cls, text: h });
-      return el("th", { scope: "col" }, [el("div", { text: h }), el("div", { class: "axis-labels", "aria-hidden": "true" }, lane.axis.labels.map(function (t) { return el("span", { text: t }); }))]);
+      if (h !== "Resolved rate") return el("th", { scope: "col", class: i >= 3 ? "num" : "", text: h });
+      return el("th", { scope: "col", class: "rate-head" }, [el("span", { text: h }), el("div", { class: "axis-labels", "aria-hidden": "true" }, lane.axis.labels.map(function (t) { return el("span", { text: t }); }))]);
     }));
-    out.push(el("section", { class: "card rank-card", "aria-labelledby": "rank-title" }, [
-      el("div", { class: "card-head" }, [
-        el("div", {}, [el("h2", { id: "rank-title", text: "Ranked by resolved rate" }), el("p", { class: "small muted", text: "Select an arm to see its runs." })]),
-        el("div", { class: "legend" }, [el("span", {}, [el("span", { class: "key-dot", "aria-hidden": "true" }), "Resolved rate"]), el("span", {}, [el("span", { class: "key-bar", "aria-hidden": "true" }), "95% interval"])])
-      ]),
-      el("div", { class: "scroll" }, [el("table", { style: "min-width: 1160px" }, [el("thead", {}, [thead]), el("tbody", {}, rows)])]),
-      el("div", { class: "card-foot" }, [icon("M8 7.2v4M8 4.8v.1"), el("span", {}, [el("strong", { text: "Gaps of a few points may be noise. " }), "Every interval here overlaps the others, and each covers an arm’s own rate, not the gap between two arms. An arm with one run shows no interval."])])
-    ]));
 
-    out.push(el("ol", { class: "cards", "aria-label": "Arms ranked by resolved rate" }, arms.map(function (arm, i) {
-      var facts = [["Harness", arm.harnessDetail || arm.harness], ["pass@k", passText(arm)], ["Cost / run", money(arm.cost)], ["Time / run", hours(arm.hours)], ["Runs", String(arm.runs.length)], ["Timed out", String(arm.timedOut)], ["Ran on", arm.where], ["Tokens / trial", tokens(arm.tokens)]];
-      return el("li", { class: "acard" }, [
-        el("div", { class: "acard-top" }, [
-          el("span", { class: "badge", text: String(i + 1) }),
-          el("div", { class: "who" }, [el("span", { class: "arm-name", text: arm.name }), el("span", { class: "arm-sub", text: arm.agent + " · " + arm.model })]),
+    var cards = el("ol", { class: "cards", "aria-label": "Arms ranked by resolved rate" }, arms.map(function (arm, i) {
+      var selected = arm.name === picked;
+      return el("li", {}, [el("button", { type: "button", class: "acard" + (selected ? " selected" : ""), "data-arm": arm.name, "aria-pressed": String(selected), on: { click: function () { pick(arm.name); } } }, [
+        el("span", { class: "acard-top" }, [
+          el("span", { class: "badge" + (i === 0 ? " first" : ""), text: String(i + 1) }),
+          el("span", { class: "who" }, [el("span", { class: "arm-line" }, [el("span", { class: "arm-name", text: arm.name })].concat(chips(arm, arms))), el("span", { class: "arm-sub", text: arm.model })]),
           el("span", { class: "big", text: pct(arm.rate), title: rateText(arm) })
         ]),
         track(arm),
-        el("dl", {}, facts.map(function (f) { return el("div", {}, [el("dt", { text: f[0] }), el("dd", { text: f[1] })]); })),
-        arm.note ? el("p", { class: "note", text: arm.note }) : null
-      ]);
-    })));
-
-    var sel = arms.filter(function (a) { return a.name === picked; })[0];
-    // Hidden on phones with the ranked table, whose buttons are the only way to pick an arm.
-    var runsCard = el("section", { class: "card rank-card", "aria-labelledby": "runs-title" }, [el("div", { class: "card-body" }, [
-      el("div", { style: "display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; justify-content: space-between" }, [
-        el("h2", { id: "runs-title" }, [el("span", { class: "mono", text: sel.name }), "’s runs"]),
-        el("span", { class: "small muted", text: sel.params })
-      ]),
-      el("div", { class: "scroll" }, [el("table", { style: "min-width: 440px" }, [
-        el("thead", {}, [el("tr", {}, ["Job", "Date", "Where it ran", "Median trial"].map(function (h, i) { return el("th", { scope: "col", class: i === 3 ? "num" : "", text: h }); }))]),
-        el("tbody", {}, sel.runs.map(function (run) {
-          return el("tr", {}, [el("td", { class: "mono small nowrap", text: run.job }), el("td", { class: "nowrap", text: date(run.date) }), el("td", { text: run.where }), el("td", { class: "num", text: run.median.toFixed(1) + " min" })]);
+        el("span", { class: "acard-facts" }, [["pass@k", passText(arm)], ["Cost / run", money(arm.cost)], ["Time / run", hours(arm.hours)]].map(function (f) {
+          return el("span", {}, [el("span", { class: "k", text: f[0] }), el("span", { class: "v", text: f[1] })]);
         }))
-      ])]),
-      sel.note ? el("div", { class: "note" }, [el("span", { text: sel.note })]) : null
-    ])]);
+      ])]);
+    }));
 
-    var maxCost = lane.scatter.maxCost, yLo = lane.scatter.yLo, ySpan = lane.scatter.ySpan;
-    var points = arms.map(function (arm) {
-      var left = (arm.cost / maxCost) * 100;
-      var bottom = ((arm.rate - yLo) / ySpan) * 100;
-      // A label also goes left where it would run into a neighbour's dot, which the lane's data marks.
-      var flip = left > 60 || arm.labelLeft === true;
-      return el("div", { class: "pt", title: arm.name + ": " + pct(arm.rate) + " at " + money(arm.cost) + " a run",
-        style: "left: " + left + "%; bottom: " + bottom + "%; flex-direction: " + (flip ? "row-reverse" : "row") + "; transform: translate(" + (flip ? "calc(-100% + 6px)" : "-6px") + ", 50%)" },
+    return el("section", { class: "card board", "aria-labelledby": "rank-title" }, [
+      el("div", { class: "card-head" }, [
+        el("h2", { id: "rank-title", text: "Ranked by resolved rate" }),
+        el("p", { class: "legend" }, [
+          el("span", { class: "nowrap" }, [el("span", { class: "key-dot", "aria-hidden": "true" }), " rate"]),
+          el("span", { class: "nowrap" }, [el("span", { class: "key-bar", "aria-hidden": "true" }), " 95% interval."]),
+          "Where two intervals overlap, the gap between those arms may be noise."
+        ])
+      ]),
+      el("div", { class: "scroll table-wrap" }, [el("table", {}, [el("thead", {}, [thead]), el("tbody", {}, rows)])]),
+      cards
+    ]);
+  }
+
+  function details(arm) {
+    var platforms = {}, dates = {};
+    arm.runs.forEach(function (r) { platforms[r.where.split(", ")[0]] = true; dates[r.date] = true; });
+    var oneDate = Object.keys(dates).length === 1;
+    var meta = [Object.keys(platforms).join(", "), arm.params];
+    if (oneDate) meta.push(date(arm.runs[0].date));
+    return el("section", { class: "card", "aria-labelledby": "runs-title" }, [el("div", { class: "card-body" }, [
+      el("div", { class: "detail-head" }, [
+        el("p", { class: "eyebrow dark", text: "Selected arm" }),
+        el("h2", { id: "runs-title", class: "mono", text: arm.name }),
+        el("p", { class: "small muted", text: meta.join(" · ") })
+      ]),
+      el("ol", { class: "runs" }, arm.runs.map(function (run, i) {
+        var region = run.where.split(", ").slice(1).join(", ") || run.where;
+        return el("li", {}, [
+          el("span", { class: "run-n", text: "Run " + (i + 1) }),
+          el("span", { class: "run-where" }, [region, oneDate ? null : el("span", { class: "muted", text: " · " + date(run.date) })]),
+          el("span", { class: "run-job mono", text: run.job }),
+          el("span", { class: "run-med", text: run.median.toFixed(1) + " min" })
+        ]);
+      })),
+      arm.note ? el("p", { class: "note", text: arm.note }) : null
+    ])]);
+  }
+
+  function costChart(lane) {
+    var s = lane.scatter;
+    var points = lane.arms.map(function (arm) {
+      var left = (arm.cost / s.maxCost) * 100;
+      var bottom = ((arm.rate - s.yLo) / s.ySpan) * 100;
+      // A label goes left near the right edge, and anywhere the lane's data moves it off a neighbour's dot.
+      var side = arm.label || (left > 60 ? "left" : "right");
+      var place = {
+        right: "flex-direction: row; transform: translate(-6px, 50%)",
+        left: "flex-direction: row-reverse; transform: translate(calc(-100% + 6px), 50%)",
+        below: "flex-direction: column; gap: 2px; transform: translate(-50%, calc(100% - 6px))"
+      }[side];
+      return el("button", { type: "button", class: "pt" + (arm.name === picked ? " on" : ""), "data-arm": arm.name, "aria-label": arm.name + ": " + pct(arm.rate) + " at " + money(arm.cost) + " a run",
+        style: "left: " + left + "%; bottom: " + bottom + "%; " + place,
+        on: { click: function () { pick(arm.name); } } },
         [el("span", { class: "dot", "aria-hidden": "true" }), el("span", { class: "label", text: arm.name })]);
     });
-    var described = arms.map(function (a) { return a.name + " " + pct(a.rate) + " at " + money(a.cost); }).join("; ");
-    out.push(el("div", { class: "pair" }, [
-      runsCard,
-      el("section", { class: "card", "aria-labelledby": "cost-title" }, [el("div", { class: "card-body" }, [
-        el("div", {}, [el("h2", { id: "cost-title", text: "Resolved rate against cost" }), el("p", { class: "small muted", text: "Cost per run at pay-as-you-go prices. Up and to the left is better." })]),
-        el("div", { class: "scatter", role: "img", "aria-label": "Resolved rate against cost per run: " + described }, [
-          el("div", { class: "y", "aria-hidden": "true" }, lane.scatter.yLabels.map(function (t) { return el("span", { text: t }); })),
-          el("div", { class: "plot-wrap" }, [el("div", { class: "plot" }, points), el("div", { class: "x", "aria-hidden": "true" }, lane.scatter.xTicks.map(function (t) { return el("span", { text: "$" + t, style: "left: " + (t / maxCost) * 100 + "%" }); }))])
-        ])
-      ])])
-    ]));
-    return out;
+    return el("section", { class: "card", "aria-labelledby": "cost-title" }, [el("div", { class: "card-body" }, [
+      el("div", {}, [el("h2", { id: "cost-title", text: "Resolved rate against cost" }), el("p", { class: "small muted", text: "Cost per run. Up and to the left is better; select a dot to see that arm." })]),
+      el("div", { class: "scatter" }, [
+        el("div", { class: "y", "aria-hidden": "true" }, s.yLabels.map(function (t) { return el("span", { text: t }); })),
+        el("div", { class: "plot-wrap" }, [el("div", { class: "plot" }, points), el("div", { class: "x", "aria-hidden": "true" }, s.xTicks.map(function (t) { return el("span", { text: "$" + t, style: "left: " + (t / s.maxCost) * 100 + "%" }); }))])
+      ])
+    ])]);
+  }
+
+  function laneView(lane) {
+    if (!picked || !lane.arms.some(function (a) { return a.name === picked; })) picked = lane.arms[0].name;
+    var sel = lane.arms.filter(function (a) { return a.name === picked; })[0];
+    return [board(lane), el("div", { class: "pair" }, [details(sel), costChart(lane)])];
   }
 
   // A render replaces every button, so focus goes back to the one just pressed.
   function pick(name) {
+    var pressed = document.activeElement;
+    var kind = pressed && pressed.classList ? (pressed.classList.contains("pt") ? "pt" : pressed.classList.contains("acard") ? "acard" : "arm-btn") : "arm-btn";
     picked = name;
     render();
-    var again = Array.prototype.filter.call(app.querySelectorAll(".arm-btn"), function (b) { return b.dataset.arm === name; })[0];
-    if (again) again.focus();
+    var again = Array.prototype.filter.call(app.querySelectorAll("." + kind), function (b) {
+      return b.dataset.arm === name;
+    })[0];
+    if (again) again.focus({ preventScroll: true });
   }
 
   // A hash that names no lane draws the first.
@@ -195,6 +218,10 @@
       if (a.dataset.lane === name) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
     });
     document.title = "SWE-drill leaderboard: " + (current.tab || current.title);
+    drawHero(current);
+    // A definition shows only on a lane that has something it defines.
+    var reviewed = current.arms.some(function (a) { return a.harness !== "Default"; });
+    document.querySelectorAll("[data-when=peer-review]").forEach(function (d) { d.hidden = !reviewed; });
     app.replaceChildren.apply(app, laneView(current));
   }
 
@@ -204,7 +231,6 @@
     .then(function (res) { if (!res.ok) throw new Error("leaderboard.json: HTTP " + res.status); return res.json(); })
     .then(function (json) {
       data = json;
-      document.getElementById("updated").textContent = "Updated " + date(json.updated);
       render();
     })
     .catch(function (err) {
