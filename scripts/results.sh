@@ -24,8 +24,9 @@ url=${url%/}
 command -v azcopy > /dev/null || { echo "azcopy: no such program; install it, for example with brew install azcopy" >&2; exit 2; }
 export AZCOPY_AUTO_LOGIN_TYPE=AZCLI
 
-# The files `swe-drill leaderboard` reads in each job and trial.
-READ="result.json;config.json;suss.json;replay.json;report.json"
+# The files `swe-drill leaderboard` and scripts/insights.py read in each job
+# and trial. output.json is SWE-bench Pro's parsed test results.
+READ="result.json;config.json;suss.json;replay.json;report.json;output.json"
 
 case $command in
   up)

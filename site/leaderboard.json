@@ -39,7 +39,13 @@
             "median": 9.0
           }
         ],
-        "note": "The three runs ran at once, one Azure region each, and no trial needed running again. Eight trials timed out with no cost recorded, and the cost per run leaves them out. apache__pulsar-25953 has no test result in any of the three runs, and counts as unresolved. Its run on Modal, which resolved 62%, and its three runs on a PC, which resolved 65% with 17 trials timed out, are left out."
+        "note": "The three runs ran at once, one Azure region each, and no trial needed running again. Eight trials timed out with no cost recorded, and the cost per run leaves them out. apache__pulsar-25953 has no test result in any of the three runs, and counts as unresolved. Its run on Modal, which resolved 62%, and its three runs on a PC, which resolved 65% with 17 trials timed out, are left out.",
+        "takeaways": [
+          "Ranks first, though every other arm’s interval overlaps its own, so the lead is not settled.",
+          "It solved 6 tasks that no other arm solved in any run, the most of any arm.",
+          "It was the least consistent: 24 tasks went its way in some runs but not all, which lifts its pass@3 to 80%, 11 points above its rate.",
+          "At $118 a run and a median of 1.2M tokens a trial, it is the costliest Copilot arm, and 8 of its trials hit the time limit."
+        ]
       },
       {
         "name": "claude-opus",
@@ -69,7 +75,13 @@
             "median": 5.8
           }
         ],
-        "note": ""
+        "note": "",
+        "takeaways": [
+          "It cost the same as copilot-opus, about $120 a run, and resolved 3 points less.",
+          "Only 9 tasks changed outcome between its two runs, the fewest of any arm, though it had one run fewer in which to change.",
+          "It ran twice on Modal, where every other arm ran three times on Docker on Azure.",
+          "It never solved tursodatabase__turso-7117, which every other arm solved."
+        ]
       },
       {
         "name": "copilot-sonnet",
@@ -105,7 +117,12 @@
             "median": 3.9
           }
         ],
-        "note": "The three runs ran at once, one Azure region each, and no trial needed running again. apache__pulsar-25953 has no test result in any of the three runs, and counts as unresolved. Its three runs on a PC, which resolved 64%, are left out."
+        "note": "The three runs ran at once, one Azure region each, and no trial needed running again. apache__pulsar-25953 has no test result in any of the three runs, and counts as unresolved. Its three runs on a PC, which resolved 64%, are left out.",
+        "takeaways": [
+          "Third, 4 points behind copilot-opus for under a third of its cost.",
+          "4 tasks went to it alone, and 4 that every other arm solved went past it.",
+          "It used the fewest tokens of any arm, a median of 651k a trial."
+        ]
       },
       {
         "name": "squiz-gpt-6.1-sol",
@@ -142,7 +159,12 @@
             "median": 7.7
           }
         ],
-        "note": "squiz reviews each change with claude-sonnet-5.5 and its fixer answers the findings; the cost counts both, $20.26 of the $63.82 a run. The review stopped short on seven trials, when squiz took its state file's lock too late, and those patches were graded as they stood. Five trials have no test result and count as unresolved. The three runs ran at once, one Azure region each."
+        "note": "squiz reviews each change with claude-sonnet-5.5 and its fixer answers the findings; the cost counts both, $20.26 of the $63.82 a run. The review stopped short on seven trials, when squiz took its state file's lock too late, and those patches were graded as they stood. Five trials have no test result and count as unresolved. The three runs ran at once, one Azure region each.",
+        "takeaways": [
+          "squiz’s peer review lifted GPT-6.1 Sol from 62% to 64%, a gap inside the noise, for $19.76 more a run.",
+          "Reviewing every change also took 4 more agent hours a run than plain GPT-6.1 Sol.",
+          "It solved one task no other arm did: ivov__lisette-657."
+        ]
       },
       {
         "name": "copilot-fusion-high",
@@ -178,7 +200,12 @@
             "median": 5.4
           }
         ],
-        "note": "The three runs ran at once, one Azure region each, and no trial needed running again. Its two patches for apache__hugegraph-3037, in the second and third runs, do not compile, and count as unresolved. Grading of apache__pulsar-25953 stopped before any test in the same two runs; graded once more from the same patch, the third run's failed its test and the second's stopped again, and both count as unresolved. Its run on Modal, which resolved 59%, and its two runs on a PC, which resolved 63%, are left out."
+        "note": "The three runs ran at once, one Azure region each, and no trial needed running again. Its two patches for apache__hugegraph-3037, in the second and third runs, do not compile, and count as unresolved. Grading of apache__pulsar-25953 stopped before any test in the same two runs; graded once more from the same patch, the third run's failed its test and the second's stopped again, and both count as unresolved. Its run on Modal, which resolved 59%, and its two runs on a PC, which resolved 63%, are left out.",
+        "takeaways": [
+          "Fusion sent 71% of its trials to gpt-6-luna with gpt-6.1-sol, and only 7% to gpt-6.1-terra, unlike on SWE-bench Pro.",
+          "It cost twice as much as Fusion at tier standard, for one point more.",
+          "It solved one task no other arm did: floci-io__floci-1209."
+        ]
       },
       {
         "name": "copilot-fusion",
@@ -215,7 +242,12 @@
           }
         ],
         "note": "The three runs ran at once, one Azure region each. Copilot CLI never started on 12 trials, refused by Copilot’s model router or out of time in setup, and those 12 ran again on a fresh VM. Its run on Modal, which resolved 62%, is left out.",
-        "label": "below"
+        "label": "below",
+        "takeaways": [
+          "It is the cheapest arm at $15.23 a run, 6 points behind the leader for an eighth of the cost.",
+          "Fusion spread its trials across four models: gpt-6.1-sol 43%, gpt-6.1-terra 31%, gpt-6-luna 23% and claude-opus-5.5 3%.",
+          "No trial timed out, and every unresolved trial ran its tests and failed them."
+        ]
       },
       {
         "name": "copilot-gpt-6.1-sol",
@@ -251,7 +283,12 @@
             "median": 5.9
           }
         ],
-        "note": "Grading stopped before any test on two trials, mikro-orm__mikro-orm-7799 in the first run and apache__pulsar-25953 in the third; graded once more from the same patch, both failed their tests. Its run on Modal, as copilot-gpt, which resolved 67%, is left out."
+        "note": "Grading stopped before any test on two trials, mikro-orm__mikro-orm-7799 in the first run and apache__pulsar-25953 in the third; graded once more from the same patch, both failed their tests. Its run on Modal, as copilot-gpt, which resolved 67%, is left out.",
+        "takeaways": [
+          "Last, but only 7 points behind the leader, and its interval overlaps every other arm’s.",
+          "Every task it solved, another arm solved too, and it missed nothing that all the others solved.",
+          "At $44.06 a run it cost more than copilot-sonnet, which resolved 3 points more."
+        ]
       }
     ],
     "axis": {
@@ -347,7 +384,12 @@
             "median": 5.9
           }
         ],
-        "note": "The three runs ran at once, one Azure region each, and no trial needed running again. 45 tasks were resolved in all three runs, and 48 in at least one. Every trial records a test result."
+        "note": "The three runs ran at once, one Azure region each, and no trial needed running again. 45 tasks were resolved in all three runs, and 48 in at least one. Every trial records a test result.",
+        "takeaways": [
+          "It left only 3 of the 51 tasks unsolved in every run, so SWE-bench Pro has little headroom left to separate arms.",
+          "It was the most consistent arm: 45 tasks resolved in all three runs.",
+          "It resolved 7 points more than GPT-6.1 Sol, for twice the cost."
+        ]
       },
       {
         "name": "copilot-gpt-6.1-sol",
@@ -383,7 +425,12 @@
             "median": 7.0
           }
         ],
-        "note": "The three runs ran at once, one Azure region each, and no trial needed running again. 41 tasks were resolved in all three runs, and 46 in at least one. Four trials record no test result: each patch applied and the task’s tests ran, but none passed, so they count as unresolved."
+        "note": "The three runs ran at once, one Azure region each, and no trial needed running again. 41 tasks were resolved in all three runs, and 46 in at least one. Four trials record no test result: each patch applied and the task’s tests ran, but none passed, so they count as unresolved.",
+        "takeaways": [
+          "It resolved 85% for $19.02 a run, the most resolved per dollar after Sonnet.",
+          "It never solved ansible__ansible-40ade1f, which every other arm solved at least once.",
+          "Four of its unresolved trials record no test result: each patch applied and the task’s tests ran, but none passed."
+        ]
       },
       {
         "name": "copilot-fusion-high",
@@ -419,7 +466,12 @@
             "median": 16.8
           }
         ],
-        "note": "The three runs ran at once, one Azure region each. Two first attempts failed while their VMs were set up, before any agent ran, and ran again on fresh VMs. 38 tasks were resolved in all three runs, and 43 in at least one. Eight trials record no test result: each patch applied and the task’s tests ran, but none passed, so they count as unresolved."
+        "note": "The three runs ran at once, one Azure region each. Two first attempts failed while their VMs were set up, before any agent ran, and ran again on fresh VMs. 38 tasks were resolved in all three runs, and 43 in at least one. Eight trials record no test result: each patch applied and the task’s tests ran, but none passed, so they count as unresolved.",
+        "takeaways": [
+          "Fusion sent 73% of its trials to gpt-6.1-terra, which used about 5× the tokens other arms used on the same tasks and resolved 75% of them.",
+          "The trials Fusion sent to claude-opus-5.5 resolved every time.",
+          "It took 14.5 agent hours a run, over twice any other arm, and a median of 2.9M tokens a trial."
+        ]
       },
       {
         "name": "copilot-sonnet",
@@ -456,7 +508,12 @@
           }
         ],
         "note": "Each run started once its region’s Opus run had finished. The Australia East run failed while its VM was set up, before any agent ran, and ran again on a fresh VM. 37 tasks were resolved in all three runs, and 43 in at least one. Three trials, all of flipt-c1728053, record no test result: each patch applied but left the package failing to build, so they count as unresolved.",
-        "label": "left"
+        "label": "left",
+        "takeaways": [
+          "It is the cheapest arm at $13.58 a run, and used the fewest tokens, a median of 508k a trial.",
+          "It resolved one point less than Fusion high, at 61% of its cost.",
+          "Its three untested trials are all flipt-io__flipt-c172805: each patch applied but left the package failing to build."
+        ]
       }
     ]
   }
