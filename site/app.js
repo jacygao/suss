@@ -119,7 +119,7 @@
           el("span", { class: "big", text: pct(arm.rate), title: rateText(arm) })
         ]),
         track(arm),
-        el("span", { class: "acard-facts" }, [["pass@k", passText(arm)], ["Cost / run", money(arm.cost)], ["Time / run", hours(arm.hours)]].map(function (f) {
+        el("span", { class: "acard-facts" }, [["pass@k", passText(arm)], ["Cost / run", money(arm.cost)], ["Time / run", hours(arm.hours)], ["Tokens / trial", tokens(arm.tokens)], ["Timed out", String(arm.timedOut)]].map(function (f) {
           return el("span", {}, [el("span", { class: "k", text: f[0] }), el("span", { class: "v", text: f[1] })]);
         }))
       ])]);
@@ -145,19 +145,20 @@
     var oneDate = Object.keys(dates).length === 1;
     var meta = [Object.keys(platforms).join(", "), arm.params];
     if (oneDate) meta.push(date(arm.runs[0].date));
-    return el("section", { class: "card", "aria-labelledby": "runs-title" }, [el("div", { class: "card-body" }, [
+    return el("section", { class: "card detail", "aria-labelledby": "runs-title" }, [el("div", { class: "card-body" }, [
       el("div", { class: "detail-head" }, [
         el("p", { class: "eyebrow dark", text: "Selected arm" }),
         el("h2", { id: "runs-title", class: "mono", text: arm.name }),
         el("p", { class: "small muted", text: meta.join(" · ") })
       ]),
+      el("div", { class: "runs-cap", "aria-hidden": "true" }, [el("span", { text: "Runs" }), el("span", { text: "Median trial" })]),
       el("ol", { class: "runs" }, arm.runs.map(function (run, i) {
         var region = run.where.split(", ").slice(1).join(", ") || run.where;
         return el("li", {}, [
           el("span", { class: "run-n", text: "Run " + (i + 1) }),
           el("span", { class: "run-where" }, [region, oneDate ? null : el("span", { class: "muted", text: " · " + date(run.date) })]),
           el("span", { class: "run-job mono", text: run.job }),
-          el("span", { class: "run-med", text: run.median.toFixed(1) + " min" })
+          el("span", { class: "run-med", "aria-label": "median trial " + run.median.toFixed(1) + " minutes", text: run.median.toFixed(1) + " min" })
         ]);
       })),
       arm.note ? el("p", { class: "note", text: arm.note }) : null
