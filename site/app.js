@@ -156,7 +156,8 @@
     var points = arms.map(function (arm) {
       var left = (arm.cost / maxCost) * 100;
       var bottom = ((arm.rate - yLo) / ySpan) * 100;
-      var flip = left > 60;
+      // A label also goes left where it would run into a neighbour's dot, which the lane's data marks.
+      var flip = left > 60 || arm.labelLeft === true;
       return el("div", { class: "pt", title: arm.name + ": " + pct(arm.rate) + " at " + money(arm.cost) + " a run",
         style: "left: " + left + "%; bottom: " + bottom + "%; flex-direction: " + (flip ? "row-reverse" : "row") + "; transform: translate(" + (flip ? "calc(-100% + 6px)" : "-6px") + ", 50%)" },
         [el("span", { class: "dot", "aria-hidden": "true" }), el("span", { class: "label", text: arm.name })]);
