@@ -7,33 +7,31 @@
 <meta name="description" content="Coding harnesses run through the same benchmarks, graded the same way, and ranked.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600&family=Space+Grotesk:wght@500;600&display=swap">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<header class="bar">
-  <div class="bar-in">
-    <a class="brand" href="#rebench">SWE-drill</a>
+<header class="hero">
+  <div class="bar">
+    <a class="brand" href="#rebench"><span class="brand-mark" aria-hidden="true"></span>SWE-drill</a>
     <nav class="tabs" aria-label="Lanes">
-      <a href="#rebench" data-lane="rebench">rebench</a>
+      <a href="#rebench" data-lane="rebench">SWE-rebench</a>
       <a href="#pro-hard51" data-lane="pro-hard51">SWE-bench Pro</a>
     </nav>
-    <span class="muted small" id="updated"></span>
   </div>
+  <div class="hero-body" id="hero"></div>
 </header>
 <main class="wrap" id="app" aria-live="polite">
   <p class="muted">Loading the leaderboard…</p>
 </main>
-<footer class="wrap foot muted small" aria-labelledby="read-title">
+<footer class="wrap foot" aria-labelledby="read-title">
   <h2 id="read-title">How to read it</h2>
   <dl class="read">
-    <div><dt>Harness</dt><dd>What runs around the coding agent. Default is the agent alone; peer review is squiz reviewing each change the agent makes, with a fixer that answers the findings.</dd></div>
-    <div><dt>Runs</dt><dd>How many times the arm ran every task, one trial per task each time. Rates pool all runs; cost and time are per run.</dd></div>
-    <div><dt>Resolved rate</dt><dd>Resolved trials over valid trials, with its 95% interval.</dd></div>
+    <div><dt>Resolved rate</dt><dd>Resolved trials over valid trials, pooled across an arm’s runs, with its 95% interval. A timed-out trial counts as unresolved.</dd></div>
     <div><dt>pass@k</dt><dd>The share of tasks that at least one of the arm’s k runs resolved.</dd></div>
-    <div><dt>Timed out</dt><dd>Trials stopped at the agent’s time limit, counted as unresolved.</dd></div>
-    <div><dt>Tokens / trial</dt><dd>The median tokens the agent read and wrote in one trial, cached reads included: a rough size of the task.</dd></div>
-    <div><dt>Cost</dt><dd>AI credits at $0.01 each for Copilot CLI, Anthropic’s API price for Claude Code. A price, not what was paid.</dd></div>
+    <div><dt>Cost and agent time</dt><dd>Per run. Cost is AI credits at $0.01 each for Copilot CLI and Anthropic’s API price for Claude Code: a price, not what was paid.</dd></div>
+    <div><dt>Tokens / trial</dt><dd>The median tokens the agent read and wrote in one trial, cached reads included.</dd></div>
+    <div data-when="peer-review"><dt>Peer review</dt><dd>squiz reviews each change the coding agent makes, and a fixer answers its findings.</dd></div>
   </dl>
 </footer>
 <script src="app.js"></script>
