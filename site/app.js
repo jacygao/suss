@@ -138,19 +138,20 @@
     })));
 
     var sel = arms.filter(function (a) { return a.name === picked; })[0];
-    out.push(el("section", { class: "card rank-card", "aria-labelledby": "runs-title" }, [el("div", { class: "card-body" }, [
+    // Hidden on phones with the ranked table, whose buttons are the only way to pick an arm.
+    var runsCard = el("section", { class: "card rank-card", "aria-labelledby": "runs-title" }, [el("div", { class: "card-body" }, [
       el("div", { style: "display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; justify-content: space-between" }, [
         el("h2", { id: "runs-title" }, [el("span", { class: "mono", text: sel.name }), "’s runs"]),
         el("span", { class: "small muted", text: sel.params })
       ]),
-      el("div", { class: "scroll" }, [el("table", { style: "min-width: 620px" }, [
+      el("div", { class: "scroll" }, [el("table", { style: "min-width: 440px" }, [
         el("thead", {}, [el("tr", {}, ["Job", "Date", "Where it ran", "Median trial"].map(function (h, i) { return el("th", { scope: "col", class: i === 3 ? "num" : "", text: h }); }))]),
         el("tbody", {}, sel.runs.map(function (run) {
-          return el("tr", {}, [el("td", { class: "mono small", text: run.job }), el("td", { text: date(run.date) }), el("td", { text: run.where }), el("td", { class: "num", text: run.median.toFixed(1) + " min" })]);
+          return el("tr", {}, [el("td", { class: "mono small nowrap", text: run.job }), el("td", { class: "nowrap", text: date(run.date) }), el("td", { text: run.where }), el("td", { class: "num", text: run.median.toFixed(1) + " min" })]);
         }))
       ])]),
       sel.note ? el("div", { class: "note" }, [el("span", { text: sel.note })]) : null
-    ])]));
+    ])]);
 
     var maxCost = lane.scatter.maxCost, yLo = lane.scatter.yLo, ySpan = lane.scatter.ySpan;
     var points = arms.map(function (arm) {
@@ -164,24 +165,13 @@
     });
     var described = arms.map(function (a) { return a.name + " " + pct(a.rate) + " at " + money(a.cost); }).join("; ");
     out.push(el("div", { class: "pair" }, [
+      runsCard,
       el("section", { class: "card", "aria-labelledby": "cost-title" }, [el("div", { class: "card-body" }, [
         el("div", {}, [el("h2", { id: "cost-title", text: "Resolved rate against cost" }), el("p", { class: "small muted", text: "Cost per run at pay-as-you-go prices. Up and to the left is better." })]),
         el("div", { class: "scatter", role: "img", "aria-label": "Resolved rate against cost per run: " + described }, [
           el("div", { class: "y", "aria-hidden": "true" }, lane.scatter.yLabels.map(function (t) { return el("span", { text: t }); })),
           el("div", { class: "plot-wrap" }, [el("div", { class: "plot" }, points), el("div", { class: "x", "aria-hidden": "true" }, lane.scatter.xTicks.map(function (t) { return el("span", { text: "$" + t, style: "left: " + (t / maxCost) * 100 + "%" }); }))])
         ])
-      ])]),
-      el("section", { class: "card", "aria-labelledby": "read-title" }, [el("div", { class: "card-body" }, [
-        el("h2", { id: "read-title", text: "How to read it" }),
-        el("dl", { class: "read" }, [
-          ["Harness", "What runs around the coding agent. Default is the agent alone; peer review is squiz reviewing each change the agent makes, with a fixer that answers the findings."],
-          ["Runs", "How many times the arm ran every task, one trial per task each time. Rates pool all runs; cost and time are per run."],
-          ["Resolved rate", "Resolved trials over valid trials, with its 95% interval."],
-          ["pass@k", "The share of tasks that at least one of the arm’s k runs resolved."],
-          ["Timed out", "Trials stopped at the agent’s time limit, counted as unresolved."],
-          ["Tokens / trial", "The median tokens the agent read and wrote in one trial, cached reads included: a rough size of the task."],
-          ["Cost", "AI credits at $0.01 each for Copilot CLI, Anthropic’s API price for Claude Code. A price, not what was paid."]
-        ].map(function (d) { return el("div", {}, [el("dt", { text: d[0] }), el("dd", { text: d[1] })]); }))
       ])])
     ]));
     return out;

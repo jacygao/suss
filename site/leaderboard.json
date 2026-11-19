@@ -283,7 +283,7 @@
   "pro-hard51": {
     "title": "pro-hard51",
     "tab": "SWE-bench Pro",
-    "about": "SWE-bench Pro V2’s 51 hardest tasks, each describing the change in full and graded by its own hidden tests, with no model judging. SWE-drill no longer runs it as a lane: every arm resolves too much of it to tell harnesses apart. Sonnet 5.5 resolved 45 of the 51 in an earlier single run on Modal, at version 1.0.105 with no credit cap.",
+    "about": "SWE-bench Pro V2’s 51 hardest tasks, each describing the change in full and graded by its own hidden tests, with no model judging.",
     "tasks": 51,
     "axis": {
       "lo": 0.6,
