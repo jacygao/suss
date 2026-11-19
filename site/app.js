@@ -140,16 +140,13 @@
   }
 
   function details(arm) {
-    var platforms = {}, dates = {};
-    arm.runs.forEach(function (r) { platforms[r.where.split(", ")[0]] = true; dates[r.date] = true; });
-    var oneDate = Object.keys(dates).length === 1;
-    var meta = [Object.keys(platforms).join(", "), arm.params];
-    if (oneDate) meta.push(date(arm.runs[0].date));
-    return el("section", { class: "card detail", "aria-labelledby": "runs-title" }, [el("div", { class: "card-body" }, [
+    var dates = {};
+    arm.runs.forEach(function (r) { dates[r.date] = true; });
+    var meta = [arm.model, arm.harness === "Default" ? null : arm.harness, arm.where].concat(Object.keys(dates).sort().map(date));
+    return el("section", { class: "card detail", "aria-labelledby": "take-title" }, [el("div", { class: "card-body" }, [
       el("div", { class: "detail-head" }, [
-        el("p", { class: "eyebrow dark", text: "Selected arm" }),
-        el("h2", { id: "runs-title", class: "mono", text: arm.name }),
-        el("p", { class: "small muted", text: meta.join(" · ") })
+        el("h2", { id: "take-title", text: "Key takeaways" }),
+        el("p", { class: "small muted" }, [el("span", { class: "mono", text: arm.name }), " · " + meta.filter(Boolean).join(" · ")])
       ]),
       arm.takeaways && arm.takeaways.length ? el("ol", { class: "take" }, arm.takeaways.map(function (t) { return el("li", { text: t }); })) : null,
       el("a", { class: "go", href: "#" + current.title + "/" + arm.name }, ["See the full insights", el("span", { class: "arrow", "aria-hidden": "true", text: "→" })])
@@ -335,7 +332,7 @@
       if (a.dataset.lane === at.lane) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
     });
     // A definition shows only on a lane that has something it defines.
-    var reviewed = current.arms.some(function (a) { return a.harness !== "Default"; });
+    var reviewed = current.arms.some(function (a) { return /^Peer review/.test(a.harness); });
     document.querySelectorAll("[data-when=peer-review]").forEach(function (d) { d.hidden = !reviewed; });
     if (at.arm) {
       var arm = at.arm;

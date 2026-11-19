@@ -334,14 +334,14 @@
       ]
     },
     "scatter": {
-      "maxCost": 45,
+      "maxCost": 65,
       "yLo": 0.76,
       "ySpan": 0.18,
       "xTicks": [
         0,
-        15,
-        30,
-        45
+        20,
+        40,
+        60
       ],
       "yLabels": [
         "94%",
@@ -392,6 +392,48 @@
         ]
       },
       {
+        "name": "hve-sol",
+        "agent": "Copilot CLI 1.0.107",
+        "harness": "hve-core RPI Agent",
+        "model": "gpt-6.1-sol, effort high",
+        "rate": 0.8562,
+        "margin": 0.0915,
+        "pass": 0.8824,
+        "timedOut": 0,
+        "cost": 61.38,
+        "hours": 12.29,
+        "tokens": 5303000,
+        "where": "Docker · Azure",
+        "params": "version 1.0.107, effort high, hve-core 55352bb",
+        "runs": [
+          {
+            "job": "20261119T202751Z-1",
+            "date": "2026-11-19",
+            "where": "Docker on Azure, Australia East",
+            "median": 13.9
+          },
+          {
+            "job": "20261119T203120Z-1",
+            "date": "2026-11-19",
+            "where": "Docker on Azure, New Zealand North",
+            "median": 14.0
+          },
+          {
+            "job": "20261119T203425Z-1",
+            "date": "2026-11-19",
+            "where": "Docker on Azure, Korea Central",
+            "median": 13.4
+          }
+        ],
+        "note": "The three runs ran at once, one Azure region each, and no trial needed running again. 42 tasks were resolved in all three runs, and 45 in at least one. Three trials, all of navidrome-69e0a26, record no test result: each patch applied, but the test the task needs never reported, so they count as unresolved.",
+        "takeaways": [
+          "On the same model, hve-core’s RPI Agent resolved 86% to plain Copilot CLI’s 85%, a gap well inside the noise.",
+          "It cost $61.38 a run, 3.2× plain GPT-6.1 Sol, and used a median of 5.3M tokens a trial, about 6× as many and the most of any arm.",
+          "Only 3 tasks changed outcome between its runs, tied with Opus for the fewest on this lane.",
+          "Its three untested trials are all navidrome__navidrome-69e0a26: each patch applied, but the task’s test never reported."
+        ]
+      },
+      {
         "name": "copilot-gpt-6.1-sol",
         "agent": "Copilot CLI 1.0.107",
         "harness": "Default",
@@ -428,7 +470,7 @@
         "note": "The three runs ran at once, one Azure region each, and no trial needed running again. 41 tasks were resolved in all three runs, and 46 in at least one. Four trials record no test result: each patch applied and the task’s tests ran, but none passed, so they count as unresolved.",
         "takeaways": [
           "It resolved 85% for $19.02 a run, the most resolved per dollar after Sonnet.",
-          "It never solved ansible__ansible-40ade1f, which every other arm solved at least once.",
+          "hve-core’s RPI Agent on the same model resolved one point more, at 3.2× its cost.",
           "Four of its unresolved trials record no test result: each patch applied and the task’s tests ran, but none passed."
         ]
       },
@@ -468,9 +510,9 @@
         ],
         "note": "The three runs ran at once, one Azure region each. Two first attempts failed while their VMs were set up, before any agent ran, and ran again on fresh VMs. 38 tasks were resolved in all three runs, and 43 in at least one. Eight trials record no test result: each patch applied and the task’s tests ran, but none passed, so they count as unresolved.",
         "takeaways": [
-          "Fusion sent 73% of its trials to gpt-6.1-terra, which used about 5× the tokens other arms used on the same tasks and resolved 75% of them.",
+          "Fusion sent 73% of its trials to gpt-6.1-terra, which used about 5× the tokens the single-model Copilot arms used on the same tasks and resolved 75% of them.",
           "The trials Fusion sent to claude-opus-5.5 resolved every time.",
-          "It took 14.5 agent hours a run, over twice any other arm, and a median of 2.9M tokens a trial."
+          "It took 14.5 agent hours a run, the most of any arm, and a median of 2.9M tokens a trial, second only to hve-sol."
         ]
       },
       {
@@ -508,7 +550,7 @@
           }
         ],
         "note": "Each run started once its region’s Opus run had finished. The Australia East run failed while its VM was set up, before any agent ran, and ran again on a fresh VM. 37 tasks were resolved in all three runs, and 43 in at least one. Three trials, all of flipt-c1728053, record no test result: each patch applied but left the package failing to build, so they count as unresolved.",
-        "label": "left",
+        "label": "below",
         "takeaways": [
           "It is the cheapest arm at $13.58 a run, and used the fewest tokens, a median of 508k a trial.",
           "It resolved one point less than Fusion high, at 61% of its cost.",
