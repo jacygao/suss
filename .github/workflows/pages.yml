@@ -31,7 +31,11 @@ jobs:
       # Pages lets a browser keep a script or stylesheet for ten minutes, so each
       # deploy gives them a new URL, which a reload of the page fetches at once.
       - name: Version the script and stylesheet
-        run: sed -E -i "s/(app\.js|styles\.css)\"/\1?v=${GITHUB_SHA::7}\"/g" site/index.html && grep -E 'app\.js\?v=|styles\.css\?v=' site/index.html
+        run: |
+          v=${GITHUB_SHA::7}
+          sed -E -i "s/(app\.js|styles\.css)\"/\1?v=$v\"/g" site/index.html
+          grep -F "app.js?v=$v\"" site/index.html
+          grep -F "styles.css?v=$v\"" site/index.html
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
