@@ -1,5 +1,5 @@
 {
-  "updated": "2026-11-17",
+  "updated": "2026-11-19",
   "rebench": {
     "title": "rebench",
     "about": "SWE-rebench’s July 2026 snapshot: 108 GitHub issues from open-source repositories, each graded by its own hidden tests. Every arm runs the same tasks, graded the same way.",
@@ -251,6 +251,137 @@
           }
         ],
         "note": "Grading stopped before any test on two trials, mikro-orm__mikro-orm-7799 in the first run and apache__pulsar-25953 in the third; graded once more from the same patch, both failed their tests. Its run on Modal, as copilot-gpt, which resolved 67%, is left out."
+      }
+    ],
+    "axis": {
+      "lo": 0.5,
+      "span": 0.3,
+      "labels": [
+        "50%",
+        "60%",
+        "70%",
+        "80%"
+      ]
+    },
+    "scatter": {
+      "maxCost": 130,
+      "yLo": 0.6,
+      "ySpan": 0.12,
+      "xTicks": [
+        0,
+        40,
+        80,
+        120
+      ],
+      "yLabels": [
+        "72%",
+        "66%",
+        "60%"
+      ]
+    }
+  },
+  "pro-hard51": {
+    "title": "pro-hard51",
+    "tab": "SWE-bench Pro",
+    "about": "SWE-bench Pro V2’s 51 hardest tasks, each describing the change in full and graded by its own hidden tests, with no model judging. SWE-drill no longer runs it as a lane: every arm resolves too much of it to tell harnesses apart. Sonnet 5.5 resolved 45 of the 51 in an earlier run on Modal.",
+    "tasks": 51,
+    "axis": {
+      "lo": 0.6,
+      "span": 0.4,
+      "labels": [
+        "60%",
+        "80%",
+        "100%"
+      ]
+    },
+    "scatter": {
+      "maxCost": 30,
+      "yLo": 0.76,
+      "ySpan": 0.12,
+      "xTicks": [
+        0,
+        10,
+        20,
+        30
+      ],
+      "yLabels": [
+        "88%",
+        "82%",
+        "76%"
+      ]
+    },
+    "arms": [
+      {
+        "name": "copilot-gpt-6.1-sol",
+        "agent": "Copilot CLI 1.0.107",
+        "harness": "Default",
+        "model": "gpt-6.1-sol, effort high",
+        "rate": 0.8497,
+        "margin": 0.0915,
+        "pass": 0.902,
+        "timedOut": 0,
+        "cost": 19.02,
+        "hours": 6.46,
+        "tokens": null,
+        "where": "Docker · Azure",
+        "params": "version 1.0.107, effort high",
+        "runs": [
+          {
+            "job": "20261119T045251Z-1",
+            "date": "2026-11-19",
+            "where": "Docker on Azure, Australia East",
+            "median": 6.2
+          },
+          {
+            "job": "20261119T050349Z-1",
+            "date": "2026-11-19",
+            "where": "Docker on Azure, New Zealand North",
+            "median": 7.0
+          },
+          {
+            "job": "20261119T050700Z-1",
+            "date": "2026-11-19",
+            "where": "Docker on Azure, Korea Central",
+            "median": 7.0
+          }
+        ],
+        "note": "The three runs ran at once, one Azure region each, and no trial needed running again. 41 tasks were resolved in all three runs, and 46 in at least one. Four trials record no test result: each patch applied and the task’s tests ran, but none passed, so they count as unresolved."
+      },
+      {
+        "name": "copilot-fusion-high",
+        "agent": "Copilot CLI 1.0.107",
+        "harness": "Default",
+        "model": "Fusion, tier high",
+        "rate": 0.7974,
+        "margin": 0.1013,
+        "pass": 0.8431,
+        "timedOut": 1,
+        "cost": 22.31,
+        "hours": 14.5,
+        "tokens": null,
+        "where": "Docker · Azure",
+        "params": "version 1.0.107, fusion_tier high",
+        "runs": [
+          {
+            "job": "20261119T063914Z-1",
+            "date": "2026-11-19",
+            "where": "Docker on Azure, Korea Central",
+            "median": 17.0
+          },
+          {
+            "job": "20261119T064444Z-1",
+            "date": "2026-11-19",
+            "where": "Docker on Azure, Australia East",
+            "median": 16.2
+          },
+          {
+            "job": "20261119T070232Z-1",
+            "date": "2026-11-19",
+            "where": "Docker on Azure, New Zealand North",
+            "median": 16.8
+          }
+        ],
+        "note": "The three runs ran at once, one Azure region each. Two first attempts failed while their VMs were set up, before any agent ran, and ran again on fresh VMs. 38 tasks were resolved in all three runs, and 43 in at least one. Eight trials record no test result: each patch applied and the task’s tests ran, but none passed, so they count as unresolved."
       }
     ]
   }

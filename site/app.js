@@ -1,16 +1,19 @@
 /**
  * Draws the leaderboard from leaderboard.json, one lane at a time, chosen by
- * the URL's hash. Every value goes in as text, never as markup.
+ * the URL's hash. Every value goes in as text, never as markup. Each lane gives
+ * the range of its rate axis and of its cost chart, since its arms' rates and
+ * costs sit in a range of their own.
  */
 (function () {
   "use strict";
 
   var SVG = "http://www.w3.org/2000/svg";
-  // The rebench interval axis, in resolved rate.
-  var AXIS_LO = 0.5, AXIS_SPAN = 0.3;
+  var LANES = ["rebench", "pro-hard51"];
   var app = document.getElementById("app");
   var data = null;
   var picked = null;
+  // The lane being drawn, whose axis `at` and `track` read.
+  var current = null;
 
   function el(tag, attrs, kids) {
     var node = document.createElement(tag);
@@ -45,15 +48,17 @@
   function money(x) { return "$" + x.toFixed(2); }
   function hours(x) { return x.toFixed(1) + " h"; }
   function tokens(x) { return x == null ? "—" : Math.round(x / 1000) + "k"; }
-  function at(x) { return ((x - AXIS_LO) / AXIS_SPAN) * 100; }
+  function at(x) { return ((x - current.axis.lo) / current.axis.span) * 100; }
   function date(iso) {
     return new Date(iso + "T00:00:00Z").toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
   }
 
   function track(arm) {
-    var kids = [el("div", { class: "axis" }), el("div", { class: "tick", style: "left: 33.333%" }), el("div", { class: "tick", style: "left: 66.667%" })];
+    var steps = current.axis.labels.length - 1;
+    var kids = [el("div", { class: "axis" })];
+    for (var i = 1; i < steps; i++) kids.push(el("div", { class: "tick", style: "left: " + (i / steps) * 100 + "%" }));
     if (arm.margin != null) {
-      kids.push(el("div", { class: "ci", style: "left: " + at(arm.rate - arm.margin) + "%; width: " + (2 * arm.margin / AXIS_SPAN) * 100 + "%" }));
+      kids.push(el("div", { class: "ci", style: "left: " + at(arm.rate - arm.margin) + "%; width: " + (2 * arm.margin / current.axis.span) * 100 + "%" }));
     }
     kids.push(el("div", { class: "dot", style: "left: " + at(arm.rate) + "%" }));
     return el("div", { class: "track", "aria-hidden": "true" }, kids);
@@ -78,8 +83,7 @@
     ]);
   }
 
-  function rebench() {
-    var lane = data.rebench;
+  function laneView(lane) {
     var arms = lane.arms;
     if (!picked || !arms.some(function (a) { return a.name === picked; })) picked = arms[arms.length - 1].name;
     var runs = arms.reduce(function (n, a) { return n + a.runs.length; }, 0);
@@ -108,7 +112,7 @@
     var thead = el("tr", {}, heads.map(function (h, i) {
       var cls = i >= 4 && i <= 9 ? "num" : "";
       if (h !== "Resolved rate") return el("th", { scope: "col", class: cls, text: h });
-      return el("th", { scope: "col" }, [el("div", { text: h }), el("div", { class: "axis-labels", "aria-hidden": "true" }, ["50%", "60%", "70%", "80%"].map(function (t) { return el("span", { text: t }); }))]);
+      return el("th", { scope: "col" }, [el("div", { text: h }), el("div", { class: "axis-labels", "aria-hidden": "true" }, lane.axis.labels.map(function (t) { return el("span", { text: t }); }))]);
     }));
     out.push(el("section", { class: "card rank-card", "aria-labelledby": "rank-title" }, [
       el("div", { class: "card-head" }, [
@@ -148,7 +152,7 @@
       sel.note ? el("div", { class: "note" }, [el("span", { text: sel.note })]) : null
     ])]));
 
-    var maxCost = 130, yLo = 0.6, ySpan = 0.12;
+    var maxCost = lane.scatter.maxCost, yLo = lane.scatter.yLo, ySpan = lane.scatter.ySpan;
     var points = arms.map(function (arm) {
       var left = (arm.cost / maxCost) * 100;
       var bottom = ((arm.rate - yLo) / ySpan) * 100;
@@ -162,8 +166,8 @@
       el("section", { class: "card", "aria-labelledby": "cost-title" }, [el("div", { class: "card-body" }, [
         el("div", {}, [el("h2", { id: "cost-title", text: "Resolved rate against cost" }), el("p", { class: "small muted", text: "Cost per run at pay-as-you-go prices. Up and to the left is better." })]),
         el("div", { class: "scatter", role: "img", "aria-label": "Resolved rate against cost per run: " + described }, [
-          el("div", { class: "y", "aria-hidden": "true" }, ["72%", "66%", "60%"].map(function (t) { return el("span", { text: t }); })),
-          el("div", { class: "plot-wrap" }, [el("div", { class: "plot" }, points), el("div", { class: "x", "aria-hidden": "true" }, [0, 40, 80, 120].map(function (t) { return el("span", { text: "$" + t, style: "left: " + (t / maxCost) * 100 + "%" }); }))])
+          el("div", { class: "y", "aria-hidden": "true" }, lane.scatter.yLabels.map(function (t) { return el("span", { text: t }); })),
+          el("div", { class: "plot-wrap" }, [el("div", { class: "plot" }, points), el("div", { class: "x", "aria-hidden": "true" }, lane.scatter.xTicks.map(function (t) { return el("span", { text: "$" + t, style: "left: " + (t / maxCost) * 100 + "%" }); }))])
         ])
       ])]),
       el("section", { class: "card", "aria-labelledby": "read-title" }, [el("div", { class: "card-body" }, [
@@ -190,14 +194,19 @@
     if (again) again.focus();
   }
 
+  // A hash that names no lane draws the first.
   function render() {
-    var lane = "rebench";
+    var asked = decodeURIComponent(location.hash.slice(1));
+    var name = LANES.indexOf(asked) >= 0 && data[asked] ? asked : LANES[0];
+    current = data[name];
     document.querySelectorAll(".tabs a").forEach(function (a) {
-      if (a.dataset.lane === lane) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+      if (a.dataset.lane === name) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
     });
-    document.title = "SWE-drill leaderboard: " + lane;
-    app.replaceChildren.apply(app, rebench());
+    document.title = "SWE-drill leaderboard: " + (current.tab || current.title);
+    app.replaceChildren.apply(app, laneView(current));
   }
+
+  window.addEventListener("hashchange", function () { if (data) { picked = null; render(); window.scrollTo(0, 0); } });
 
   fetch("leaderboard.json", { cache: "no-cache" })
     .then(function (res) { if (!res.ok) throw new Error("leaderboard.json: HTTP " + res.status); return res.json(); })
