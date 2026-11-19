@@ -242,6 +242,7 @@
       var where = (arm.runs[i] && arm.runs[i].where.split(", ").slice(1).join(", ")) || (arm.runs[i] && arm.runs[i].where) || run.job;
       // Only Copilot CLI reports credits; another agent records none.
       var extra = [];
+      if (arm.runs[i]) extra.push(date(arm.runs[i].date));
       if (arm.runs[i] && arm.runs[i].median != null) extra.push("median " + arm.runs[i].median.toFixed(1) + " min");
       if (run.credits) extra.push(run.credits.toLocaleString("en-AU") + " credits");
       if (run.timedOut) extra.push(run.timedOut + " timed out");
