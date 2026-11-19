@@ -138,7 +138,8 @@
     })));
 
     var sel = arms.filter(function (a) { return a.name === picked; })[0];
-    var runsCard = el("section", { class: "card", "aria-labelledby": "runs-title" }, [el("div", { class: "card-body" }, [
+    // Hidden on phones with the ranked table, whose buttons are the only way to pick an arm.
+    var runsCard = el("section", { class: "card rank-card", "aria-labelledby": "runs-title" }, [el("div", { class: "card-body" }, [
       el("div", { style: "display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; justify-content: space-between" }, [
         el("h2", { id: "runs-title" }, [el("span", { class: "mono", text: sel.name }), "’s runs"]),
         el("span", { class: "small muted", text: sel.params })
