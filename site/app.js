@@ -196,7 +196,8 @@
 
   // A hash that names no lane draws the first.
   function render() {
-    var asked = decodeURIComponent(location.hash.slice(1));
+    // Lane names are plain ASCII, so the raw fragment is compared and never decoded.
+    var asked = location.hash.slice(1);
     var name = LANES.indexOf(asked) >= 0 && data[asked] ? asked : LANES[0];
     current = data[name];
     document.querySelectorAll(".tabs a").forEach(function (a) {
