@@ -24,8 +24,17 @@
 <main class="wrap" id="app" aria-live="polite">
   <p class="muted">Loading the leaderboard…</p>
 </main>
-<footer class="wrap foot muted small">
-  SWE-drill runs coding harnesses through the same benchmark tasks, grades every result the same way, and ranks the arms on each lane. Lanes measure different things, so their numbers never compare across lanes.
+<footer class="wrap foot muted small" aria-labelledby="read-title">
+  <h2 id="read-title">How to read it</h2>
+  <dl class="read">
+    <div><dt>Harness</dt><dd>What runs around the coding agent. Default is the agent alone; peer review is squiz reviewing each change the agent makes, with a fixer that answers the findings.</dd></div>
+    <div><dt>Runs</dt><dd>How many times the arm ran every task, one trial per task each time. Rates pool all runs; cost and time are per run.</dd></div>
+    <div><dt>Resolved rate</dt><dd>Resolved trials over valid trials, with its 95% interval.</dd></div>
+    <div><dt>pass@k</dt><dd>The share of tasks that at least one of the arm’s k runs resolved.</dd></div>
+    <div><dt>Timed out</dt><dd>Trials stopped at the agent’s time limit, counted as unresolved.</dd></div>
+    <div><dt>Tokens / trial</dt><dd>The median tokens the agent read and wrote in one trial, cached reads included: a rough size of the task.</dd></div>
+    <div><dt>Cost</dt><dd>AI credits at $0.01 each for Copilot CLI, Anthropic’s API price for Claude Code. A price, not what was paid.</dd></div>
+  </dl>
 </footer>
 <script src="app.js"></script>
 </body>
