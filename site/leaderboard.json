@@ -322,7 +322,7 @@
         "timedOut": 0,
         "cost": 19.02,
         "hours": 6.46,
-        "tokens": null,
+        "tokens": 873000,
         "where": "Docker · Azure",
         "params": "version 1.0.107, effort high",
         "runs": [
@@ -358,7 +358,7 @@
         "timedOut": 1,
         "cost": 22.31,
         "hours": 14.5,
-        "tokens": null,
+        "tokens": 2921000,
         "where": "Docker · Azure",
         "params": "version 1.0.107, fusion_tier high",
         "runs": [
