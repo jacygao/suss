@@ -332,7 +332,7 @@
       if (a.dataset.lane === at.lane) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
     });
     // A definition shows only on a lane that has something it defines.
-    var reviewed = current.arms.some(function (a) { return a.harness !== "Default"; });
+    var reviewed = current.arms.some(function (a) { return /^Peer review/.test(a.harness); });
     document.querySelectorAll("[data-when=peer-review]").forEach(function (d) { d.hidden = !reviewed; });
     if (at.arm) {
       var arm = at.arm;
