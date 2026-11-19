@@ -108,22 +108,40 @@ resolved rate, as `swe-drill leaderboard --lane rebench` does.
 ### SWE-bench Pro
 
 SWE-bench Pro, which SWE-drill no longer runs: Sonnet 5.5 on plain Copilot CLI
-resolved 98% of `pro-go`, leaving no room to tell harnesses apart.
+resolved 98% of `pro-go`, leaving no room to tell harnesses apart. GPT-6.1 Sol
+on plain Copilot CLI later resolved 85% of `pro-hard51`, Pro's hardest 51
+tasks, over three runs, and Fusion at tier high 80%.
 
 | Lane | Arm | Agent | Harness | Model | Date | Tasks | Resolved | Unresolved | Invalid | Timed out | Harness failed | Resolved share | AI credits | Agent time, sum of trials | Elapsed |
 |---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | `pro-hard51-rerun113` | `copilot-sonnet` | `copilot-cli` | Default | claude-sonnet-5.5 | 2026-11-03 | 10 | 10 | 0 | 0 | 0 | 0 | 100% | 245 (≈ $2.45) | 18.0 min | 5 min |
 | `pro-go` | `copilot-sonnet` | `copilot-cli` | Default | claude-sonnet-5.5 | 2026-11-03 | 256 | 252 | 4 | 0 | 0 | 0 | 98% | 3,562 (≈ $36) | 14.0 h | 0.7 h |
 | `pro-hard51` | `copilot-sonnet` | `copilot-cli` | Default | claude-sonnet-5.5 | 2026-11-03 | 51 | 35 | 16 | 0 | 0 | 10 | 69% | 1,055 (≈ $11) | 2.8 h | 0.3 h |
+| `pro-hard51` | `copilot-gpt-6.1-sol` | `copilot-cli` | Default | gpt-6.1-sol | 2026-11-19 | 51 | 43 | 8 | 0 | 0 | 0 | 84% | 1,880 (≈ $19) | 6.3 h | 1.1 h |
+| `pro-hard51` | `copilot-gpt-6.1-sol` | `copilot-cli` | Default | gpt-6.1-sol | 2026-11-19 | 51 | 45 | 6 | 0 | 0 | 0 | 88% | 1,926 (≈ $19) | 6.7 h | 1.2 h |
+| `pro-hard51` | `copilot-gpt-6.1-sol` | `copilot-cli` | Default | gpt-6.1-sol | 2026-11-19 | 51 | 42 | 9 | 0 | 0 | 0 | 82% | 1,900 (≈ $19) | 6.4 h | 1.2 h |
+| `pro-hard51` | `copilot-fusion-high` | `copilot-cli` | Default | Fusion, tier high | 2026-11-19 | 51 | 41 | 10 | 0 | 0 | 0 | 80% | 2,306 (≈ $23) | 14.4 h | 1.8 h |
+| `pro-hard51` | `copilot-fusion-high` | `copilot-cli` | Default | Fusion, tier high | 2026-11-19 | 51 | 39 | 12 | 0 | 0 | 0 | 76% | 2,182 (≈ $22) | 14.2 h | 1.6 h |
+| `pro-hard51` | `copilot-fusion-high` | `copilot-cli` | Default | Fusion, tier high | 2026-11-19 | 51 | 42 | 9 | 0 | 1 | 0 | 82% | 2,205 (≈ $22) | 14.9 h | 1.8 h |
 
 | Lane | Job | Params | Median trial |
 |---|---|---|---:|
 | `pro-go` | `20261103T032309Z-1` | version 1.0.105, effort high, no credit cap | 2.7 min |
 | `pro-hard51` | `20261103T062913Z-1` | version 1.0.105, effort high, no credit cap | 3.5 min |
+| `pro-hard51` | `20261119T045251Z-1`, `20261119T050349Z-1`, `20261119T050700Z-1` | version 1.0.107, effort high | 6.2 min, 7.0 min, 7.0 min |
+| `pro-hard51` | `20261119T063914Z-1`, `20261119T064444Z-1`, `20261119T070232Z-1` | version 1.0.107, `fusion_tier` high | 17.0 min, 16.2 min, 16.8 min |
 | `pro-hard51-rerun113` | `20261103T120000Z-1` | version 1.0.105, effort high, no credit cap | 1.2 min |
 
 - In `pro-hard51`, Copilot CLI never started on 10 trials (#113), which count as
   unresolved. `pro-hard51-rerun113` ran those 10 again.
+- `copilot-gpt-6.1-sol`'s and `copilot-fusion-high`'s runs of `pro-hard51`,
+  the jobs at version 1.0.107, ran three at a time on Docker, one Azure VM
+  each. The Sonnet runs ran on Modal. `copilot-gpt-6.1-sol` resolved 41 tasks
+  in all three runs and 46 in at least one, and `copilot-fusion-high` 38 and
+  43.
+- Four `copilot-gpt-6.1-sol` trials and eight `copilot-fusion-high` trials
+  record no test result. Each patch applied and the tests the task needs ran,
+  but none of them passed, so they count as unresolved.
 
 ### `senior`
 
