@@ -19,14 +19,14 @@ def write(path: Path, value) -> None:
     path.write_text(json.dumps(value))
 
 
-def trial(mirror: Path, job: str, task: str, reward=None, tests=None, error=None, patch_bytes=100) -> None:
+def trial(mirror: Path, job: str, task: str, reward=None, tests=None, error=None, patch_bytes=100, seconds=60) -> None:
     """One trial as a mirror holds it; `tests` is SWE-bench Pro's parsed list, written only when given."""
     directory = mirror / "results" / LANE / ARM / job / f"{task}__abc"
     result = {"task_name": task, "verifier_result": {"rewards": {"reward": reward}} if reward is not None else None}
     if error:
         result["exception_info"] = {"exception_type": error}
     write(directory / "result.json", result)
-    write(directory / "agent" / "suss.json", {"status": "ok", "run_seconds": 60, "patch_bytes": patch_bytes, "usage": {}})
+    write(directory / "agent" / "suss.json", {"status": "ok", "run_seconds": seconds, "patch_bytes": patch_bytes, "usage": {}})
     write(directory / "verifier" / "replay.json", {"patch": "/logs/artifacts/model.patch", "apply_rc": 0})
     if tests is not None:
         write(directory / "verifier" / "output.json", {"tests": tests})
@@ -55,3 +55,10 @@ def test_an_invalid_trial_counts_nowhere(tmp_path):
     assert found["tasks"] == {"always": 1, "sometimes": [], "never": []}, "the invalid run must not make the task flaky"
     assert found["failures"] == {}
     assert [run["trials"] for run in found["runs"]] == [1, 0]
+
+
+def test_a_trial_with_no_recorded_time_is_left_out_of_the_time_ranking(tmp_path):
+    trial(tmp_path, "j1", "timed", reward=1, seconds=600)
+    trial(tmp_path, "j1", "untimed", reward=1, seconds=None)
+    found = insights_for(tmp_path, ["j1"])["minutes"]
+    assert found == {"median": 10.0, "top": [{"task": "timed", "value": 10.0}]}

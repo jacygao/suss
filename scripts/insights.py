@@ -46,7 +46,8 @@ def trial_facts(trial: leaderboard.Trial) -> dict:
     return {
         # Harbor raises its timeout where the agent's record could not say timed-out.
         "timedOut": record.get("status") == "timed-out" or raised == "AgentTimeoutError",
-        "minutes": (record.get("run_seconds") or 0) / 60,
+        # A trial with no recorded time is unmeasured, never zero minutes.
+        "minutes": record["run_seconds"] / 60 if isinstance(record.get("run_seconds"), int | float) else None,
         "tokens": tokens,
         "credits": usage.get("ai_credits"),
         "models": tuple(sorted(usage.get("reported_models") or [])),
@@ -119,7 +120,7 @@ def arm_insights(mirror: Path, lane: str, arm: dict, everyone: dict[str, dict[st
         return [{"task": short(task), "value": value} for task, value in ranked]
 
     tokens = [f["tokens"] for f in facts.values() if f["tokens"] is not None]
-    minutes = [f["minutes"] for f in facts.values() if f["minutes"]]
+    minutes = [f["minutes"] for f in facts.values() if f["minutes"] is not None]
     models: dict[str, int] = {}
     for f in facts.values():
         if f["models"]:
