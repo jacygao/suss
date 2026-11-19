@@ -151,18 +151,8 @@
         el("h2", { id: "runs-title", class: "mono", text: arm.name }),
         el("p", { class: "small muted", text: meta.join(" · ") })
       ]),
-      el("a", { class: "go", href: "#" + current.title + "/" + arm.name }, ["See insights", el("span", { class: "arrow", "aria-hidden": "true", text: "→" })]),
-      el("div", { class: "runs-cap", "aria-hidden": "true" }, [el("span", { text: "Runs" }), el("span", { text: "Median trial" })]),
-      el("ol", { class: "runs" }, arm.runs.map(function (run, i) {
-        var region = run.where.split(", ").slice(1).join(", ") || run.where;
-        return el("li", {}, [
-          el("span", { class: "run-n", text: "Run " + (i + 1) }),
-          el("span", { class: "run-where" }, [region, oneDate ? null : el("span", { class: "muted", text: " · " + date(run.date) })]),
-          el("span", { class: "run-job mono", text: run.job }),
-          el("span", { class: "run-med", "aria-label": "median trial " + run.median.toFixed(1) + " minutes", text: run.median.toFixed(1) + " min" })
-        ]);
-      })),
-      arm.note ? el("p", { class: "note", text: arm.note }) : null
+      arm.takeaways && arm.takeaways.length ? el("ol", { class: "take" }, arm.takeaways.map(function (t) { return el("li", { text: t }); })) : null,
+      el("a", { class: "go", href: "#" + current.title + "/" + arm.name }, ["See the full insights", el("span", { class: "arrow", "aria-hidden": "true", text: "→" })])
     ])]);
   }
 
@@ -251,14 +241,16 @@
     cards.push(insCard("Run by run", "Resolved trials in each run, out of " + n + ".", [el("ul", { class: "rows" }, ins.runs.map(function (run, i) {
       var where = (arm.runs[i] && arm.runs[i].where.split(", ").slice(1).join(", ")) || (arm.runs[i] && arm.runs[i].where) || run.job;
       // Only Copilot CLI reports credits; another agent records none.
-      var extra = run.credits ? [run.credits.toLocaleString("en-AU") + " credits"] : [];
+      var extra = [];
+      if (arm.runs[i] && arm.runs[i].median != null) extra.push("median " + arm.runs[i].median.toFixed(1) + " min");
+      if (run.credits) extra.push(run.credits.toLocaleString("en-AU") + " credits");
       if (run.timedOut) extra.push(run.timedOut + " timed out");
       return el("li", {}, [
-        el("span", { class: "row-label" }, [where, el("span", { class: "small muted", text: extra.join(" · ") })]),
+        el("span", { class: "row-label" }, [where, el("span", { class: "run-job mono", text: run.job }), el("span", { class: "small muted", text: extra.join(" · ") })]),
         bar(run.resolved / run.trials),
         el("span", { class: "row-val", text: run.resolved + " / " + run.trials })
       ]);
-    }))]));
+    })), arm.note ? el("p", { class: "note", text: arm.note }) : null]));
 
     var always = ins.tasks.always, some = ins.tasks.sometimes.length, never = ins.tasks.never.length, all = always + some + never;
     cards.push(insCard("How consistent", "Each task, by how many of the arm’s runs resolved it.", [
