@@ -1,0 +1,1235 @@
+{
+ "rebench": {
+  "copilot-opus": {
+   "runs": [
+    {
+     "job": "20261116T203211Z-1",
+     "resolved": 76,
+     "trials": 108,
+     "timedOut": 2,
+     "credits": 11651
+    },
+    {
+     "job": "20261116T203507Z-1",
+     "resolved": 73,
+     "trials": 108,
+     "timedOut": 2,
+     "credits": 12793
+    },
+    {
+     "job": "20261116T203832Z-1",
+     "resolved": 74,
+     "trials": 108,
+     "timedOut": 4,
+     "credits": 11072
+    }
+   ],
+   "tasks": {
+    "always": 62,
+    "sometimes": [
+     "HKUDS__nanobot-4129",
+     "agno-agi__agno-8148",
+     "apache__dubbo-go-3357",
+     "apache__pulsar-25865",
+     "cloudflare__vinext-1574",
+     "fathah__hermes-desktop-268",
+     "floci-io__floci-1235",
+     "floci-io__floci-1325",
+     "gleam-lang__gleam-5798",
+     "harbor-framework__harbor-1764",
+     "ivov__lisette-627",
+     "kubernetes-sigs__kueue-11559",
+     "livekit__agents-5944",
+     "marimo-team__marimo-9626",
+     "marimo-team__marimo-9754",
+     "mikro-orm__mikro-orm-7799",
+     "mozilla-ai__any-llm-1121",
+     "mvanhorn__cli-printing-press-1920",
+     "mvanhorn__cli-printing-press-2086",
+     "oxc-project__oxc-22623",
+     "raullenchai__Rapid-MLX-426",
+     "ubugeeei-prod__vize-1508",
+     "ubugeeei-prod__vize-774",
+     "withcoral__coral-1143"
+    ],
+    "never": [
+     "HKUDS__nanobot-4274",
+     "Martian-Engineering__lossless-claw-814",
+     "apache__pulsar-25793",
+     "apache__pulsar-25953",
+     "facebook__lexical-8676",
+     "fallow-rs__fallow-821",
+     "floci-io__floci-1032",
+     "floci-io__floci-1209",
+     "ivov__lisette-657",
+     "kestra-io__kestra-16450",
+     "langchain4j__langchain4j-5328",
+     "ludo-technologies__pyscn-548",
+     "matrixorigin__matrixone-24632",
+     "microsoft__apm-1553",
+     "mui__base-ui-4849",
+     "nearai__ironclaw-3694",
+     "nearai__ironclaw-3735",
+     "stablyai__orca-1934",
+     "ubugeeei-prod__vize-1281",
+     "ubugeeei-prod__vize-769",
+     "withcoral__coral-1179",
+     "woodpecker-ci__woodpecker-6623"
+    ]
+   },
+   "only": [
+    "apache__dubbo-go-3357",
+    "harbor-framework__harbor-1764",
+    "kubernetes-sigs__kueue-11559",
+    "mvanhorn__cli-printing-press-2086",
+    "ubugeeei-prod__vize-1508",
+    "ubugeeei-prod__vize-774"
+   ],
+   "missed": [],
+   "failures": {
+    "Tests failed": 96,
+    "No test result": 3,
+    "Timed out": 2
+   },
+   "tokens": {
+    "median": 1226418,
+    "top": [
+     {
+      "task": "cloudflare__vinext-1371",
+      "value": 13308547
+     },
+     {
+      "task": "ubugeeei-prod__vize-1508",
+      "value": 10142498
+     },
+     {
+      "task": "mikro-orm__mikro-orm-7799",
+      "value": 8063736
+     }
+    ]
+   },
+   "minutes": {
+    "median": 9.4,
+    "top": [
+     {
+      "task": "PerryTS__perry-3982",
+      "value": 50.1
+     },
+     {
+      "task": "astral-sh__ruff-25567",
+      "value": 50.0
+     },
+     {
+      "task": "apache__hugegraph-3037",
+      "value": 50.0
+     }
+    ]
+   },
+   "models": null
+  },
+  "claude-opus": {
+   "runs": [
+    {
+     "job": "20261109T002622Z-1",
+     "resolved": 74,
+     "trials": 108,
+     "timedOut": 3,
+     "credits": 0
+    },
+    {
+     "job": "20261111T060421Z-1",
+     "resolved": 69,
+     "trials": 108,
+     "timedOut": 2,
+     "credits": 0
+    }
+   ],
+   "tasks": {
+    "always": 67,
+    "sometimes": [
+     "PerryTS__perry-3982",
+     "apache__pulsar-25953",
+     "facebook__lexical-8676",
+     "floci-io__floci-1235",
+     "gleam-lang__gleam-5798",
+     "mui__base-ui-4849",
+     "nesquena__hermes-webui-3069",
+     "raullenchai__Rapid-MLX-426",
+     "stablyai__orca-1934"
+    ],
+    "never": [
+     "HKUDS__nanobot-4274",
+     "Martian-Engineering__lossless-claw-814",
+     "agno-agi__agno-8148",
+     "apache__dubbo-go-3357",
+     "apache__pulsar-25793",
+     "apache__pulsar-25865",
+     "fallow-rs__fallow-821",
+     "fathah__hermes-desktop-268",
+     "floci-io__floci-1032",
+     "floci-io__floci-1209",
+     "floci-io__floci-1325",
+     "harbor-framework__harbor-1764",
+     "ivov__lisette-657",
+     "kestra-io__kestra-16450",
+     "kubernetes-sigs__kueue-11559",
+     "langchain4j__langchain4j-5328",
+     "livekit__agents-5944",
+     "ludo-technologies__pyscn-548",
+     "matrixorigin__matrixone-24632",
+     "microsoft__apm-1553",
+     "mozilla-ai__any-llm-1121",
+     "mvanhorn__cli-printing-press-2086",
+     "nearai__ironclaw-3694",
+     "nearai__ironclaw-3735",
+     "pydantic__pydantic-ai-5842",
+     "tursodatabase__turso-7117",
+     "ubugeeei-prod__vize-1281",
+     "ubugeeei-prod__vize-1508",
+     "ubugeeei-prod__vize-769",
+     "ubugeeei-prod__vize-774",
+     "withcoral__coral-1179",
+     "woodpecker-ci__woodpecker-6623"
+    ]
+   },
+   "only": [
+    "apache__pulsar-25953",
+    "stablyai__orca-1934"
+   ],
+   "missed": [
+    "tursodatabase__turso-7117"
+   ],
+   "failures": {
+    "Tests failed": 70,
+    "No change made": 2,
+    "Timed out": 1
+   },
+   "tokens": {
+    "median": 965144,
+    "top": [
+     {
+      "task": "ubugeeei-prod__vize-1508",
+      "value": 24919319
+     },
+     {
+      "task": "ubugeeei-prod__vize-769",
+      "value": 10342424
+     },
+     {
+      "task": "mikro-orm__mikro-orm-7799",
+      "value": 8831903
+     }
+    ]
+   },
+   "minutes": {
+    "median": 5.6,
+    "top": [
+     {
+      "task": "mikro-orm__mikro-orm-7799",
+      "value": 50.0
+     },
+     {
+      "task": "PerryTS__perry-3982",
+      "value": 50.0
+     },
+     {
+      "task": "nearai__ironclaw-3694",
+      "value": 50.0
+     }
+    ]
+   },
+   "models": null
+  },
+  "copilot-sonnet": {
+   "runs": [
+    {
+     "job": "20261115T213917Z-1",
+     "resolved": 68,
+     "trials": 108,
+     "timedOut": 1,
+     "credits": 3392
+    },
+    {
+     "job": "20261115T214236Z-1",
+     "resolved": 70,
+     "trials": 108,
+     "timedOut": 0,
+     "credits": 3689
+    },
+    {
+     "job": "20261115T214539Z-1",
+     "resolved": 73,
+     "trials": 108,
+     "timedOut": 0,
+     "credits": 3647
+    }
+   ],
+   "tasks": {
+    "always": 60,
+    "sometimes": [
+     "HKUDS__nanobot-4129",
+     "PerryTS__perry-3982",
+     "agno-agi__agno-8148",
+     "cloudflare__vinext-1371",
+     "cloudflare__vinext-1574",
+     "cloudnative-pg__cloudnative-pg-10747",
+     "facebook__lexical-8676",
+     "floci-io__floci-1021",
+     "ivov__lisette-627",
+     "kubernetes-sigs__kueue-11619",
+     "langchain4j__langchain4j-5328",
+     "marimo-team__marimo-9766",
+     "mikro-orm__mikro-orm-7799",
+     "mozilla-ai__any-llm-1121",
+     "nearai__ironclaw-3735",
+     "nesquena__hermes-webui-3069",
+     "oxc-project__oxc-22623",
+     "raullenchai__Rapid-MLX-426",
+     "tursodatabase__turso-7117",
+     "ubugeeei-prod__vize-769",
+     "vuejs__core-14897"
+    ],
+    "never": [
+     "HKUDS__nanobot-4274",
+     "Martian-Engineering__lossless-claw-814",
+     "apache__dubbo-go-3357",
+     "apache__pulsar-25793",
+     "apache__pulsar-25953",
+     "better-auth__better-auth-10070",
+     "cloudflare__vinext-1837",
+     "floci-io__floci-1032",
+     "floci-io__floci-1209",
+     "floci-io__floci-1235",
+     "gleam-lang__gleam-5798",
+     "harbor-framework__harbor-1764",
+     "ivov__lisette-657",
+     "kubernetes-sigs__kueue-11559",
+     "livekit__agents-5944",
+     "marimo-team__marimo-9754",
+     "matrixorigin__matrixone-24632",
+     "mui__base-ui-4849",
+     "mvanhorn__cli-printing-press-2086",
+     "nearai__ironclaw-3694",
+     "pydantic__pydantic-ai-5842",
+     "stablyai__orca-1934",
+     "ubugeeei-prod__vize-1281",
+     "ubugeeei-prod__vize-1508",
+     "ubugeeei-prod__vize-774",
+     "withcoral__coral-1179",
+     "woodpecker-ci__woodpecker-6623"
+    ]
+   },
+   "only": [
+    "kestra-io__kestra-16450",
+    "microsoft__apm-1553",
+    "nearai__ironclaw-3735",
+    "ubugeeei-prod__vize-769"
+   ],
+   "missed": [
+    "better-auth__better-auth-10070",
+    "cloudflare__vinext-1837",
+    "gleam-lang__gleam-5798",
+    "marimo-team__marimo-9754"
+   ],
+   "failures": {
+    "Tests failed": 106,
+    "No test result": 3,
+    "No change made": 3,
+    "Timed out": 1
+   },
+   "tokens": {
+    "median": 650790,
+    "top": [
+     {
+      "task": "ubugeeei-prod__vize-1508",
+      "value": 10516750
+     },
+     {
+      "task": "microsoft__typescript-go-4194",
+      "value": 6657639
+     },
+     {
+      "task": "cloudflare__vinext-1371",
+      "value": 5332292
+     }
+    ]
+   },
+   "minutes": {
+    "median": 4.0,
+    "top": [
+     {
+      "task": "PerryTS__perry-3982",
+      "value": 50.0
+     },
+     {
+      "task": "better-auth__better-auth-9756",
+      "value": 44.9
+     },
+     {
+      "task": "astral-sh__ruff-25567",
+      "value": 41.7
+     }
+    ]
+   },
+   "models": null
+  },
+  "squiz-gpt-6.1-sol": {
+   "runs": [
+    {
+     "job": "20261115T114014Z-1",
+     "resolved": 70,
+     "trials": 108,
+     "timedOut": 2,
+     "credits": 6355
+    },
+    {
+     "job": "20261115T114339Z-1",
+     "resolved": 71,
+     "trials": 108,
+     "timedOut": 0,
+     "credits": 6444
+    },
+    {
+     "job": "20261115T114642Z-1",
+     "resolved": 67,
+     "trials": 108,
+     "timedOut": 1,
+     "credits": 6348
+    }
+   ],
+   "tasks": {
+    "always": 61,
+    "sometimes": [
+     "HKUDS__nanobot-4129",
+     "apache__hugegraph-3037",
+     "better-auth__better-auth-10070",
+     "cloudflare__vinext-1574",
+     "cloudflare__vinext-1837",
+     "floci-io__floci-1021",
+     "floci-io__floci-1032",
+     "floci-io__floci-1235",
+     "floci-io__floci-1325",
+     "ivov__lisette-657",
+     "livekit__agents-5944",
+     "marimo-team__marimo-9766",
+     "mikro-orm__mikro-orm-7799",
+     "mozilla-ai__any-llm-1121",
+     "mui__base-ui-4849",
+     "open-jarvis__OpenJarvis-465",
+     "pydantic__pydantic-ai-5842"
+    ],
+    "never": [
+     "HKUDS__nanobot-4274",
+     "Martian-Engineering__lossless-claw-814",
+     "Soju06__codex-lb-744",
+     "agno-agi__agno-8148",
+     "apache__dubbo-go-3357",
+     "apache__pulsar-25793",
+     "apache__pulsar-25865",
+     "apache__pulsar-25953",
+     "facebook__lexical-8676",
+     "fallow-rs__fallow-762",
+     "fathah__hermes-desktop-268",
+     "floci-io__floci-1209",
+     "harbor-framework__harbor-1764",
+     "kestra-io__kestra-16450",
+     "kubernetes-sigs__kueue-11559",
+     "ludo-technologies__pyscn-548",
+     "marimo-team__marimo-9626",
+     "matrixorigin__matrixone-24632",
+     "microsoft__apm-1553",
+     "mvanhorn__cli-printing-press-2086",
+     "nearai__ironclaw-3694",
+     "nearai__ironclaw-3735",
+     "raullenchai__Rapid-MLX-426",
+     "stablyai__orca-1934",
+     "ubugeeei-prod__vize-1281",
+     "ubugeeei-prod__vize-1508",
+     "ubugeeei-prod__vize-769",
+     "ubugeeei-prod__vize-774",
+     "withcoral__coral-1179",
+     "woodpecker-ci__woodpecker-6623"
+    ]
+   },
+   "only": [
+    "ivov__lisette-657"
+   ],
+   "missed": [],
+   "failures": {
+    "Tests failed": 108,
+    "No test result": 5,
+    "No change made": 3
+   },
+   "tokens": {
+    "median": 1000796,
+    "top": [
+     {
+      "task": "nearai__ironclaw-3694",
+      "value": 6034609
+     },
+     {
+      "task": "ubugeeei-prod__vize-1508",
+      "value": 5944525
+     },
+     {
+      "task": "ArcadeData__arcadedb-4455",
+      "value": 5337587
+     }
+    ]
+   },
+   "minutes": {
+    "median": 7.8,
+    "top": [
+     {
+      "task": "astral-sh__ruff-25567",
+      "value": 50.0
+     },
+     {
+      "task": "microsoft__typescript-go-4062",
+      "value": 50.0
+     },
+     {
+      "task": "docker__docker-agent-2992",
+      "value": 50.0
+     }
+    ]
+   },
+   "models": null
+  },
+  "copilot-fusion-high": {
+   "runs": [
+    {
+     "job": "20261114T124819Z-1",
+     "resolved": 65,
+     "trials": 108,
+     "timedOut": 1,
+     "credits": 3178
+    },
+    {
+     "job": "20261114T125147Z-1",
+     "resolved": 68,
+     "trials": 108,
+     "timedOut": 1,
+     "credits": 3217
+    },
+    {
+     "job": "20261114T125449Z-1",
+     "resolved": 71,
+     "trials": 108,
+     "timedOut": 2,
+     "credits": 3182
+    }
+   ],
+   "tasks": {
+    "always": 61,
+    "sometimes": [
+     "ArcadeData__arcadedb-4281",
+     "agno-agi__agno-8148",
+     "apache__hugegraph-3037",
+     "better-auth__better-auth-10070",
+     "cloudflare__vinext-1371",
+     "cloudflare__vinext-1574",
+     "fallow-rs__fallow-821",
+     "floci-io__floci-1021",
+     "floci-io__floci-1032",
+     "floci-io__floci-1209",
+     "floci-io__floci-1325",
+     "ivov__lisette-627",
+     "marimo-team__marimo-9766",
+     "mvanhorn__cli-printing-press-1920"
+    ],
+    "never": [
+     "HKUDS__nanobot-4274",
+     "Martian-Engineering__lossless-claw-814",
+     "Soju06__codex-lb-744",
+     "apache__dubbo-go-3357",
+     "apache__pulsar-25793",
+     "apache__pulsar-25865",
+     "apache__pulsar-25953",
+     "facebook__lexical-8676",
+     "fallow-rs__fallow-762",
+     "fathah__hermes-desktop-268",
+     "harbor-framework__harbor-1764",
+     "ivov__lisette-657",
+     "kestra-io__kestra-16450",
+     "kubernetes-sigs__kueue-11559",
+     "livekit__agents-5944",
+     "ludo-technologies__pyscn-548",
+     "marimo-team__marimo-9626",
+     "matrixorigin__matrixone-24632",
+     "microsoft__apm-1553",
+     "mikro-orm__mikro-orm-7799",
+     "mvanhorn__cli-printing-press-2086",
+     "nearai__ironclaw-3694",
+     "nearai__ironclaw-3735",
+     "pydantic__pydantic-ai-5842",
+     "raullenchai__Rapid-MLX-426",
+     "stablyai__orca-1934",
+     "teng-lin__notebooklm-py-826",
+     "ubugeeei-prod__vize-1281",
+     "ubugeeei-prod__vize-1508",
+     "ubugeeei-prod__vize-769",
+     "ubugeeei-prod__vize-774",
+     "withcoral__coral-1179",
+     "woodpecker-ci__woodpecker-6623"
+    ]
+   },
+   "only": [
+    "floci-io__floci-1209"
+   ],
+   "missed": [],
+   "failures": {
+    "Tests failed": 116,
+    "No test result": 4
+   },
+   "tokens": {
+    "median": 828076,
+    "top": [
+     {
+      "task": "kubernetes-sigs__kueue-11559",
+      "value": 28492951
+     },
+     {
+      "task": "ubugeeei-prod__vize-1508",
+      "value": 16138841
+     },
+     {
+      "task": "raullenchai__Rapid-MLX-426",
+      "value": 15699854
+     }
+    ]
+   },
+   "minutes": {
+    "median": 5.4,
+    "top": [
+     {
+      "task": "ArcadeData__arcadedb-4455",
+      "value": 50.1
+     },
+     {
+      "task": "floci-io__floci-1235",
+      "value": 50.0
+     },
+     {
+      "task": "kubernetes-sigs__kueue-11559",
+      "value": 45.7
+     }
+    ]
+   },
+   "models": {
+    "gpt-6-luna + gpt-6.1-sol": 230,
+    "claude-opus-5.5": 39,
+    "gpt-6.1-terra": 24,
+    "claude-opus-5.5 + gpt-6-luna + gpt-6.1-sol": 21,
+    "claude-opus-5.5 + gpt-6-luna": 6,
+    "gpt-6-luna": 3,
+    "claude-opus-5.5 + claude-sonnet-5.5 + gpt-6-luna + gpt-6.1-sol": 1
+   }
+  },
+  "copilot-fusion": {
+   "runs": [
+    {
+     "job": "20261113T223307Z-1",
+     "resolved": 68,
+     "trials": 108,
+     "timedOut": 0,
+     "credits": 1610
+    },
+    {
+     "job": "20261113T223410Z-1",
+     "resolved": 66,
+     "trials": 108,
+     "timedOut": 0,
+     "credits": 1489
+    },
+    {
+     "job": "20261113T223531Z-1",
+     "resolved": 68,
+     "trials": 108,
+     "timedOut": 0,
+     "credits": 1469
+    }
+   ],
+   "tasks": {
+    "always": 61,
+    "sometimes": [
+     "cloudflare__vinext-1371",
+     "cloudflare__vinext-1837",
+     "danny-avila__LibreChat-13166",
+     "facebook__lexical-8676",
+     "fallow-rs__fallow-821",
+     "floci-io__floci-1032",
+     "ludo-technologies__pyscn-548",
+     "marimo-team__marimo-9766",
+     "nesquena__hermes-webui-3069",
+     "tursodatabase__turso-7117",
+     "woodpecker-ci__woodpecker-6623"
+    ],
+    "never": [
+     "HKUDS__nanobot-4274",
+     "Martian-Engineering__lossless-claw-814",
+     "PerryTS__perry-3982",
+     "Soju06__codex-lb-744",
+     "agno-agi__agno-8148",
+     "apache__dubbo-go-3357",
+     "apache__pulsar-25793",
+     "apache__pulsar-25865",
+     "apache__pulsar-25953",
+     "fallow-rs__fallow-762",
+     "fathah__hermes-desktop-268",
+     "floci-io__floci-1021",
+     "floci-io__floci-1209",
+     "floci-io__floci-1235",
+     "floci-io__floci-1325",
+     "harbor-framework__harbor-1764",
+     "ivov__lisette-657",
+     "kestra-io__kestra-16450",
+     "kubernetes-sigs__kueue-11559",
+     "livekit__agents-5944",
+     "marimo-team__marimo-9626",
+     "matrixorigin__matrixone-24632",
+     "microsoft__apm-1553",
+     "mikro-orm__mikro-orm-7799",
+     "mvanhorn__cli-printing-press-2086",
+     "nearai__ironclaw-3694",
+     "nearai__ironclaw-3735",
+     "pydantic__pydantic-ai-5842",
+     "raullenchai__Rapid-MLX-426",
+     "stablyai__orca-1934",
+     "teng-lin__notebooklm-py-826",
+     "ubugeeei-prod__vize-1281",
+     "ubugeeei-prod__vize-1508",
+     "ubugeeei-prod__vize-769",
+     "ubugeeei-prod__vize-774",
+     "withcoral__coral-1179"
+    ]
+   },
+   "only": [
+    "woodpecker-ci__woodpecker-6623"
+   ],
+   "missed": [
+    "PerryTS__perry-3982",
+    "floci-io__floci-1021"
+   ],
+   "failures": {
+    "Tests failed": 122
+   },
+   "tokens": {
+    "median": 849278,
+    "top": [
+     {
+      "task": "kubernetes-sigs__kueue-11559",
+      "value": 5952462
+     },
+     {
+      "task": "nearai__ironclaw-3694",
+      "value": 5855601
+     },
+     {
+      "task": "cloudflare__vinext-1837",
+      "value": 5191791
+     }
+    ]
+   },
+   "minutes": {
+    "median": 5.1,
+    "top": [
+     {
+      "task": "ArcadeData__arcadedb-4455",
+      "value": 31.5
+     },
+     {
+      "task": "astral-sh__ruff-25567",
+      "value": 30.9
+     },
+     {
+      "task": "kubernetes-sigs__kueue-11559",
+      "value": 30.4
+     }
+    ]
+   },
+   "models": {
+    "gpt-6.1-sol": 138,
+    "gpt-6.1-terra": 102,
+    "gpt-6-luna": 74,
+    "claude-opus-5.5": 10
+   }
+  },
+  "copilot-gpt-6.1-sol": {
+   "runs": [
+    {
+     "job": "20261114T042619Z-1",
+     "resolved": 66,
+     "trials": 108,
+     "timedOut": 0,
+     "credits": 4385
+    },
+    {
+     "job": "20261114T042923Z-1",
+     "resolved": 70,
+     "trials": 108,
+     "timedOut": 1,
+     "credits": 4366
+    },
+    {
+     "job": "20261114T043249Z-1",
+     "resolved": 65,
+     "trials": 108,
+     "timedOut": 0,
+     "credits": 4468
+    }
+   ],
+   "tasks": {
+    "always": 61,
+    "sometimes": [
+     "ArcadeData__arcadedb-4281",
+     "HKUDS__nanobot-4129",
+     "cloudflare__vinext-1574",
+     "fallow-rs__fallow-821",
+     "floci-io__floci-1021",
+     "floci-io__floci-1235",
+     "floci-io__floci-1325",
+     "marimo-team__marimo-9754",
+     "marimo-team__marimo-9766",
+     "mui__base-ui-4849",
+     "open-jarvis__OpenJarvis-465"
+    ],
+    "never": [
+     "HKUDS__nanobot-4274",
+     "Martian-Engineering__lossless-claw-814",
+     "Soju06__codex-lb-744",
+     "agno-agi__agno-8148",
+     "apache__dubbo-go-3357",
+     "apache__pulsar-25793",
+     "apache__pulsar-25865",
+     "apache__pulsar-25953",
+     "facebook__lexical-8676",
+     "fallow-rs__fallow-762",
+     "fathah__hermes-desktop-268",
+     "floci-io__floci-1032",
+     "floci-io__floci-1209",
+     "harbor-framework__harbor-1764",
+     "ivov__lisette-657",
+     "kestra-io__kestra-16450",
+     "kubernetes-sigs__kueue-11559",
+     "livekit__agents-5944",
+     "ludo-technologies__pyscn-548",
+     "marimo-team__marimo-9626",
+     "matrixorigin__matrixone-24632",
+     "microsoft__apm-1553",
+     "mikro-orm__mikro-orm-7799",
+     "mozilla-ai__any-llm-1121",
+     "mvanhorn__cli-printing-press-2086",
+     "nearai__ironclaw-3694",
+     "nearai__ironclaw-3735",
+     "raullenchai__Rapid-MLX-426",
+     "stablyai__orca-1934",
+     "teng-lin__notebooklm-py-826",
+     "ubugeeei-prod__vize-1281",
+     "ubugeeei-prod__vize-1508",
+     "ubugeeei-prod__vize-769",
+     "ubugeeei-prod__vize-774",
+     "withcoral__coral-1179",
+     "woodpecker-ci__woodpecker-6623"
+    ]
+   },
+   "only": [],
+   "missed": [],
+   "failures": {
+    "Tests failed": 118,
+    "No change made": 3,
+    "No test result": 2
+   },
+   "tokens": {
+    "median": 976258,
+    "top": [
+     {
+      "task": "nearai__ironclaw-3694",
+      "value": 10515366
+     },
+     {
+      "task": "ubugeeei-prod__vize-1508",
+      "value": 7270404
+     },
+     {
+      "task": "ArcadeData__arcadedb-4455",
+      "value": 5985499
+     }
+    ]
+   },
+   "minutes": {
+    "median": 5.7,
+    "top": [
+     {
+      "task": "astral-sh__ruff-25567",
+      "value": 50.0
+     },
+     {
+      "task": "ArcadeData__arcadedb-4455",
+      "value": 34.0
+     },
+     {
+      "task": "kubernetes-sigs__kueue-11559",
+      "value": 33.3
+     }
+    ]
+   },
+   "models": null
+  }
+ },
+ "pro-hard51": {
+  "copilot-opus": {
+   "runs": [
+    {
+     "job": "20261119T113028Z-1",
+     "resolved": 46,
+     "trials": 51,
+     "timedOut": 0,
+     "credits": 4081
+    },
+    {
+     "job": "20261119T113342Z-1",
+     "resolved": 47,
+     "trials": 51,
+     "timedOut": 0,
+     "credits": 3951
+    },
+    {
+     "job": "20261119T113641Z-1",
+     "resolved": 47,
+     "trials": 51,
+     "timedOut": 1,
+     "credits": 3828
+    }
+   ],
+   "tasks": {
+    "always": 45,
+    "sometimes": [
+     "internetarchive__openlibrary-7cbfb81",
+     "protonmail__webclients-5f0745d",
+     "qutebrowser__qutebrowser-c09e143"
+    ],
+    "never": [
+     "flipt-io__flipt-3d5a345",
+     "flipt-io__flipt-c188284",
+     "flipt-io__flipt-cd18e54"
+    ]
+   },
+   "only": [
+    "internetarchive__openlibrary-7cbfb81"
+   ],
+   "missed": [],
+   "failures": {
+    "Tests failed": 13
+   },
+   "tokens": {
+    "median": 818228,
+    "top": [
+     {
+      "task": "tutao__tutanota-f373ac3",
+      "value": 5124284
+     },
+     {
+      "task": "internetarchive__openlibrary-b67138b",
+      "value": 3544794
+     },
+     {
+      "task": "flipt-io__flipt-2ca5dfb",
+      "value": 3113172
+     }
+    ]
+   },
+   "minutes": {
+    "median": 6.6,
+    "top": [
+     {
+      "task": "protonmail__webclients-e65cc5f",
+      "value": 50.0
+     },
+     {
+      "task": "element-hq__element-web-5dfde12",
+      "value": 34.5
+     },
+     {
+      "task": "gravitational__teleport-2b15263",
+      "value": 31.8
+     }
+    ]
+   },
+   "models": null
+  },
+  "copilot-gpt-6.1-sol": {
+   "runs": [
+    {
+     "job": "20261119T045251Z-1",
+     "resolved": 43,
+     "trials": 51,
+     "timedOut": 0,
+     "credits": 1880
+    },
+    {
+     "job": "20261119T050349Z-1",
+     "resolved": 45,
+     "trials": 51,
+     "timedOut": 0,
+     "credits": 1926
+    },
+    {
+     "job": "20261119T050700Z-1",
+     "resolved": 42,
+     "trials": 51,
+     "timedOut": 0,
+     "credits": 1900
+    }
+   ],
+   "tasks": {
+    "always": 41,
+    "sometimes": [
+     "flipt-io__flipt-c172805",
+     "internetarchive__openlibrary-0dc5b20",
+     "internetarchive__openlibrary-b67138b",
+     "protonmail__webclients-5f0745d",
+     "protonmail__webclients-c5a2089"
+    ],
+    "never": [
+     "ansible__ansible-40ade1f",
+     "flipt-io__flipt-3d5a345",
+     "flipt-io__flipt-c188284",
+     "flipt-io__flipt-cd18e54",
+     "internetarchive__openlibrary-7cbfb81"
+    ]
+   },
+   "only": [],
+   "missed": [
+    "ansible__ansible-40ade1f"
+   ],
+   "failures": {
+    "Tests failed": 19,
+    "No test result": 4
+   },
+   "tokens": {
+    "median": 873064,
+    "top": [
+     {
+      "task": "tutao__tutanota-f373ac3",
+      "value": 3629274
+     },
+     {
+      "task": "flipt-io__flipt-3d5a345",
+      "value": 2264798
+     },
+     {
+      "task": "protonmail__webclients-e65cc5f",
+      "value": 2241637
+     }
+    ]
+   },
+   "minutes": {
+    "median": 6.5,
+    "top": [
+     {
+      "task": "gravitational__teleport-2b15263",
+      "value": 22.3
+     },
+     {
+      "task": "gravitational__teleport-65438e6",
+      "value": 22.1
+     },
+     {
+      "task": "protonmail__webclients-e65cc5f",
+      "value": 19.3
+     }
+    ]
+   },
+   "models": null
+  },
+  "copilot-fusion-high": {
+   "runs": [
+    {
+     "job": "20261119T063914Z-1",
+     "resolved": 41,
+     "trials": 51,
+     "timedOut": 0,
+     "credits": 2306
+    },
+    {
+     "job": "20261119T064444Z-1",
+     "resolved": 39,
+     "trials": 51,
+     "timedOut": 0,
+     "credits": 2182
+    },
+    {
+     "job": "20261119T070232Z-1",
+     "resolved": 42,
+     "trials": 51,
+     "timedOut": 1,
+     "credits": 2205
+    }
+   ],
+   "tasks": {
+    "always": 38,
+    "sometimes": [
+     "ansible__ansible-40ade1f",
+     "future-architect__vuls-ca3f6b1",
+     "internetarchive__openlibrary-53d376b",
+     "navidrome__navidrome-69e0a26",
+     "protonmail__webclients-e65cc5f"
+    ],
+    "never": [
+     "flipt-io__flipt-3d5a345",
+     "flipt-io__flipt-c188284",
+     "flipt-io__flipt-cd18e54",
+     "internetarchive__openlibrary-0dc5b20",
+     "internetarchive__openlibrary-7cbfb81",
+     "internetarchive__openlibrary-b67138b",
+     "protonmail__webclients-c5a2089",
+     "tutao__tutanota-f373ac3"
+    ]
+   },
+   "only": [],
+   "missed": [
+    "internetarchive__openlibrary-0dc5b20",
+    "internetarchive__openlibrary-b67138b",
+    "protonmail__webclients-c5a2089",
+    "tutao__tutanota-f373ac3"
+   ],
+   "failures": {
+    "Tests failed": 23,
+    "No test result": 8
+   },
+   "tokens": {
+    "median": 2920627,
+    "top": [
+     {
+      "task": "tutao__tutanota-f373ac3",
+      "value": 21191394
+     },
+     {
+      "task": "navidrome__navidrome-874b17b",
+      "value": 14377996
+     },
+     {
+      "task": "internetarchive__openlibrary-53d376b",
+      "value": 14294570
+     }
+    ]
+   },
+   "minutes": {
+    "median": 16.8,
+    "top": [
+     {
+      "task": "protonmail__webclients-e65cc5f",
+      "value": 50.0
+     },
+     {
+      "task": "tutao__tutanota-f373ac3",
+      "value": 47.9
+     },
+     {
+      "task": "protonmail__webclients-5f0745d",
+      "value": 44.0
+     }
+    ]
+   },
+   "models": {
+    "gpt-6.1-terra": 111,
+    "claude-opus-5.5": 27,
+    "gpt-6-luna + gpt-6.1-sol": 14,
+    "claude-opus-5.5 + gpt-6-luna + gpt-6.1-sol": 1
+   }
+  },
+  "copilot-sonnet": {
+   "runs": [
+    {
+     "job": "20261119T124818Z-1",
+     "resolved": 39,
+     "trials": 51,
+     "timedOut": 0,
+     "credits": 1354
+    },
+    {
+     "job": "20261119T132501Z-1",
+     "resolved": 40,
+     "trials": 51,
+     "timedOut": 1,
+     "credits": 1332
+    },
+    {
+     "job": "20261119T132530Z-1",
+     "resolved": 42,
+     "trials": 51,
+     "timedOut": 1,
+     "credits": 1388
+    }
+   ],
+   "tasks": {
+    "always": 37,
+    "sometimes": [
+     "ansible__ansible-40ade1f",
+     "ansible__ansible-c1f2df4",
+     "ansible__ansible-de5858f",
+     "internetarchive__openlibrary-53d376b",
+     "internetarchive__openlibrary-b67138b",
+     "qutebrowser__qutebrowser-3e21c82"
+    ],
+    "never": [
+     "flipt-io__flipt-3d5a345",
+     "flipt-io__flipt-c172805",
+     "flipt-io__flipt-c188284",
+     "flipt-io__flipt-cd18e54",
+     "internetarchive__openlibrary-6e889f4",
+     "internetarchive__openlibrary-7cbfb81",
+     "navidrome__navidrome-69e0a26",
+     "protonmail__webclients-e65cc5f"
+    ]
+   },
+   "only": [],
+   "missed": [
+    "flipt-io__flipt-c172805",
+    "internetarchive__openlibrary-6e889f4",
+    "navidrome__navidrome-69e0a26",
+    "protonmail__webclients-e65cc5f"
+   ],
+   "failures": {
+    "Tests failed": 29,
+    "No test result": 3
+   },
+   "tokens": {
+    "median": 507636,
+    "top": [
+     {
+      "task": "tutao__tutanota-f373ac3",
+      "value": 2822291
+     },
+     {
+      "task": "protonmail__webclients-715dbd4",
+      "value": 2608999
+     },
+     {
+      "task": "flipt-io__flipt-cd18e54",
+      "value": 2308540
+     }
+    ]
+   },
+   "minutes": {
+    "median": 3.6,
+    "top": [
+     {
+      "task": "element-hq__element-web-66d0b31",
+      "value": 50.0
+     },
+     {
+      "task": "protonmail__webclients-e65cc5f",
+      "value": 45.6
+     },
+     {
+      "task": "gravitational__teleport-2b15263",
+      "value": 26.8
+     }
+    ]
+   },
+   "models": null
+  }
+ }
+}
