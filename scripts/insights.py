@@ -68,9 +68,18 @@ def why(trial: leaderboard.Trial, facts: dict) -> str:
     return "Tests failed"
 
 
+def valid_trials(mirror: Path, lane: str, arm: dict) -> list[leaderboard.Trial]:
+    """
+    The arm's trials in the jobs the leaderboard lists. An invalid trial counts
+    nowhere, as if it had not run, as the leaderboard counts it.
+    """
+    jobs = {run["job"] for run in arm["runs"]}
+    return [t for t in leaderboard.read_trials(mirror, arm["name"], lane) if t.job in jobs and not t.invalid]
+
+
 def arm_insights(mirror: Path, lane: str, arm: dict, everyone: dict[str, dict[str, list[bool]]]) -> dict:
     jobs = [run["job"] for run in arm["runs"]]
-    trials = [t for t in leaderboard.read_trials(mirror, arm["name"], lane) if t.job in jobs]
+    trials = valid_trials(mirror, lane, arm)
     facts = {(t.job, t.task): trial_facts(t) for t in trials}
 
     runs = []
@@ -147,9 +156,10 @@ def main() -> None:
         everyone = {}
         for arm in entry["arms"]:
             jobs = {run["job"] for run in arm["runs"]}
-            trials = [t for t in leaderboard.read_trials(mirror, arm["name"], lane) if t.job in jobs]
-            if {t.job for t in trials} != jobs:
-                sys.exit(f"{mirror}: {lane}/{arm['name']} is missing a job the leaderboard lists; mirror it first")
+            missing = [job for job in jobs if not (mirror / "results" / lane / arm["name"] / job).is_dir()]
+            if missing:
+                sys.exit(f"{mirror}: {lane}/{arm['name']} lacks {', '.join(sorted(missing))}, which the leaderboard lists; mirror it first")
+            trials = valid_trials(mirror, lane, arm)
             by_task: dict[str, list[bool]] = {}
             for t in trials:
                 by_task.setdefault(t.task, []).append(t.resolved)

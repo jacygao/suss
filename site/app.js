@@ -291,7 +291,7 @@
     }
     cards.push(insCard("Heaviest trials", "The trials that took the most tokens and the most time.",
       heavy("Tokens", ins.tokens.median, ins.tokens.top, function (v) { return tokens(v); })
-        .concat(heavy("Time", ins.minutes.median, ins.minutes.top, function (v) { return v.toFixed(1) + " min"; }))));
+        .concat(heavy("Time", ins.minutes.median, ins.minutes.top, function (v) { return v == null ? "—" : v.toFixed(1) + " min"; }))));
 
     if (ins.models) {
       var picks = Object.keys(ins.models), total = picks.reduce(function (t, k) { return t + ins.models[k]; }, 0);
@@ -303,12 +303,13 @@
     return out;
   }
 
+  // A failed load is forgotten, so the next visit to an insights page tries again.
   var insights = null;
   function loadInsights() {
     if (!insights) {
       insights = fetch("insights.json", { cache: "no-cache" })
-        .then(function (res) { return res.ok ? res.json() : {}; })
-        .catch(function () { return {}; });
+        .then(function (res) { if (!res.ok) throw new Error("insights.json: HTTP " + res.status); return res.json(); })
+        .catch(function (err) { insights = null; throw err; });
     }
     return insights;
   }
@@ -353,6 +354,9 @@
         // A later navigation has drawn something else meanwhile.
         if (route().arm !== arm) return;
         app.replaceChildren.apply(app, insightsView(current, arm, (all[at.lane] || {})[arm.name]));
+      }, function (err) {
+        if (route().arm !== arm) return;
+        app.replaceChildren(el("p", { class: "note", text: "The insights could not load: " + err.message + ". Reload the page to try again." }));
       });
       return;
     }
