@@ -958,6 +958,88 @@
    },
    "models": null
   },
+  "hve-sol": {
+   "runs": [
+    {
+     "job": "20261119T202751Z-1",
+     "resolved": 44,
+     "trials": 51,
+     "timedOut": 0,
+     "credits": 6143
+    },
+    {
+     "job": "20261119T203120Z-1",
+     "resolved": 42,
+     "trials": 51,
+     "timedOut": 0,
+     "credits": 6151
+    },
+    {
+     "job": "20261119T203425Z-1",
+     "resolved": 45,
+     "trials": 51,
+     "timedOut": 0,
+     "credits": 6118
+    }
+   ],
+   "tasks": {
+    "always": 42,
+    "sometimes": [
+     "ansible__ansible-c1f2df4",
+     "internetarchive__openlibrary-0dc5b20",
+     "protonmail__webclients-e65cc5f"
+    ],
+    "never": [
+     "ansible__ansible-40ade1f",
+     "flipt-io__flipt-3d5a345",
+     "flipt-io__flipt-c188284",
+     "flipt-io__flipt-cd18e54",
+     "internetarchive__openlibrary-7cbfb81",
+     "navidrome__navidrome-69e0a26"
+    ]
+   },
+   "only": [],
+   "missed": [],
+   "failures": {
+    "Tests failed": 19,
+    "No test result": 3
+   },
+   "tokens": {
+    "median": 5303063,
+    "top": [
+     {
+      "task": "tutao__tutanota-f373ac3",
+      "value": 12978493
+     },
+     {
+      "task": "protonmail__webclients-e65cc5f",
+      "value": 9534890
+     },
+     {
+      "task": "protonmail__webclients-715dbd4",
+      "value": 9514459
+     }
+    ]
+   },
+   "minutes": {
+    "median": 13.5,
+    "top": [
+     {
+      "task": "protonmail__webclients-e65cc5f",
+      "value": 32.3
+     },
+     {
+      "task": "gravitational__teleport-2b15263",
+      "value": 29.6
+     },
+     {
+      "task": "gravitational__teleport-65438e6",
+      "value": 25.0
+     }
+    ]
+   },
+   "models": null
+  },
   "copilot-gpt-6.1-sol": {
    "runs": [
     {
@@ -1000,9 +1082,7 @@
     ]
    },
    "only": [],
-   "missed": [
-    "ansible__ansible-40ade1f"
-   ],
+   "missed": [],
    "failures": {
     "Tests failed": 19,
     "No test result": 4
@@ -1188,7 +1268,6 @@
    "missed": [
     "flipt-io__flipt-c172805",
     "internetarchive__openlibrary-6e889f4",
-    "navidrome__navidrome-69e0a26",
     "protonmail__webclients-e65cc5f"
    ],
    "failures": {
