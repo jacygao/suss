@@ -5,7 +5,9 @@ records what it was given, so no test calls Copilot.
 
 import asyncio
 import json
+import os
 import re
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -175,3 +177,18 @@ def test_links_a_sandbox_left_at_the_judges_files_are_replaced_and_never_written
     assert kept.read_text() == "untouched"
     for name in ("judge.log", "rubrics_results.json", "reward.json", "reward.txt"):
         assert not (made.trial_paths.verifier_dir / name).is_symlink(), name
+
+
+def test_a_fifo_a_sandbox_left_counts_as_missing_and_never_blocks_the_verifier(tmp_path, monkeypatch):
+    made = verifier(tmp_path)
+    (made.trial_paths.agent_dir / "model.patch").write_text("diff\n")
+    os.mkfifo(made.trial_paths.verifier_dir / "tests_reward.txt")
+    found = {}
+    # In a thread of its own, so a verifier that blocks fails the test rather than hanging it.
+    worker = threading.Thread(target=lambda: found.update(judge_and_combine(made, monkeypatch)), daemon=True)
+
+    worker.start()
+    worker.join(timeout=30)
+
+    assert not worker.is_alive(), "the verifier blocked opening a FIFO"
+    assert found["tests_reward"] == 0.0

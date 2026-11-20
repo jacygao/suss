@@ -178,10 +178,12 @@ class JudgedVerifier(ReplayVerifier):
 def _read_plain(path: Path) -> bytes | None:
     """
     The bytes of the regular file at `path`, or None when there is none, or it
-    is a link, which a sandbox could point at any file on the host.
+    is a link, which a sandbox could point at any file on the host, or anything
+    else that is not a regular file.
     """
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        # Non-blocking, since opening a FIFO a sandbox left would wait for a writer.
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         return None
     with os.fdopen(descriptor, "rb") as file:
