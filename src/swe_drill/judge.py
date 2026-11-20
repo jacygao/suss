@@ -11,7 +11,10 @@ import asyncio
 import json
 import math
 import os
+import shutil
+import stat
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -70,33 +73,39 @@ class JudgedVerifier(ReplayVerifier):
         Raises what ReplayVerifier raises, and then runs no judge.
         """
         await super().verify()
-        await self._judge()
-        return VerifierResult(rewards=self._combine())
+        trial_dir = self.trial_paths.verifier_dir.parent
+        private = Path(tempfile.mkdtemp(prefix=".judge-", dir=trial_dir))
+        try:
+            await self._judge(private)
+            reward = self._combine(private)
+            self._publish(private)
+        finally:
+            shutil.rmtree(private, ignore_errors=True)
+        return VerifierResult(rewards=reward)
 
-    async def _judge(self) -> None:
+    async def _judge(self, private: Path) -> None:
         """
         Run the copy's evaluate_rubrics.py on the agent's patch, writing
-        verifier/rubrics_results.json, and what it prints to verifier/judge.log.
+        rubrics_results.json, and what it prints to judge.log, in `private`.
 
-        Its process alone gets the token. Whatever the sandbox left at
-        rubrics_results.json is removed first, since the tests could have
-        written one.
+        Its process alone gets the token. It reads the patch from a copy in
+        `private`, and nothing it reads or writes is in a directory a sandbox
+        can write to.
         """
-        verifier_dir = self.trial_paths.verifier_dir
-        results = verifier_dir / RESULTS_NAME
-        results.unlink(missing_ok=True)
-        model_patch = self.trial_paths.agent_dir / PATCH_NAME
-        patch = model_patch if model_patch.is_file() else verifier_dir / SANDBOX_PATCH_NAME
+        patch = _read_plain(self.trial_paths.agent_dir / PATCH_NAME)
+        if patch is None:
+            patch = _read_plain(self.trial_paths.verifier_dir / SANDBOX_PATCH_NAME) or b""
+        (private / PATCH_NAME).write_bytes(patch)
         env = {
             "PATH": os.environ.get("PATH", ""),
             "EVAL_API_KEY": self._token,
             "EVAL_BASE_URL": BASE_URL,
             "EVAL_MODEL": str(self.model),
         }
-        with (verifier_dir / LOG_NAME).open("wb") as log:
+        with (private / LOG_NAME).open("wb") as log:
             process = await asyncio.create_subprocess_exec(
                 sys.executable, "-I", "-c", RUNNER,
-                str(self.task.paths.tests_dir), str(patch), str(results),
+                str(self.task.paths.tests_dir), str(private / PATCH_NAME), str(private / RESULTS_NAME),
                 env=env, stdout=log, stderr=asyncio.subprocess.STDOUT,
             )
             try:
@@ -107,24 +116,25 @@ class JudgedVerifier(ReplayVerifier):
                     process.kill()
                     await process.wait()
 
-    def _combine(self) -> dict[str, Any]:
+    def _combine(self, private: Path) -> dict[str, Any]:
         """
-        The reward test.sh gives from tests_reward.txt and
-        rubrics_results.json, written to reward.json and reward.txt: 1 when
-        the tests passed and the judge passed every must-have item.
+        The reward test.sh gives from the sandbox's tests_reward.txt and the
+        judge's rubrics_results.json in `private`, written to reward.json and
+        reward.txt there: 1 when the tests passed and the judge passed every
+        must-have item.
 
-        A file that is missing or unreadable, or a value that is not a finite
-        number, counts as a failure.
+        A file that is missing, unreadable or a link, or a value that is not a
+        finite number, counts as a failure.
         """
-        verifier_dir = self.trial_paths.verifier_dir
         try:
-            tests_reward = float((verifier_dir / TESTS_REWARD_NAME).read_text().strip() or "0")
-        except (OSError, ValueError):
+            text = (_read_plain(self.trial_paths.verifier_dir / TESTS_REWARD_NAME) or b"").decode()
+            tests_reward = float(text.strip() or "0")
+        except (UnicodeDecodeError, ValueError):
             tests_reward = 0.0
         if not math.isfinite(tests_reward):
             tests_reward = 0.0
         try:
-            rubrics = json.loads((verifier_dir / RESULTS_NAME).read_text())
+            rubrics = json.loads((private / RESULTS_NAME).read_text())
         except (OSError, ValueError):
             rubrics = {}
         if not isinstance(rubrics, dict):
@@ -138,9 +148,46 @@ class JudgedVerifier(ReplayVerifier):
             "rubrics_agg_score": _score(rubrics.get("agg_score")),
             "overall_pass": overall_pass,
         }
-        self.trial_paths.reward_json_path.write_text(json.dumps(reward, indent=2))
-        self.trial_paths.reward_text_path.write_text(str(reward["reward"]))
+        (private / self.trial_paths.reward_json_path.name).write_text(json.dumps(reward, indent=2))
+        (private / self.trial_paths.reward_text_path.name).write_text(str(reward["reward"]))
         return reward
+
+    def _publish(self, private: Path) -> None:
+        """
+        Move the judge's files from `private` into the verifier directory,
+        and remove what a sandbox left at the name of one the judge did not
+        write.
+
+        A rename replaces whatever a sandbox left at each name, a link
+        included, and never writes through it. A name it cannot replace, as
+        when a sandbox left a directory there, is left as it is.
+        """
+        names = (RESULTS_NAME, LOG_NAME, self.trial_paths.reward_json_path.name,
+                 self.trial_paths.reward_text_path.name)
+        for name in names:
+            target = self.trial_paths.verifier_dir / name
+            try:
+                if (private / name).exists():
+                    os.replace(private / name, target)
+                else:
+                    target.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _read_plain(path: Path) -> bytes | None:
+    """
+    The bytes of the regular file at `path`, or None when there is none, or it
+    is a link, which a sandbox could point at any file on the host.
+    """
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    with os.fdopen(descriptor, "rb") as file:
+        if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
+            return None
+        return file.read()
 
 
 def _score(value: Any) -> float:

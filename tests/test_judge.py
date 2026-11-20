@@ -50,18 +50,23 @@ def verifier(tmp_path: Path, judge: str = STAND_IN) -> JudgedVerifier:
     return made
 
 
-def judge_and_combine(made: JudgedVerifier) -> dict:
-    asyncio.run(made._judge())
-    return made._combine()
+def judge_and_combine(made: JudgedVerifier, monkeypatch) -> dict:
+    """What verify() returns, with ReplayVerifier's own grading a stand-in that does nothing."""
+
+    async def graded(self):
+        return None
+
+    monkeypatch.setattr(ReplayVerifier, "verify", graded)
+    return asyncio.run(made.verify()).rewards
 
 
-def test_the_judge_runs_on_the_host_with_the_token_and_model_and_the_agents_own_patch(tmp_path):
+def test_the_judge_runs_on_the_host_with_the_token_and_model_and_the_agents_own_patch(tmp_path, monkeypatch):
     made = verifier(tmp_path)
     (made.trial_paths.agent_dir / "model.patch").write_text("diff --git a/x b/x\n")
     (made.trial_paths.verifier_dir / "agent.patch").write_text("what the sandbox left\n")
     (made.trial_paths.verifier_dir / "tests_reward.txt").write_text("1.0")
 
-    reward = judge_and_combine(made)
+    reward = judge_and_combine(made, monkeypatch)
 
     seen = json.loads((made.trial_paths.verifier_dir / "rubrics_results.json").read_text())["seen"]
     assert seen["key"] == "gh-1"
@@ -76,49 +81,53 @@ def test_the_judge_runs_on_the_host_with_the_token_and_model_and_the_agents_own_
         "reward": 1.0, "tests_reward": 1.0, "must_have_pass": True,
         "rubrics_agg_score": 0.75, "overall_pass": True,
     }
-    assert json.loads(made.trial_paths.reward_json_path.read_text()) == reward
+    assert json.loads(made.trial_paths.reward_json_path.read_text()) == {
+        **reward, "must_have_pass": True, "overall_pass": True,
+    }
     assert made.trial_paths.reward_text_path.read_text() == "1.0"
+    assert (made.trial_paths.verifier_dir / "judge.log").is_file()
+    assert [p.name for p in (tmp_path / "trial").iterdir() if p.name.startswith(".judge-")] == []
 
 
-def test_a_trial_with_no_model_patch_is_judged_on_the_patch_test_sh_left(tmp_path):
+def test_a_trial_with_no_model_patch_is_judged_on_the_patch_test_sh_left(tmp_path, monkeypatch):
     made = verifier(tmp_path)
     (made.trial_paths.verifier_dir / "agent.patch").write_text("from test.sh\n")
 
-    judge_and_combine(made)
+    judge_and_combine(made, monkeypatch)
 
     seen = json.loads((made.trial_paths.verifier_dir / "rubrics_results.json").read_text())["seen"]
     assert seen["patch"] == "from test.sh\n"
 
 
-def test_a_verdict_the_sandbox_left_is_never_counted(tmp_path):
+def test_a_verdict_the_sandbox_left_is_never_counted(tmp_path, monkeypatch):
     made = verifier(tmp_path, judge="import sys\ndef main():\n    return 1\n")
     (made.trial_paths.agent_dir / "model.patch").write_text("diff\n")
     (made.trial_paths.verifier_dir / "tests_reward.txt").write_text("1.0")
     # The tests run code the agent wrote, which could write a passing verdict.
     (made.trial_paths.verifier_dir / "rubrics_results.json").write_text('{"must_have_pass": true}')
 
-    reward = judge_and_combine(made)
+    reward = judge_and_combine(made, monkeypatch)
 
-    assert reward["must_have_pass"] is False
-    assert reward["reward"] == 0.0
+    assert (reward["must_have_pass"], reward["reward"]) == (0.0, 0.0)
+    assert not (made.trial_paths.verifier_dir / "rubrics_results.json").exists()
 
 
-def test_failed_tests_fail_the_trial_whatever_the_judge_says(tmp_path):
+def test_failed_tests_fail_the_trial_whatever_the_judge_says(tmp_path, monkeypatch):
     made = verifier(tmp_path)
     (made.trial_paths.agent_dir / "model.patch").write_text("diff\n")
     (made.trial_paths.verifier_dir / "tests_reward.txt").write_text("0.0")
 
-    reward = judge_and_combine(made)
+    reward = judge_and_combine(made, monkeypatch)
 
-    assert (reward["reward"], reward["must_have_pass"]) == (0.0, True)
+    assert (reward["reward"], reward["must_have_pass"]) == (0.0, 1.0)
 
 
-def test_a_tests_reward_or_score_that_is_not_a_finite_number_counts_as_zero(tmp_path):
+def test_a_tests_reward_or_score_that_is_not_a_finite_number_counts_as_zero(tmp_path, monkeypatch):
     made = verifier(tmp_path, judge=STAND_IN.replace('"agg_score": 0.75', '"agg_score": "high"'))
     (made.trial_paths.agent_dir / "model.patch").write_text("diff\n")
     (made.trial_paths.verifier_dir / "tests_reward.txt").write_text("nan")
 
-    reward = judge_and_combine(made)
+    reward = judge_and_combine(made, monkeypatch)
 
     assert (reward["reward"], reward["tests_reward"], reward["rubrics_agg_score"]) == (0.0, 0.0, 0.0)
 
@@ -137,3 +146,32 @@ def test_the_verifier_reads_the_judges_model_from_swe_drill_toml_and_its_key_fro
     made = JudgedVerifier(drill_config=str(tmp_path / "swe-drill.toml"), arm="copilot-gpt", lane="atlas-rf")
 
     assert (made.model, made._token) == ("gemini-4-argon", "gh-from-dotenv")
+
+
+def test_a_patch_that_is_a_link_is_never_followed_to_the_file_it_names(tmp_path, monkeypatch):
+    made = verifier(tmp_path)
+    secret = tmp_path / ".env"
+    secret.write_text("COPILOT_GITHUB_TOKEN=gh-secret\n")
+    # A sandbox with its log directory mounted on the host could leave either.
+    (made.trial_paths.agent_dir / "model.patch").symlink_to(secret)
+    (made.trial_paths.verifier_dir / "agent.patch").symlink_to(secret)
+
+    judge_and_combine(made, monkeypatch)
+
+    seen = json.loads((made.trial_paths.verifier_dir / "rubrics_results.json").read_text())["seen"]
+    assert seen["patch"] == ""
+
+
+def test_links_a_sandbox_left_at_the_judges_files_are_replaced_and_never_written_through(tmp_path, monkeypatch):
+    made = verifier(tmp_path)
+    (made.trial_paths.agent_dir / "model.patch").write_text("diff\n")
+    kept = tmp_path / "project-file"
+    kept.write_text("untouched")
+    for name in ("judge.log", "rubrics_results.json", "reward.json", "reward.txt"):
+        (made.trial_paths.verifier_dir / name).symlink_to(kept)
+
+    judge_and_combine(made, monkeypatch)
+
+    assert kept.read_text() == "untouched"
+    for name in ("judge.log", "rubrics_results.json", "reward.json", "reward.txt"):
+        assert not (made.trial_paths.verifier_dir / name).is_symlink(), name

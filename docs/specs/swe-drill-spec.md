@@ -417,12 +417,14 @@ The tests and the judge run in different places:
 2. **The judge, on the host.** The agent job grades with
    `--verifier swe_drill.judge:JudgedVerifier`, which grades as
    `ReplayVerifier` does, then runs the copy's `tests/evaluate_rubrics.py` in a
-   process of its own, with the task's `tests/` directory, the agent's
-   `model.patch`, and `verifier/rubrics_results.json` in place of the paths the
-   script names in the container. A trial whose agent left no `model.patch` is
-   judged on `verifier/agent.patch`. `rubrics_results.json` is removed before
-   the judge runs. That process's environment is `PATH` and these, and nothing
-   else:
+   process of its own, with the task's `tests/` directory, a copy of the
+   agent's `model.patch`, and `rubrics_results.json` in place of the paths the
+   script names in the container. The copy and the judge's files are in a
+   directory of the trial's that no sandbox mounts, which is removed once they
+   are moved into `verifier/`. A trial whose agent left no `model.patch` is
+   judged on `verifier/agent.patch`. A patch or `tests_reward.txt` that is a
+   link counts as missing. The process's environment is `PATH` and these, and
+   nothing else:
 
    | Variable | Value |
    |---|---|
@@ -431,10 +433,12 @@ The tests and the judge run in different places:
    | `EVAL_MODEL` | `model` in `[lanes.atlas-rf.judge]` |
 
    `JudgedVerifier` then writes `reward.json` and `reward.txt` from
-   `tests_reward.txt` and `rubrics_results.json`, as the task's `test.sh` does.
-   A file that is missing or unreadable, or a value that is not a finite number,
-   counts as a failure. The judge's output is in `verifier/judge.log`, and
-   Harbor's verifier timeout covers it.
+   `tests_reward.txt` and `rubrics_results.json`, as the task's `test.sh` does,
+   and returns that reward to Harbor. A file that is missing or unreadable, or
+   a value that is not a finite number, counts as a failure. Each of its four
+   files is moved into `verifier/` by renaming it over whatever is there, and
+   a name the judge wrote nothing for is removed there. The judge's output is
+   in `verifier/judge.log`, and Harbor's verifier timeout covers it.
 
 The judge's verdicts are in `verifier/rubrics_results.json`. An item the judge
 gave no verdict on, as when every call to its model failed, is
