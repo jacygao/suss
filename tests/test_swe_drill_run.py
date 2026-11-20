@@ -1235,7 +1235,7 @@ def test_a_run_of_both_lanes_builds_each_from_its_own_download(atlas, capfd, mon
     assert [
         (value(record["argv"], "-p"), "-y" in record["argv"], "--ve" in record["argv"])
         for record in atlas.records("harbor")
-    ] == [("lanes/rebench", False, False)] * 2 + [("lanes/atlas-rf", True, True)] * 2
+    ] == [("lanes/rebench", False, False)] * 2 + [("lanes/atlas-rf", False, False)] * 2
 
 
 @pytest.mark.parametrize(
@@ -1379,12 +1379,9 @@ def write_atlas_toml(project: Project, lane_tables: str) -> None:
     project.write_toml(downloads=("swe_atlas_rf",), lane_tables=lane_tables)
 
 
-def test_the_atlas_rf_lane_runs_k_agent_jobs_giving_the_judge_its_model_and_the_copilot_token(
+def test_the_atlas_rf_lane_runs_k_agent_jobs_judged_on_the_host_with_no_token_given_to_harbor(
     atlas, monkeypatch
 ):
-    # SWE-drill's own environment does not count: the verifier's token comes from .env alone.
-    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "exported-in-the-shell")
-    monkeypatch.setenv("EVAL_MODEL", "exported-in-the-shell")
     monkeypatch.setenv("STAND_IN_DOCKER_CAPACITY", f"64 {64 * GIB}")
     write_dotenv(atlas, "COPILOT_GITHUB_TOKEN=gh-1\nOPENAI_API_KEY=sk-1\n")
 
@@ -1394,13 +1391,14 @@ def test_the_atlas_rf_lane_runs_k_agent_jobs_giving_the_judge_its_model_and_the_
     assert len(agents) == 2
     for agent in agents:
         argv = agent["argv"]
-        assert argv[:2] == ["run", "-y"]
-        assert value(argv, "-p") == "lanes/atlas-rf"
-        assert value(argv, "--verifier") == "swe_drill.replay:ReplayVerifier"
-        assert value(argv, "--ve") == "EVAL_MODEL=gemini-4-argon"
-        assert agent["env"]["COPILOT_GITHUB_TOKEN"] == "gh-1"
-        assert "EVAL_MODEL" not in agent["env"]
-        assert "OPENAI_API_KEY" not in agent["env"]
+        assert argv[:3] == ["run", "-p", "lanes/atlas-rf"]
+        assert value(argv, "--verifier") == "swe_drill.judge:JudgedVerifier"
+        kwargs = [token for flag, token in zip(argv, argv[1:]) if flag == "--verifier-kwarg"]
+        assert kwargs == ["drill_config=swe-drill.toml", "arm=peer-review", "lane=atlas-rf"]
+        assert "--ve" not in argv
+        # The verifier reads the token from .env on the host; Harbor is never given it.
+        assert "gh-1" not in agent["env"].values()
+        assert "sk-1" not in agent["env"].values()
         assert not any("gh-1" in token for token in argv)
     copy = atlas.directory / "lanes" / "atlas-rf" / ATLAS_TASK
     assert (copy / "tests" / "evaluate_rubrics.py").read_bytes().count(b"Copilot-Integration-Id") == 1
@@ -1470,7 +1468,7 @@ def test_one_atlas_rf_trial_that_does_not_fit_in_docker_is_refused(atlas, capfd,
     assert not (atlas.directory / "lanes").exists()
 
 
-def test_a_dry_run_of_atlas_rf_names_the_token_and_never_its_value(atlas, capfd, monkeypatch):
+def test_a_dry_run_of_atlas_rf_never_prints_the_token(atlas, capfd, monkeypatch):
     monkeypatch.setenv("DRY_RUN", "1")
     write_dotenv(atlas, "COPILOT_GITHUB_TOKEN=gh-secret\n")
 
@@ -1478,5 +1476,8 @@ def test_a_dry_run_of_atlas_rf_names_the_token_and_never_its_value(atlas, capfd,
 
     lines = capfd.readouterr().out.splitlines()
     assert "gh-secret" not in "\n".join(lines)
-    assert lines[0] == "# from .env: COPILOT_GITHUB_TOKEN"
-    assert "--verifier swe_drill.replay:ReplayVerifier --ve EVAL_MODEL=gemini-4-argon" in lines[1]
+    assert len(lines) == 1
+    assert (
+        "--verifier swe_drill.judge:JudgedVerifier --verifier-kwarg drill_config=swe-drill.toml"
+        " --verifier-kwarg arm=peer-review --verifier-kwarg lane=atlas-rf"
+    ) in lines[0]

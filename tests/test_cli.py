@@ -96,7 +96,7 @@ def spec_config(tmp_path: Path, lane: str) -> Config:
     "lane, reads",
     [
         ("rebench", ()),
-        ("atlas-rf", ("COPILOT_GITHUB_TOKEN", "EVAL_MODEL")),
+        ("atlas-rf", ()),
     ],
 )
 def test_each_lanes_commands_match_the_spec_token_for_token(tmp_path, lane, reads):
@@ -168,29 +168,23 @@ def test_a_rebench_agent_job_grades_its_trials_in_swe_drill_verifier_with_no_reg
     ]
 
 
-ATLAS_READS = ("COPILOT_GITHUB_TOKEN", "EVAL_MODEL")
-
-
-def test_an_atlas_rf_agent_job_grades_in_swe_drill_verifier_and_gives_the_judge_its_model(tmp_path):
+def test_an_atlas_rf_agent_job_grades_in_the_judged_verifier_and_passes_it_no_key_or_model(tmp_path):
     settings = dataclasses.replace(
-        with_dotenv(tmp_path, {"COPILOT_GITHUB_TOKEN": "gh-1", "EVAL_MODEL": "from-dotenv"}),
-        eval_model="gemini-4-argon",
+        with_dotenv(tmp_path, {"COPILOT_GITHUB_TOKEN": "gh-1"}), eval_model="gemini-4-argon"
     )
 
-    agent = harbor_commands(
-        settings, hosts(()), "atlas-rf", STAMP, 1, reads=ATLAS_READS, verifier_reads=ATLAS_READS
-    )
+    agent = harbor_commands(settings, hosts(()), "atlas-rf", STAMP, 1)
 
     assert agent.argv == [
-        "harbor", "run", "-y", "-p", "lanes/atlas-rf", "-e", "docker", "-n", "16", "-k", "1",
+        "harbor", "run", "-p", "lanes/atlas-rf", "-e", "docker", "-n", "16", "-k", "1",
         "-a", "swe_drill.agents.copilot_cli:CopilotCli", "--ak", "arm=peer-review", "--ak", "drill_config=swe-drill.toml",
-        "--ak", "lane=atlas-rf", "--verifier", "swe_drill.replay:ReplayVerifier",
-        "--ve", "EVAL_MODEL=gemini-4-argon",
+        "--ak", "lane=atlas-rf", "--verifier", "swe_drill.judge:JudgedVerifier",
+        "--verifier-kwarg", "drill_config=swe-drill.toml", "--verifier-kwarg", "arm=peer-review",
+        "--verifier-kwarg", "lane=atlas-rf",
         "--jobs-dir", "results/atlas-rf/peer-review", "--job-name", f"{STAMP}-1",
     ]
-    # Harbor fills the judge's key from its own environment, for test.sh's command alone.
-    assert agent.given == {"COPILOT_GITHUB_TOKEN": "gh-1"}
-    assert agent.withheld == ATLAS_READS
+    # The verifier reads the judge's key from .env itself, on the host.
+    assert agent.given == {}
     assert not any("gh-1" in token for token in agent.argv), "the judge's token is an argument"
 
 
@@ -338,7 +332,7 @@ def test_the_options_refused_beyond_those_swe_drill_sets_are_these(tmp_path):
         "config_path",
         "agent_import_path",
         "verifier_import_path",
-        "verifier_kwargs",
+        "verifier_env",
         "environment_import_path",
         "dataset_name_version",
         "registry_url",
@@ -632,8 +626,8 @@ def test_an_options_value_is_not_taken_for_a_positional_argument(tmp_path):
         (
             ["--ve", "EVAL_MODEL=x"],
             "--ve/--verifier-env can't be passed after --: SWE-drill gives the verifier the"
-            " variables .env sets that its tasks read, and on atlas-rf the judge's model that"
-            " swe-drill.toml names",
+            " variables .env sets that its tasks read, and its test.sh would pass them to code"
+            " the agent wrote",
         ),
     ],
 )
@@ -674,7 +668,7 @@ print(found.__module__, found.__name__)
     "lane, verifier",
     [
         ("rebench", "swe_drill.replay ReplayVerifier"),
-        ("atlas-rf", "swe_drill.replay ReplayVerifier"),
+        ("atlas-rf", "swe_drill.judge JudgedVerifier"),
     ],
 )
 def test_the_harbor_swe_drill_runs_loads_each_lanes_verifier_with_no_pythonpath(tmp_path, lane, verifier):

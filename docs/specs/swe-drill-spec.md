@@ -112,8 +112,10 @@ agent's sandbox has stopped. Each task's copy in the lane sets
 agent's but `/logs/artifacts/`. SWE-drill's verifier applies the `model.patch` there
 in the workspace, found as the trial found it, puts every test file back as the
 image held it, and runs the task's own `test.sh` there, unchanged. That reward
-is the trial's result. On every lane the agent job passes
-`--verifier swe_drill.replay:ReplayVerifier`.
+is the trial's result. On `rebench` the agent job passes
+`--verifier swe_drill.replay:ReplayVerifier`. On `atlas-rf` it passes
+`--verifier swe_drill.judge:JudgedVerifier`, which grades the same way and then
+runs the task's rubric judge on the host, as its lane describes.
 
 It applies the patch with:
 
@@ -176,13 +178,11 @@ Both lists are empty when the patch changed no test file:
 ```
 
 A task can have Harbor fill a variable from Harbor's own environment, in its
-`[verifier.env]` or `[environment.env]`, as each `atlas-rf` copy's verifier
-takes its judge's key and model:
+`[verifier.env]` or `[environment.env]`. No lane's copies do:
 
 ```toml
 [verifier.env]
-EVAL_API_KEY = "${COPILOT_GITHUB_TOKEN}"
-EVAL_MODEL = "${EVAL_MODEL}"
+GRADER_KEY = "${GRADER_KEY}"
 ```
 
 SWE-drill runs the agent job's Harbor with each variable the lane's tasks name this
@@ -398,16 +398,43 @@ must leave behind, and says the test files are already changed. Every task names
 16 CPUs and 16384 MiB, an agent timeout of 3600 seconds and a verifier timeout
 of 7200.
 
-The verifier's `test.sh` captures the change in the workspace with `git add -A`
-and `git diff --cached HEAD`, runs the regression tests the refactoring must
-keep passing, then runs `tests/evaluate_rubrics.py`, which asks an LLM judge
-whether the change meets each of the task's rubric items. It writes
-`reward.json`, whose `reward` is 1 when those tests pass and the judge passed
-every must-have item it gave a verdict on:
+A trial's reward is 1 when the regression tests the refactoring must keep
+passing pass, and an LLM judge passes every must-have item of the task's rubric
+that it gives a verdict on. `verifier/reward.json` holds it with its parts:
 
 ```json
 { "reward": 0.0, "tests_reward": 1.0, "must_have_pass": false, "rubrics_agg_score": 0.6, "overall_pass": false }
 ```
+
+The tests and the judge run in different places:
+
+1. **The tests, in the verifier's sandbox.** Each copy's `tests/test.sh` is the
+   task's, which captures the change with `git add -A` and
+   `git diff --cached HEAD` into `verifier/agent.patch`, runs the tests, and
+   writes `verifier/tests_reward.txt`. The one line that runs the judge,
+   `python3 /tests/evaluate_rubrics.py || echo "evaluate_rubrics.py exited non-zero"`,
+   is `echo "The rubric judge runs on the host, after this script"` in the copy.
+2. **The judge, on the host.** The agent job grades with
+   `--verifier swe_drill.judge:JudgedVerifier`, which grades as
+   `ReplayVerifier` does, then runs the copy's `tests/evaluate_rubrics.py` in a
+   process of its own, with the task's `tests/` directory, the agent's
+   `model.patch`, and `verifier/rubrics_results.json` in place of the paths the
+   script names in the container. A trial whose agent left no `model.patch` is
+   judged on `verifier/agent.patch`. `rubrics_results.json` is removed before
+   the judge runs. That process's environment is `PATH` and these, and nothing
+   else:
+
+   | Variable | Value |
+   |---|---|
+   | `EVAL_API_KEY` | `COPILOT_GITHUB_TOKEN` from the `.env` beside `swe-drill.toml` |
+   | `EVAL_BASE_URL` | `https://api.enterprise.githubcopilot.com` |
+   | `EVAL_MODEL` | `model` in `[lanes.atlas-rf.judge]` |
+
+   `JudgedVerifier` then writes `reward.json` and `reward.txt` from
+   `tests_reward.txt` and `rubrics_results.json`, as the task's `test.sh` does.
+   A file that is missing or unreadable, or a value that is not a finite number,
+   counts as a failure. The judge's output is in `verifier/judge.log`, and
+   Harbor's verifier timeout covers it.
 
 The judge's verdicts are in `verifier/rubrics_results.json`. An item the judge
 gave no verdict on, as when every call to its model failed, is
@@ -415,27 +442,14 @@ gave no verdict on, as when every call to its model failed, is
 model leaves `must_have_pass` false and the reward 0.
 
 Each copy's `task.toml` adds `[verifier] environment_mode = "separate"`, and
-changes three lines of its `[verifier.env]` so the judge calls Copilot's API:
+leaves out three lines of its `[verifier.env]`, so the verifier's sandbox takes
+nothing from Harbor's environment:
 
-| The task's line | The copy's |
-|---|---|
-| `EVAL_API_KEY = "${OPENAI_API_KEY}"` | `EVAL_API_KEY = "${COPILOT_GITHUB_TOKEN}"` |
-| `EVAL_BASE_URL = "${OPENAI_API_BASE}"` | `EVAL_BASE_URL = "https://api.enterprise.githubcopilot.com"` |
-| `EVAL_MODEL = "${EVAL_MODEL:-anthropic/claude-opus-4-5-20251101}"` | `EVAL_MODEL = "${EVAL_MODEL}"` |
-
-The agent job's Harbor holds `COPILOT_GITHUB_TOKEN` from `.env`, and takes
-`EVAL_MODEL` as `--ve`, from `[lanes.atlas-rf.judge]`.
-
-The judge alone receives the key. Each copy's `tests/test.sh` changes two lines
-of the task's, so the tests, which run code the agent wrote, start with no
-`EVAL_API_KEY`:
-
-| The task's | The copy's |
-|---|---|
-| `set -uo pipefail` | the same, then `_judge_key=${EVAL_API_KEY-}; unset EVAL_API_KEY` |
-| `python3 /tests/evaluate_rubrics.py \|\| echo "evaluate_rubrics.py exited non-zero"` | `EVAL_API_KEY="$_judge_key" python3 /tests/evaluate_rubrics.py \|\| echo "evaluate_rubrics.py exited non-zero"` |
-
-`test.sh` itself still starts with the key in its environment.
+```toml
+EVAL_API_KEY = "${OPENAI_API_KEY}"
+EVAL_BASE_URL = "${OPENAI_API_BASE}"
+EVAL_MODEL = "${EVAL_MODEL:-anthropic/claude-opus-4-5-20251101}"
+```
 
 Copilot's API refuses every call without a `Copilot-Integration-Id` header, so
 each copy's `tests/evaluate_rubrics.py` makes its one client send one, and is
@@ -468,10 +482,10 @@ services:
 On Modal, a task with that file runs under Docker in Docker.
 
 A task whose `[verifier]` sets another `environment_mode` or an `environment`
-of its own, whose `task.toml` has no line that is exactly one of the task's
-lines above or has more than one, whose three lines are not all in
-`[verifier.env]`, whose `test.sh` has not exactly one of each of its two lines
-above, whose `evaluate_rubrics.py` calls
+of its own, whose `task.toml` has no line that is exactly one of the three
+above or has more than one, whose three lines are not all in
+`[verifier.env]`, whose `test.sh` has not exactly one line that runs the judge,
+whose `evaluate_rubrics.py` calls
 `OpenAI(api_key=api_key, base_url=base_url)` other than once, or whose `tests`
 directory is a link, makes `swe-drill run` exit with an error naming it before
 it builds any lane or runs any job. So does one of the fifteen whose
@@ -506,9 +520,8 @@ other `network_mode`, or sets `allowed_hosts` with no `network_mode`, makes
 `swe-drill run` exit with an error naming it before it builds any lane or runs any
 job. The verifier keeps the task's own network, which a `rebench` copy uses to
 install Python through apt on an image that has none. An `atlas-rf` task's
-verifier has a public network, through which the judge reaches Copilot, and its
-`test.sh` installs `openai` from PyPI on an image that lacks
-it.
+verifier has a public network, through which its `test.sh` installs `openai`
+from PyPI on an image that lacks it.
 
 ## 6. Commands
 
@@ -542,15 +555,17 @@ Then, K times, it runs an agent job, which grades its own trials:
   --jobs-dir results/rebench/copilot-gpt --job-name <stamp>-1
 ```
 
-On `atlas-rf` it gives the rubric judge its model from `swe-drill.toml`:
+On `atlas-rf` it grades with the judged verifier, which reads the arm's
+settings as the agent does:
 
 ```bash
-<env>/bin/harbor run -y -p lanes/atlas-rf -e docker -n 16 -k 1 \
+<env>/bin/harbor run -p lanes/atlas-rf -e docker -n 16 -k 1 \
   -a swe_drill.agents.copilot_cli:CopilotCli -m gpt-6.1-sol \
   --ak version=1.0.105 --ak reasoning_effort=high \
   --ak arm=copilot-gpt --ak drill_config=swe-drill.toml --ak lane=atlas-rf \
   --allow-agent-host api.github.com --allow-agent-host api.enterprise.githubcopilot.com \
-  --verifier swe_drill.replay:ReplayVerifier --ve EVAL_MODEL=gemini-4-argon \
+  --verifier swe_drill.judge:JudgedVerifier --verifier-kwarg drill_config=swe-drill.toml \
+  --verifier-kwarg arm=copilot-gpt --verifier-kwarg lane=atlas-rf \
   --jobs-dir results/atlas-rf/copilot-gpt --job-name <stamp>-1
 ```
 
@@ -561,8 +576,7 @@ itself. Its `harbor` is the one that can import `swe_drill.agents` and SWE-drill
 verifiers, which a `harbor` elsewhere on `PATH` may not be.
 
 When a task in the lane has Harbor fill a variable from Harbor's environment,
-as every `atlas-rf` task does, every job of the lane takes `-y`, right after
-`run`. Harbor asks before such a job whether its tasks may load those
+every job of the lane takes `-y`, right after `run`. Harbor asks before such a job whether its tasks may load those
 variables, and without a terminal it reads no answer and exits 1 with
 `Aborted.`. Answering yes is safe because Harbor holds only the values SWE-drill
 gives it: those `.env` sets for the verifier alone. `-y` also agrees, without asking, to share an uploaded
@@ -585,13 +599,14 @@ or spelling Harbor accepts, is an error that names it and says why, and runs
 nothing:
 
 - An option SWE-drill sets on the agent job, even with SWE-drill's own value: `-p`,
-  `-e`, `-n`, `-k`, `-a`, `--ak`, `--allow-agent-host`, `--verifier`, `--ve`,
-  `--jobs-dir`, `--job-name` and `-y`. Also `-m`, which
+  `-e`, `-n`, `-k`, `-a`, `--ak`, `--allow-agent-host`, `--verifier`,
+  `--verifier-kwarg`, `--jobs-dir`, `--job-name` and `-y`. Also `-m`, which
   the arm's `model` sets, and `--disable-verification` and its opposite
   `--enable-verification`, since the agent job grades its own trials.
 - `--env-file`, which would load the file into the agent job's environment,
-  `--ae`, which would reach every command the agent runs, and `--share`
-  where the jobs take `-y`.
+  `--ae`, which would reach every command the agent runs, `--ve`, which would
+  reach the code the agent wrote through the verifier's `test.sh`, and
+  `--share` where the jobs take `-y`.
 - An option that changes how the agent reaches its model, or what the verifier
   reaches: `--effort`, which the arm's `kwargs` set, `--base-url`,
   `--api-key-name`, `--api-format`, `--sm` and `--allow-verifier-host`.
@@ -599,7 +614,7 @@ nothing:
   from leaving a trial on this machine for its verifier: `-c`, `-d`, `-t`, `-i`,
   `-x`, `-l`, `--registry-url`, `--registry-path`, `--repo`, `--task-git-url`,
   `--task-git-commit`, `--agent-import-path`, `--verifier-import-path`,
-  `--verifier-kwarg`, `--environment-import-path`,
+  `--environment-import-path`,
   `--user-agent`, `--user-model`, `--uk`, `--user-persona-path`,
   `--user-prompt-template-path`, `--bridge`, `--bridge-prompt-path`, `--bk`,
   `--install-only`, `--launch`, `--server`, `--watch`, `--dry-run`, `--diff` and
@@ -613,12 +628,12 @@ job, and k in swe-drill.toml sets how many jobs
 ```
 
 `DRY_RUN=1` prints the `harbor run` commands instead of running them. Before an
-agent job whose Harbor holds values from `.env`, it prints their names, and
-never a value:
+agent job whose Harbor holds values from `.env`, it prints their names on a line
+of their own, as `# from .env: GRADER_KEY`, and never a value. No lane's job
+holds any:
 
 ```
-# from .env: COPILOT_GITHUB_TOKEN
-/home/me/evals/.venv/bin/harbor run -y -p lanes/atlas-rf -e docker -n 16 -k 1 -a swe_drill.agents.copilot_cli:CopilotCli -m gpt-6.1-sol --ak version=1.0.105 --ak reasoning_effort=high --ak arm=copilot-gpt --ak drill_config=swe-drill.toml --ak lane=atlas-rf --allow-agent-host api.github.com --allow-agent-host api.enterprise.githubcopilot.com --verifier swe_drill.replay:ReplayVerifier --ve EVAL_MODEL=gemini-4-argon --jobs-dir results/atlas-rf/copilot-gpt --job-name 20261031T142500Z-1
+/home/me/evals/.venv/bin/harbor run -p lanes/atlas-rf -e docker -n 16 -k 1 -a swe_drill.agents.copilot_cli:CopilotCli -m gpt-6.1-sol --ak version=1.0.105 --ak reasoning_effort=high --ak arm=copilot-gpt --ak drill_config=swe-drill.toml --ak lane=atlas-rf --allow-agent-host api.github.com --allow-agent-host api.enterprise.githubcopilot.com --verifier swe_drill.judge:JudgedVerifier --verifier-kwarg drill_config=swe-drill.toml --verifier-kwarg arm=copilot-gpt --verifier-kwarg lane=atlas-rf --jobs-dir results/atlas-rf/copilot-gpt --job-name 20261031T142500Z-1
 ```
 
 Each agent job runs whatever the one before it did and whatever Harbor's exit
@@ -877,6 +892,7 @@ src/swe_drill/
     atlas_rf.py     what the atlas-rf lane alone changes
   config.py         swe-drill.toml
   replay.py         ReplayVerifier, which grades a trial in Harbor's separate verifier
+  judge.py          JudgedVerifier, which runs atlas-rf's rubric judge on the host
   leaderboard.py    swe-drill leaderboard
   cli.py            the swe-drill command
 scripts/

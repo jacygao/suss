@@ -771,11 +771,6 @@ COPILOT_CALL = (
     b'OpenAI(api_key=api_key, base_url=base_url, default_headers={"Copilot-Integration-Id":'
     b' "copilot-developer-cli"})'
 )
-ATLAS_VERIFIER_ENV = {
-    "EVAL_API_KEY": "${COPILOT_GITHUB_TOKEN}",
-    "EVAL_BASE_URL": "https://api.enterprise.githubcopilot.com",
-    "EVAL_MODEL": "${EVAL_MODEL}",
-}
 
 
 def make_atlas(root: Path) -> Path:
@@ -793,7 +788,7 @@ def test_the_atlas_rf_lane_holds_a_copy_of_each_task_and_nothing_else(tmp_path: 
     assert [entry.name for entry in built.iterdir()] == [ATLAS_TASK]
 
 
-def test_an_atlas_rf_copy_differs_from_its_task_in_its_task_toml_and_the_judges_client_and_key_alone(
+def test_an_atlas_rf_copy_differs_from_its_task_in_its_task_toml_the_judges_client_and_its_judge_line_alone(
     tmp_path: Path,
 ):
     source = make_atlas(tmp_path / "source")
@@ -810,60 +805,29 @@ def test_an_atlas_rf_copy_differs_from_its_task_in_its_task_toml_and_the_judges_
     assert copied[EVALUATE].replace(COPILOT_CALL, OPENAI_CALL) == original[EVALUATE]
     before = original["tests/test.sh"].splitlines(keepends=True)
     after = copied["tests/test.sh"].splitlines(keepends=True)
-    at = before.index(SET_LINE)
-    assert after[: at + 1] == before[: at + 1]
-    assert after[at + 1] == HIDE_KEY
-    rest_before, rest_after = before[at + 1 :], after[at + 2 :]
-    assert [(old, new) for old, new in zip(rest_before, rest_after) if old != new] == [(JUDGE_LINE, KEYED_JUDGE_LINE)]
-    assert len(rest_after) == len(rest_before)
+    assert len(after) == len(before)
+    assert [(old, new) for old, new in zip(before, after) if old != new] == [(JUDGE_LINE, NO_JUDGE_LINE)]
 
 
-SET_LINE = b"set -uo pipefail\n"
-HIDE_KEY = b"_judge_key=${EVAL_API_KEY-}; unset EVAL_API_KEY\n"
 JUDGE_LINE = b'python3 /tests/evaluate_rubrics.py || echo "evaluate_rubrics.py exited non-zero"\n'
-KEYED_JUDGE_LINE = b'EVAL_API_KEY="$_judge_key" ' + JUDGE_LINE
+NO_JUDGE_LINE = b'echo "The rubric judge runs on the host, after this script"\n'
 
 
-def test_an_atlas_rf_test_sh_gives_the_judges_key_to_the_judge_and_not_to_the_tests(tmp_path: Path):
-    source = make_atlas(tmp_path / "source")
-    built = lanes.build(lanes.ATLAS_RF, source, tmp_path / "lanes") / ATLAS_TASK
-    lines = (built / "tests" / "test.sh").read_bytes().splitlines(keepends=True)
-    # The copy's own lines up to its first command, a stand-in for the tests, then its own judge line.
-    header = lines[: next(n for n, line in enumerate(lines) if line.startswith(b"mkdir "))]
-    judge = next(line for line in lines if b"/tests/evaluate_rubrics.py" in line)
-    seen = tmp_path / "seen"
-    stand_in = (
-        b"".join(header)
-        + b'bash -c \'echo "tests: ${EVAL_API_KEY-none}"\' >> ' + str(seen).encode() + b"\n"
-        + judge.replace(
-            b"python3 /tests/evaluate_rubrics.py",
-            b"bash -c 'echo \"judge: ${EVAL_API_KEY-none}\"' >> " + str(seen).encode(),
-        )
-    )
-    script = tmp_path / "test.sh"
-    script.write_bytes(stand_in)
-
-    subprocess.run(["bash", str(script)], env={"PATH": "/usr/bin:/bin", "EVAL_API_KEY": "gh-1"}, check=True)
-
-    assert seen.read_text() == "tests: none\njudge: gh-1\n"
-
-
-@pytest.mark.parametrize("line", [SET_LINE, JUDGE_LINE], ids=["set", "judge"])
-def test_an_atlas_rf_test_sh_without_one_line_the_lane_edits_is_refused_naming_it(tmp_path: Path, line: bytes):
+def test_an_atlas_rf_test_sh_without_exactly_one_judge_line_is_refused_naming_it(tmp_path: Path):
     source = make_atlas(tmp_path / "source")
     test_sh = source / ATLAS_TASK / "tests" / "test.sh"
-    test_sh.write_bytes(test_sh.read_bytes().replace(line, b""))
+    test_sh.write_bytes(test_sh.read_bytes().replace(JUDGE_LINE, b""))
 
     with pytest.raises(LaneError) as error:
         lanes.check_buildable(lanes.ATLAS_RF, source, tmp_path / "lanes")
 
     assert str(error.value) == (
-        f"{test_sh}: has 0 lines that are {line.decode().strip()}, so the lane cannot keep the judge's"
-        " key from the tests; it takes a test.sh with exactly one"
+        f"{test_sh}: has 0 lines that are {JUDGE_LINE.decode().strip()}, so the lane cannot run its"
+        " rubric judge on the host; it takes a test.sh with exactly one"
     )
 
 
-def test_an_atlas_rf_task_toml_changes_the_judges_settings_the_agents_network_and_verifiers_mode_alone(
+def test_an_atlas_rf_task_toml_drops_the_judges_settings_and_changes_the_agents_network_and_verifiers_mode_alone(
     tmp_path: Path,
 ):
     source = make_atlas(tmp_path / "source")
@@ -872,7 +836,7 @@ def test_an_atlas_rf_task_toml_changes_the_judges_settings_the_agents_network_an
 
     expected = toml_of(source / ATLAS_TASK)
     expected["agent"]["network_mode"] = "no-network"
-    expected["verifier"] = {**expected["verifier"], "environment_mode": "separate", "env": ATLAS_VERIFIER_ENV}
+    expected["verifier"] = {**expected["verifier"], "environment_mode": "separate", "env": {}}
     assert toml_of(built / ATLAS_TASK) == expected
 
 
@@ -889,20 +853,16 @@ def test_harbor_reads_an_atlas_rf_copy_with_a_closed_agent_and_a_public_separate
     )
     assert mode == VerifierEnvironmentMode.SEPARATE
     assert plan.agent_phase.network_mode == NetworkMode.NO_NETWORK
-    # The judge reaches Copilot's API, and test.sh installs openai from PyPI where the image lacks it.
+    # test.sh installs openai from PyPI where the image lacks it, as the task does.
     assert plan.verifier_phase.network_mode == NetworkMode.PUBLIC
 
 
-def test_an_atlas_rf_copy_reads_the_copilot_token_and_the_judges_model_from_harbors_environment_alone(
-    tmp_path: Path,
-):
+def test_an_atlas_rf_copy_reads_nothing_from_harbors_environment(tmp_path: Path):
     source = make_atlas(tmp_path / "source")
 
     built = lanes.build(lanes.ATLAS_RF, source, tmp_path / "lanes")
 
-    read = lanes.read_tasks([built / ATLAS_TASK])
-    assert config.host_variables(read) == ("COPILOT_GITHUB_TOKEN", "EVAL_MODEL")
-    assert config.host_variables(read, ("environment",)) == ()
+    assert config.host_variables(lanes.read_tasks([built / ATLAS_TASK])) == ()
 
 
 def test_the_lane_checks_read_an_atlas_rf_tasks_cpus_and_memory(tmp_path: Path):
@@ -957,8 +917,8 @@ def test_an_atlas_rf_task_toml_without_one_of_the_judges_settings_is_refused_nam
         lanes.check_buildable(lanes.ATLAS_RF, source, tmp_path / "lanes")
 
     assert str(error.value) == (
-        f"{toml}: has 0 lines that are {line}, so the lane cannot point its rubric judge at"
-        " Copilot; it takes a task.toml with exactly one"
+        f"{toml}: has 0 lines that are {line}, so the lane cannot run its rubric judge on the"
+        " host; it takes a task.toml with exactly one"
     )
 
 
@@ -975,8 +935,8 @@ def test_an_atlas_rf_task_toml_whose_judges_settings_are_outside_verifier_env_is
         lanes.check_buildable(lanes.ATLAS_RF, source, tmp_path / "lanes")
 
     assert str(error.value) == (
-        f"{toml}: its rubric judge's settings cannot be changed without changing anything else,"
-        " so they must be changed by hand"
+        f"{toml}: its rubric judge's settings cannot be removed without changing anything else,"
+        " so they must be removed by hand"
     )
 
 
