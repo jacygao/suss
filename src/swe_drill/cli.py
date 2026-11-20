@@ -20,10 +20,12 @@ from harbor.cli.utils import parse_kwargs
 from swe_drill import agents, config, lanes, leaderboard
 from swe_drill.leaderboard import LeaderboardError
 from swe_drill.config import Config, ConfigError, verifier_env
-from swe_drill.lanes import LaneError, atlas_rf
+from swe_drill.lanes import LaneError
 
 
 VERIFIER = "swe_drill.replay:ReplayVerifier"
+# ReplayVerifier with the rubric judge on the host, for atlas-rf.
+JUDGED_VERIFIER = "swe_drill.judge:JudgedVerifier"
 
 
 @dataclass(frozen=True)
@@ -61,8 +63,9 @@ def harbor_commands(
     """
     The `harbor run` command for agent job `trial` of the arm on `lane`, which
     grades each trial itself with ReplayVerifier in Harbor's separate verifier.
-    On atlas-rf it gives the verifier the rubric judge's model as EVAL_MODEL,
-    with `--ve`.
+    On atlas-rf it grades with JudgedVerifier instead, given the arm, the lane
+    and swe-drill.toml as `--verifier-kwarg`, so that it reads the judge's
+    model and key from them.
 
     It must run in the directory holding swe-drill.toml, which its relative paths
     resolve from. `allowed_hosts` are those the arm's agent class lists.
@@ -73,8 +76,7 @@ def harbor_commands(
     as `config.host_variables` gives them. The job does not take them from
     SWE-drill's own environment. It is given those of `verifier_reads` that .env
     sets, which the tasks read in `[verifier.env]` alone and so reach the
-    verifier's test.sh and no sandbox. On atlas-rf it leaves out EVAL_MODEL,
-    which `--ve` sets.
+    verifier's test.sh and no sandbox.
 
     Raises ValueError, with a message for the user, when `harbor_args` include
     a positional argument, an option SWE-drill sets on the job, an option that
@@ -106,17 +108,18 @@ def harbor_commands(
     ]
     for host in allowed_hosts:
         agent += ["--allow-agent-host", host]
-    agent += ["--verifier", VERIFIER]
     if lane == lanes.ATLAS_RF:
-        agent += ["--ve", f"{atlas_rf.EVAL_MODEL}={config.eval_model}"]
+        agent += ["--verifier", JUDGED_VERIFIER]
+        for key, value in (("drill_config", "swe-drill.toml"), ("arm", arm.name), ("lane", lane)):
+            agent += ["--verifier-kwarg", _kwarg(key, value)]
+    else:
+        agent += ["--verifier", VERIFIER]
     agent += ["--jobs-dir", str(jobs_dir), "--job-name", job_name]
     _refuse(harbor_args)
     if reads:
         _refuse_sharing(harbor_args, lane)
     agent += harbor_args
     given = verifier_env(config, verifier_reads)
-    if lane == lanes.ATLAS_RF:
-        given = {name: value for name, value in given.items() if name != atlas_rf.EVAL_MODEL}
     return Command(agent, tuple(reads), given)
 
 
@@ -179,8 +182,8 @@ _REFUSED = {
     "verifier_import_path": _GRADED,
     "verifier_kwargs": _GRADED,
     "verifier_env": (
-        "SWE-drill gives the verifier the variables .env sets that its tasks read, and on"
-        " atlas-rf the judge's model that swe-drill.toml names"
+        "SWE-drill gives the verifier the variables .env sets that its tasks read, and its"
+        " test.sh would pass them to code the agent wrote"
     ),
     "yes": "SWE-drill answers Harbor's question itself, on a lane whose tasks read Harbor's environment",
     # Those that would change what the agent job runs.
